@@ -1,0 +1,13 @@
+# build output
+/gozellij
+/gozellijd
+/dist/
+
+# test artifacts
+*.test
+*.out
+coverage.*
+
+# editor/OS
+.DS_Store
+*.swp
