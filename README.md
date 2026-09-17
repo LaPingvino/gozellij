@@ -12,10 +12,16 @@ daemon upgraded: v1 -> v2
 > A daemon that *crashes* still takes its services with it — exec-in-place is a planned upgrade,
 > not a safety net. [DESIGN.md](DESIGN.md) says what that would take.
 
-A host-native process fabric with a terminal UI on top — aiming to be lighter and safer than
-Docker, and easier to live with, for the job most people actually use Docker for on one server:
-run a handful of long-lived things, keep them alive, look at them, restart them, give them
-addresses.
+A host-native process fabric with a terminal UI on top — aiming to be lighter than Docker, and
+easier to live with, for the job most people actually use Docker for on one server: run a handful
+of long-lived things, keep them alive, look at them, restart them, give them addresses.
+
+**On "safer":** today that means no root daemon, a 0600 socket in your own runtime directory, and
+service definitions that are 0600 because they carry environment variables. It does **not** yet
+mean isolation. Services run as you, on your filesystem, with no resource limits, and they inherit
+the daemon's environment — so if you start `gozellijd` from a shell, every service sees your
+`SSH_AUTH_SOCK` and anything else you had exported. That is a smaller claim than Docker's and it
+is the honest one; the gap is [tracked in the stories](docs/USER_STORIES.md).
 
 > **Status: Phase 1 works.** You can define services, supervise them, watch them, and upgrade the
 > daemon underneath them without restarting anything. There is no multiplexing yet — one service,

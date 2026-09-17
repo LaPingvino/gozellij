@@ -180,6 +180,27 @@ What this does *not* cover, stated plainly so nobody discovers it the hard way:
   which after a package upgrade points at the old, deleted inode. Exec'ing that would faithfully
   reinstall the version being replaced.
 
+## What `stop` does not stop (measured)
+
+`Process.Stop` signals one pid: the session leader. The obvious conclusion - that a service's
+children survive - turns out to be wrong for the common case, and it is worth writing down which
+case is which, because the difference decides how urgent this is.
+
+Measured 2026-09-17, on this machine:
+
+- **An ordinary child dies.** The child is a session leader with the pty as its controlling
+  terminal, so closing the pty master sends `SIGHUP` to the session and the whole tree goes. A
+  shell that backgrounds another shell loses both. So `npm start` leaving a stray `node` - the
+  example this was first reported with - does not happen, because node stays in the session.
+- **A child that escapes the session survives.** `setsid`, a daemonising process, anything that
+  detaches from the controlling terminal. Verified with a service that reports its own child's
+  pid: after `gozellij stop`, the parent was gone and `sleep 600` was still running.
+
+So the gap is real and narrower than "stop does not kill the tree". The fix is a process-group or
+cgroup kill rather than a single `kill(pid)`, and the systemd unit already sets `Delegate=yes` for
+the cgroup route. Until then, a service that deliberately daemonises is a service gozellij can
+start and cannot fully stop, which is worth knowing before trusting it with one.
+
 ## Client transports, and the mosh idea
 
 The inversion above says the UI is replaceable. That invites a question with a very attractive
