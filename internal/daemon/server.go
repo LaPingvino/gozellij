@@ -207,6 +207,19 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 
+		// Attach takes the connection over for its lifetime: after this the stream is data
+		// frames in both directions, not request/response. It writes its own answer, because
+		// it has to succeed *before* the replay starts.
+		if req.Op == ipc.OpAttach {
+			if err := s.attach(conn, r, w, req); err != nil {
+				// The client is gone by now in the ordinary case, so this is best effort -
+				// but an attach that failed before it began must still say why.
+				_ = w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, err))
+				s.log.Debug("attach ended", "service", req.Service, "err", err)
+			}
+			return
+		}
+
 		resp := s.dispatch(req)
 		if err := w.WriteJSON(ipc.KindResponse, resp); err != nil {
 			s.log.Debug("could not answer", "op", req.Op, "err", err)
@@ -259,10 +272,14 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 		}
 		return ipc.OKResponse(req.ID, nil)
 
-	case ipc.OpAttach, ipc.OpResize:
-		// Not built yet, and said so plainly with the op named. A daemon that ignores an
-		// operation it does not implement is indistinguishable from one that is broken.
-		return ipc.Err(req.ID, fmt.Errorf("%q is not implemented yet (Phase 1, in progress)", req.Op))
+	case ipc.OpAttach:
+		// Handled before dispatch, in handle(). Reaching here would mean the routing changed
+		// and nobody updated this, so say that rather than pretending.
+		return ipc.Err(req.ID, errors.New("internal error: attach reached dispatch"))
+
+	case ipc.OpResize:
+		// Resize is only meaningful inside an attach, which owns the stream.
+		return ipc.Err(req.ID, errors.New("resize is only valid while attached"))
 
 	default:
 		// Naming the op matters: a client from a newer version should learn that this daemon

@@ -193,18 +193,18 @@ func TestUnknownOpIsNamedInTheError(t *testing.T) {
 	}
 }
 
-// Not-yet-implemented must say so, not quietly do nothing.
-func TestUnimplementedOpsSaySo(t *testing.T) {
+// Resize only means something inside an attach, and asking for it outside one must be refused with
+// a reason rather than quietly accepted.
+func TestResizeOutsideAnAttachIsRefused(t *testing.T) {
 	_, _, sock := newTestDaemon(t)
 	c := dial(t, sock)
-	for _, op := range []ipc.Op{ipc.OpAttach, ipc.OpResize} {
-		resp, err := c.Call(op, "web", nil)
-		if err == nil {
-			t.Errorf("%s reported success while unimplemented", op)
-		}
-		if !strings.Contains(resp.Error, "not implemented") {
-			t.Errorf("%s error = %q, want it to say it is not implemented", op, resp.Error)
-		}
+
+	resp, err := c.Call(ipc.OpResize, "web", ipc.ResizeRequest{Cols: 80, Rows: 24})
+	if err == nil {
+		t.Fatal("resize outside an attach was accepted")
+	}
+	if !strings.Contains(resp.Error, "attached") {
+		t.Errorf("error = %q, want it to explain that resize needs an attach", resp.Error)
 	}
 }
 

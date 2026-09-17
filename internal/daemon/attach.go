@@ -1,0 +1,226 @@
+package daemon
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"time"
+
+	"github.com/LaPingvino/gozellij/internal/fabric"
+	"github.com/LaPingvino/gozellij/internal/ipc"
+)
+
+// AttachQueueBytes is how far behind an attached client may fall before it is told its view is
+// incomplete.
+//
+// Generous: a client on a slow link should be allowed to lag through a burst of output and catch
+// up, because declaring it lagged forces a full resynchronisation. Small enough that a client that
+// has genuinely stopped reading does not make the daemon hold the whole history for it.
+const AttachQueueBytes = 4 << 20 // 4 MiB
+
+// attachSession is one client attached to one service.
+type attachSession struct {
+	srv     *Server
+	conn    net.Conn
+	w       *ipc.Writer
+	r       *ipc.Reader
+	service string
+}
+
+// attach turns this connection into a stream until the client hangs up.
+//
+// Phase 1 has no terminal emulator: what the child wrote goes to the client verbatim and the
+// client's keystrokes come back, so the *client's* terminal does the emulation. See DESIGN.md.
+func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Request) error {
+	var ar ipc.AttachRequest
+	if len(req.Payload) > 0 {
+		if err := json.Unmarshal(req.Payload, &ar); err != nil {
+			return fmt.Errorf("malformed attach payload: %w", err)
+		}
+	}
+
+	out, err := s.fab.Output(req.Service)
+	if err != nil {
+		return err
+	}
+
+	// Size the pty to the attaching client before replaying anything, so a full-screen program
+	// repaints at the right size rather than at whatever the last client used.
+	if ar.Cols > 0 && ar.Rows > 0 {
+		if p, perr := s.fab.Process(req.Service); perr == nil && p != nil {
+			if rerr := p.Resize(ar.Cols, ar.Rows); rerr != nil && !errors.Is(rerr, fabric.ErrProcessGone) {
+				s.log.Debug("resize on attach failed", "service", req.Service, "err", rerr)
+			}
+		}
+	}
+
+	// Snapshot and subscription are taken together, so nothing written in between is lost. See
+	// the note on OutputBuffer.Attach.
+	snapshot, sub, err := out.Attach(AttachQueueBytes)
+	if err != nil {
+		return err
+	}
+
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
+
+	// The attach itself succeeded: say so before the stream starts, so the client can tell
+	// "attached, nothing has happened yet" from "still waiting to be let in".
+	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {
+		return err
+	}
+
+	if ar.Replay && len(snapshot) > 0 {
+		if err := sess.writeData(snapshot); err != nil {
+			return err
+		}
+	}
+
+	// One goroutine pumps output to the client; this one reads the client's input. They end
+	// together: whichever notices the connection is gone closes it, and the other unblocks.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sess.pumpOutput(sub)
+	}()
+
+	err = sess.readInput()
+
+	// Order matters here, and getting it wrong deadlocks. Detach must come *before* waiting for
+	// the pump: the pump ranges over the subscriber's channel, and only Detach closes it. With
+	// a `defer sub.Detach()` instead, this function waits for a goroutine that is waiting for
+	// the thing this function will do after it returns.
+	conn.Close() // unblock the pump if it is mid-write
+	sub.Detach() // close the channel the pump is ranging over
+	<-done
+	return err
+}
+
+// writeData sends output to the client in frames that fit.
+func (a *attachSession) writeData(b []byte) error {
+	const chunk = ipc.MaxFrameSize / 2
+	for len(b) > 0 {
+		n := len(b)
+		if n > chunk {
+			n = chunk
+		}
+		if err := a.w.WriteFrame(ipc.KindData, b[:n]); err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
+// pumpOutput forwards the service's output until the subscription ends.
+func (a *attachSession) pumpOutput(sub *fabric.Subscriber) {
+	for chunk := range sub.C() {
+		if err := a.writeData(chunk); err != nil {
+			return
+		}
+		sub.Consumed(len(chunk))
+
+		if sub.Lagged() {
+			// Tell the client its view is incomplete rather than letting it display
+			// something subtly wrong. It can re-attach to resynchronise; a client that
+			// cannot tell it missed data is worse off than one that is told.
+			_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
+				Kind:    ipc.EventLagged,
+				Service: a.service,
+				At:      time.Now(),
+				Message: "output was dropped because this client could not keep up; re-attach to resynchronise",
+			})
+			return
+		}
+	}
+}
+
+// readInput feeds the client's keystrokes to the process and handles in-stream requests.
+func (a *attachSession) readInput() error {
+	for {
+		kind, payload, err := a.r.ReadFrame()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+
+		switch kind {
+		case ipc.KindData:
+			p, perr := a.srv.fab.Process(a.service)
+			if perr != nil {
+				return perr
+			}
+			if p == nil {
+				// Typing at a service that is not running is not an error worth closing
+				// the connection over, but it must not look like it worked either.
+				a.notify(ipc.EventProcessExited, "input ignored: the service is not running")
+				continue
+			}
+			if _, werr := p.Write(payload); werr != nil {
+				if errors.Is(werr, fabric.ErrProcessGone) {
+					a.notify(ipc.EventProcessExited, "input ignored: the process has exited")
+					continue
+				}
+				return werr
+			}
+
+		case ipc.KindRequest:
+			var req ipc.Request
+			if jerr := json.Unmarshal(payload, &req); jerr != nil {
+				_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(0, fmt.Errorf("malformed request during attach: %w", jerr)))
+				continue
+			}
+			a.handleInStream(req)
+
+		default:
+			// Say so rather than dropping it. A client sending responses at us is confused,
+			// and silence would leave it that way.
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(0,
+				fmt.Errorf("unexpected %s frame while attached", kind)))
+		}
+	}
+}
+
+// handleInStream serves the small set of requests that make sense mid-attach.
+func (a *attachSession) handleInStream(req ipc.Request) {
+	switch req.Op {
+	case ipc.OpResize:
+		var rr ipc.ResizeRequest
+		if err := json.Unmarshal(req.Payload, &rr); err != nil {
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, fmt.Errorf("malformed resize: %w", err)))
+			return
+		}
+		p, err := a.srv.fab.Process(a.service)
+		if err != nil {
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, err))
+			return
+		}
+		if p == nil {
+			// Not an error: the size is remembered by the next attach. But answer, because
+			// the client asked.
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil))
+			return
+		}
+		if err := p.Resize(rr.Cols, rr.Rows); err != nil && !errors.Is(err, fabric.ErrProcessGone) {
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, err))
+			return
+		}
+		_ = a.w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil))
+
+	default:
+		_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID,
+			fmt.Errorf("%q cannot be used while attached (detach first)", req.Op)))
+	}
+}
+
+func (a *attachSession) notify(kind, msg string) {
+	_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
+		Kind:    kind,
+		Service: a.service,
+		At:      time.Now(),
+		Message: msg,
+	})
+}

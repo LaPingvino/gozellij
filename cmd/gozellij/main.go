@@ -34,6 +34,7 @@ Usage:
   gozellij status <name>               show one service
   gozellij add <name> -- <cmd> [args]  define a service
   gozellij start|stop|restart <name>   change its state
+  gozellij attach <name>               attach your terminal to it (Ctrl-] detaches)
   gozellij rm <name>                   remove it
   gozellij ping                        check the daemon is alive
 
@@ -78,6 +79,8 @@ func run(args []string) error {
 		return cmdLifecycle(cmd, rest)
 	case "rm", "remove":
 		return cmdRemove(rest)
+	case "attach":
+		return cmdAttach(rest)
 	case "ping":
 		return cmdPing(rest)
 	default:
@@ -299,6 +302,25 @@ func cmdLifecycle(op string, args []string) error {
 	}
 	printStatus(s)
 	return nil
+}
+
+func cmdAttach(args []string) error {
+	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	noReplay := fs.Bool("no-replay", false, "do not replay the recent output before the live stream")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("attach needs exactly one service name")
+	}
+	c, err := connect(*sock)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	return c.Attach(fs.Arg(0), os.Stdin, os.Stdout, !*noReplay)
 }
 
 func cmdRemove(args []string) error {
