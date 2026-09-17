@@ -113,6 +113,10 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 	}
 }
 
+// Service returns the definition this supervisor was built from. It is written once at
+// construction and never modified, so the copy is safe to read while the loop runs.
+func (s *Supervisor) Service() Service { return s.svc }
+
 // Output is the buffer every process of this service writes into. It outlives any one process, so
 // a viewer attached across a restart sees the old output, the restart notice and the new output as
 // one continuous stream.

@@ -32,6 +32,11 @@ type Service struct {
 	Env []string `json:"env,omitempty"`
 	// Restart is what to do when it exits.
 	Restart RestartPolicy `json:"restart"`
+	// Enabled is the *desired* state, and it is what makes a reboot uneventful: the fabric
+	// starts enabled services when it loads and leaves the rest alone. Stopping a service
+	// clears it, so something you stopped on purpose stays stopped afterwards rather than
+	// quietly coming back - which is the behaviour that makes people distrust a supervisor.
+	Enabled bool `json:"enabled"`
 	// CreatedAt is when the service was first defined.
 	CreatedAt time.Time `json:"created_at"`
 }
