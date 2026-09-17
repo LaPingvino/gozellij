@@ -169,12 +169,47 @@ Lower-effort relatives of the same idea, for comparison: exposing the fabric ove
 forced command (works everywhere, no roaming), or a small web UI over the socket (works on
 ChromeOS trivially, no terminal fidelity).
 
+## The wire format (decided)
+
+Length-prefixed frames on a unix socket:
+
+```
++--------+------+------------------+
+| uint32 | kind |     payload      |
+| length | byte |  length-1 bytes  |
++--------+------+------------------+
+```
+
+`kind` is request, response, data or event. Control traffic (request/response/event) is **JSON**;
+`data` frames carry **raw bytes**, because pty output is high volume and base64 inside JSON would
+be both slower and larger. One framing, two payload styles.
+
+This started as "leaning protobuf", for the reason Zellij uses it: a client and a daemon can be
+different versions and the protocol has to survive that. JSON has the same property — unknown
+fields are ignored, new optional fields are free, and there is a test that an older peer can read a
+newer peer's message — without a codegen step, a committed-generated-file rule, or a protoc in the
+build. For "add a service, list services, tell me the status", the encoding cost is irrelevant, and
+being able to read a socket dump with your eyes is worth a lot while a protocol is young.
+
+If the stream path ever needs it, `data` frames are already raw bytes and nothing about the framing
+would have to change.
+
+Decisions inside the protocol that are load-bearing rather than incidental:
+
+- **Every request gets exactly one response, including the failures.** A daemon that answers only
+  when things went well leaves a client on a timeout to discover a typo.
+- **An unknown frame kind is an error, not a skip.** Quietly discarding frames is how a version
+  mismatch becomes "it just does nothing sometimes".
+- **A frame size limit**, so a peer that is buggy or hostile cannot announce four gigabytes and
+  have us allocate it.
+- **`ListReply.Problems` travels with the list**, so a service file the daemon could not load
+  neither hides the nine working ones nor is hidden by them.
+- **An explicit `lagged` event**, so a client whose stream fell behind is told its view is
+  incomplete and can re-attach, rather than displaying something subtly wrong.
+
 ## Not yet decided
 
 - Which VTE backend leads in Phase 3, and whether cgo is acceptable for release builds.
-- Wire format on the fabric socket. Leaning length-prefixed protobuf for the same reason Zellij
-  uses it — it survives version skew between a new UI and an older running daemon, which is the
-  whole point of the inversion.
 - Whether to be drop-in compatible with Zellij's KDL layouts and keybindings. Attractive for
   migration, a large surface to commit to.
 - Config format. KDL is nice to read; Go's ecosystem support is thinner than for TOML.
