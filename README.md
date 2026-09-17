@@ -1,11 +1,20 @@
 # gozellij
 
-**Your processes keep running.** Through logouts, through the UI crashing, through you rebooting
-the laptop you were sshed in from.
+**Your processes keep running.** Through logouts, through the UI crashing, through upgrading the
+daemon underneath them, through you rebooting the laptop you were sshed in from.
 
-> Not yet through a restart of the daemon itself — that currently kills them, and
-> [DESIGN.md](DESIGN.md#what-does-not-work-yet-restarting-the-daemon) says so and lists the ways
-> out. Better to write it down than to promise it.
+```
+$ gozellij status clock          # before upgrading the daemon binary
+pid:      1018245
+$ kill -USR1 $(pidof gozellijd)  # swap the binary in place
+$ gozellij status clock
+pid:      1018245                # same process; it never noticed
+uptime:   29s
+starts:   1
+```
+
+> A daemon that *crashes* still takes its services with it — exec-in-place is a planned upgrade,
+> not a safety net. [DESIGN.md](DESIGN.md) says what that would take.
 
 A host-native process fabric with a terminal UI on top — aiming to be lighter and safer than
 Docker, and easier to live with, for the job most people actually use Docker for on one server:

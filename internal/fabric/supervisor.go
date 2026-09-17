@@ -89,6 +89,10 @@ type Supervisor struct {
 	done    chan struct{}
 	started bool
 
+	// adopted is a process inherited across an exec-in-place, to be supervised instead of
+	// spawning a new one. Consumed by the first turn of the loop.
+	adopted *Process
+
 	// notify is a coalescing signal that Status changed. Capacity one: a watcher that has not
 	// caught up does not need to be told twice, it needs to read the current status.
 	notify chan struct{}
@@ -111,6 +115,18 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 		status: Status{Service: s.Name, State: StateStopped},
 		notify: make(chan struct{}, 1),
 	}
+}
+
+// AdoptRunning tells the supervisor to look after an already-running process rather than starting
+// one. It must be called before Start.
+//
+// The output buffer of the adopted process is the supervisor's, so scrollback from before the
+// upgrade continues into whatever the process says afterwards - one stream across a daemon that
+// was replaced underneath it.
+func (s *Supervisor) AdoptRunning(p *Process) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adopted = p
 }
 
 // Service returns the definition this supervisor was built from. It is written once at
@@ -223,7 +239,17 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 			return
 		}
 
-		p, err := Start(s.svc, s.opts)
+		// An inherited process is supervised as it is: not restarted, not re-spawned, not
+		// disturbed. This is the whole point of the upgrade path.
+		s.mu.Lock()
+		p := s.adopted
+		s.adopted = nil
+		s.mu.Unlock()
+
+		var err error
+		if p == nil {
+			p, err = Start(s.svc, s.opts)
+		}
 		if err != nil {
 			// A spawn that fails is reported, not swallowed. Whether we try again is the
 			// policy's business: "always" means a binary that appears later will be picked

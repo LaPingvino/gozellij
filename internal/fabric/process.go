@@ -33,7 +33,11 @@ type Process struct {
 	Service Service
 	Output  *OutputBuffer
 
+	// cmd is nil for an adopted process: after an exec-in-place the daemon keeps the same pid,
+	// so the children are still its children and can still be waited on - but there is no
+	// exec.Cmd to do it with, because the struct that held it died with the old binary.
 	cmd        *exec.Cmd
+	pid        int
 	pty        *os.File
 	started    time.Time
 	ownsOutput bool
@@ -119,6 +123,7 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 		Output:     out,
 		ownsOutput: ownsOutput,
 		cmd:        cmd,
+		pid:        cmd.Process.Pid,
 		pty:        f,
 		started:    time.Now(),
 		done:       make(chan struct{}),
@@ -151,7 +156,13 @@ func (p *Process) drain() {
 
 // reap waits for the child, gives its remaining output a moment to arrive, and records the exit.
 func (p *Process) reap() {
-	err := p.cmd.Wait()
+	var exit Exit
+	if p.cmd != nil {
+		err := p.cmd.Wait()
+		exit = exitFrom(err, p.cmd.ProcessState)
+	} else {
+		exit = waitAdopted(p.pid)
+	}
 
 	// The child is gone, but bytes it wrote may still be in flight. Give the reader a moment,
 	// then close the pty so it cannot block forever on a grandchild holding the slave open.
@@ -163,7 +174,7 @@ func (p *Process) reap() {
 	}
 
 	p.mu.Lock()
-	p.exit = exitFrom(err, p.cmd.ProcessState)
+	p.exit = exit
 	p.exitedAt = time.Now()
 	p.exited = true
 	p.mu.Unlock()
@@ -203,12 +214,23 @@ func (p *Process) closePTY() {
 }
 
 // Pid returns the child's process id, or 0 if it never started.
-func (p *Process) Pid() int {
-	if p.cmd == nil || p.cmd.Process == nil {
-		return 0
+func (p *Process) Pid() int { return p.pid }
+
+// PTYFd is the file descriptor of the pty master.
+//
+// Exposed for exec-in-place: the descriptor has to survive into the new binary, which means
+// clearing FD_CLOEXEC on it and telling the successor which number to pick up.
+func (p *Process) PTYFd() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.pty == nil {
+		return -1
 	}
-	return p.cmd.Process.Pid
+	return int(p.pty.Fd())
 }
+
+// Adopted reports whether this process was inherited across an exec rather than spawned here.
+func (p *Process) Adopted() bool { return p.cmd == nil }
 
 // StartedAt is when the process was spawned.
 func (p *Process) StartedAt() time.Time { return p.started }
@@ -289,12 +311,29 @@ func (p *Process) Resize(cols, rows int) error {
 }
 
 // Signal sends a signal to the child.
+//
+// An adopted process has no os.Process handle, so it is signalled by pid. That is safe here
+// precisely because the pid is still ours: exec-in-place keeps it, so nobody else can have
+// recycled it while we hold the parent slot.
 func (p *Process) Signal(sig os.Signal) error {
-	if p.cmd == nil || p.cmd.Process == nil {
+	if p.pid <= 0 {
 		return ErrProcessGone
 	}
-	if err := p.cmd.Process.Signal(sig); err != nil {
-		if errors.Is(err, os.ErrProcessDone) {
+	if p.cmd != nil && p.cmd.Process != nil {
+		if err := p.cmd.Process.Signal(sig); err != nil {
+			if errors.Is(err, os.ErrProcessDone) {
+				return ErrProcessGone
+			}
+			return fmt.Errorf("signalling %s: %w", p.Service.Name, err)
+		}
+		return nil
+	}
+	sysSig, ok := sig.(syscall.Signal)
+	if !ok {
+		return fmt.Errorf("signalling %s: %v is not a unix signal", p.Service.Name, sig)
+	}
+	if err := syscall.Kill(p.pid, sysSig); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
 			return ErrProcessGone
 		}
 		return fmt.Errorf("signalling %s: %w", p.Service.Name, err)

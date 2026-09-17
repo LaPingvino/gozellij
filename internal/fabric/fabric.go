@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Fabric owns every supervised service: the definitions on disk, the supervisors running them,
@@ -82,6 +83,94 @@ func (f *Fabric) adopt(svc Service) error {
 	}
 	f.sups[svc.Name] = NewSupervisor(svc, f.opts)
 	return nil
+}
+
+// Handover describes one process inherited across an exec-in-place.
+type Handover struct {
+	Name      string    `json:"name"`
+	Pid       int       `json:"pid"`
+	PTYFd     int       `json:"pty_fd"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// AdoptAll takes over processes inherited from a previous daemon, then loads everything else.
+//
+// Adoption happens before Load so that a service which is already running is never started twice.
+// Getting that order wrong produces two copies of the same service and no complaint from anybody,
+// which is exactly the silent-success failure this project is built to avoid.
+//
+// Problems are returned rather than fatal: a handover that lost one process out of ten must still
+// bring the other nine across, and must say which one it lost.
+func (f *Fabric) AdoptAll(handovers []Handover) []error {
+	var errs []error
+
+	for _, h := range handovers {
+		svc, err := f.reg.Get(h.Name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("adopting %s: %w", h.Name, err))
+			continue
+		}
+		sup := NewSupervisor(svc, f.opts)
+		opts := f.opts
+		opts.Output = sup.Output()
+
+		p, err := Adopt(svc, h.Pid, h.PTYFd, h.StartedAt, opts)
+		if err != nil {
+			// Say so and carry on: Load will start it fresh below, which is a worse outcome
+			// than a true handover but a much better one than a service that vanishes.
+			errs = append(errs, err)
+			continue
+		}
+		sup.AdoptRunning(p)
+
+		f.mu.Lock()
+		if f.closed {
+			f.mu.Unlock()
+			errs = append(errs, ErrFabricClosed)
+			continue
+		}
+		f.sups[h.Name] = sup
+		f.mu.Unlock()
+
+		if err := sup.Start(f.ctx); err != nil && !errors.Is(err, ErrAlreadyStarted) {
+			errs = append(errs, fmt.Errorf("supervising adopted %s: %w", h.Name, err))
+		}
+	}
+
+	return append(errs, f.Load()...)
+}
+
+// Handovers describes every running process, for passing to a successor daemon.
+//
+// Only running processes appear: a service that is backing off or stopped has nothing to hand
+// over, and the successor will start it from its definition like any other.
+func (f *Fabric) Handovers() []Handover {
+	f.mu.Lock()
+	sups := make(map[string]*Supervisor, len(f.sups))
+	for name, sup := range f.sups {
+		sups[name] = sup
+	}
+	f.mu.Unlock()
+
+	var out []Handover
+	for name, sup := range sups {
+		p := sup.Current()
+		if p == nil {
+			continue
+		}
+		fd := p.PTYFd()
+		if fd < 0 {
+			continue
+		}
+		out = append(out, Handover{
+			Name:      name,
+			Pid:       p.Pid(),
+			PTYFd:     fd,
+			StartedAt: p.StartedAt(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Add defines a new service and, if start is true, starts it.

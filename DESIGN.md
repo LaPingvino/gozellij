@@ -135,47 +135,50 @@ Earned the hard way in the Rust fork; these are not aspirations.
    measurements that *failed* to support it, and a confident theory implemented, measured,
    refuted, and reverted. Both are better outcomes than a plausible story.
 
-## What does not work yet: restarting the daemon
+## Restarting the daemon (solved)
 
-Measured on 2026-09-17, by running it:
+The first draft of this document promised more than the architecture delivered, and running it
+proved the point:
 
 ```
 pid before daemon restart: 978659
-pid after  daemon restart: 978766
+pid after  daemon restart: 978766     <- a different process; the service had been killed and restarted
 ```
 
-**Killing the daemon kills its services.** The daemon holds every pty master; when it exits those
-close, the slaves get SIGHUP, and the children die. The next daemon then loads the definitions,
-sees `enabled: true`, and starts *new* processes — which looks like it worked unless you compare
-pids, which is how this was found.
+The daemon holds every pty master. When it exits those close, the slaves get SIGHUP, the children
+die, and the next daemon reads `enabled: true` and starts *new* ones — which looks like it worked
+unless you compare pids.
 
-That is worth stating plainly because it contradicts the promise on the tin, and the inversion does
-not fix it by itself. What the inversion actually buys is narrower than the first draft of this
-document implied:
+**Now fixed, by exec-in-place.** On `SIGUSR1` the daemon clears `FD_CLOEXEC` on every live pty
+master, writes a manifest naming `{service, pid, fd, started}`, and calls `syscall.Exec` on the
+binary now at its own path. The exec keeps the pid, so:
 
-- **UI restarts are free**, structurally. A UI holds no pty and no state; it can crash, be upgraded
-  or be killed and nothing notices. This is real and it is the common case — you replace the face
-  often and the fabric rarely.
-- **Daemon restarts are not free**, and cannot be made free by architecture alone. Whoever holds the
-  pty master is a single point of failure for the processes on the other end. Moving that role from
-  the multiplexer to a smaller, rarely-changing daemon reduces how often you have to solve the
-  problem; it does not remove it.
+- the children are still *its* children and can still be waited on, and
+- the pty masters stay open — the process on the other end never sees a hangup, because the master
+  was never closed.
 
-The options, none of them free:
+The successor finds the manifest in its environment, adopts each pty and pid, and supervises them
+without spawning anything. Measured across a real binary swap:
 
-1. **Exec in place, preserving the file descriptors.** `syscall.Exec` replaces the image while
-   keeping the pid and every fd that is not `CLOEXEC`, so the ptys stay open and the children never
-   notice. This is what the Rust fork does, and it works — it was verified on a live session with
-   79,000 seconds of uptime. It upgrades the daemon but cannot survive it crashing.
-2. **Hand the fds to a successor over a unix socket** (`SCM_RIGHTS`). Survives more, costs a
-   handover protocol and a window where both processes exist.
-3. **systemd socket activation with `FDSTORE`**, letting systemd hold the descriptors across a
-   restart. Least code, and ties the design to systemd.
-4. **Accept it**, document it, and tell people to stop services deliberately before upgrading. Worst
-   answer, but honest, and better than a promise that quietly is not kept.
+```
+before: service=1018245 daemon=1018230 version=dev
+after:  service=1018245 daemon=1018230 version=upgraded-2.0
+uptime: 29s   starts: 1               <- never restarted
+```
 
-Until one of these is built, "your processes keep running" means *through UI restarts, logouts and
-network loss* — not through a daemon upgrade. The README says so too.
+What this does *not* cover, stated plainly so nobody discovers it the hard way:
+
+- **A daemon that crashes** takes its services with it. Exec-in-place is a planned upgrade, not a
+  safety net. Surviving a crash needs the descriptors held somewhere else — `SCM_RIGHTS` to a
+  keeper process, or systemd's `FDSTORE`.
+- **Only running processes are handed over.** A service that is backing off or stopped is started
+  from its definition by the successor, like any other.
+- **A manifest from a version the successor does not speak is refused**, and the services are
+  started fresh. That loses the processes, but it loses them loudly, which beats adopting
+  descriptors with the wrong field meanings and wiring services to the wrong ptys.
+- `os.Executable()` is not used directly for the exec target: on Linux it reads `/proc/self/exe`,
+  which after a package upgrade points at the old, deleted inode. Exec'ing that would faithfully
+  reinstall the version being replaced.
 
 ## Client transports, and the mosh idea
 
