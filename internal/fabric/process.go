@@ -33,9 +33,10 @@ type Process struct {
 	Service Service
 	Output  *OutputBuffer
 
-	cmd     *exec.Cmd
-	pty     *os.File
-	started time.Time
+	cmd        *exec.Cmd
+	pty        *os.File
+	started    time.Time
+	ownsOutput bool
 
 	// done is closed once the child has exited and its output has been drained.
 	done chan struct{}
@@ -55,7 +56,13 @@ type StartOptions struct {
 	// which makes curses programs behave very strangely.
 	Cols, Rows int
 	// OutputBytes is the size of the retained output ring. Zero means DefaultOutputBytes.
+	// Ignored when Output is set.
 	OutputBytes int
+	// Output, when set, is an existing buffer to write into instead of a fresh one. The
+	// supervisor uses this so that scrollback survives a restart: you get to see what the
+	// process said just before it died, immediately above the line saying it is coming back.
+	// A borrowed buffer is not closed by Process.Close - the lender still owns it.
+	Output *OutputBuffer
 	// ExtraEnv is appended after the service's own Env.
 	ExtraEnv []string
 }
@@ -100,14 +107,22 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 		return nil, fmt.Errorf("service %s: starting %s: %w", s.Name, path, err)
 	}
 
+	out := opts.Output
+	ownsOutput := false
+	if out == nil {
+		out = NewOutputBuffer(opts.OutputBytes)
+		ownsOutput = true
+	}
+
 	p := &Process{
-		Service: s,
-		Output:  NewOutputBuffer(opts.OutputBytes),
-		cmd:     cmd,
-		pty:     f,
-		started: time.Now(),
-		done:    make(chan struct{}),
-		drained: make(chan struct{}),
+		Service:    s,
+		Output:     out,
+		ownsOutput: ownsOutput,
+		cmd:        cmd,
+		pty:        f,
+		started:    time.Now(),
+		done:       make(chan struct{}),
+		drained:    make(chan struct{}),
 	}
 
 	go p.drain()
@@ -315,9 +330,14 @@ func (p *Process) Stop() Exit {
 }
 
 // Close releases the process's resources. It does not stop the child; use Stop for that.
+//
+// A borrowed output buffer (StartOptions.Output) is left open: it belongs to whoever lent it, and
+// closing it here would cut off every viewer the moment one process restarted.
 func (p *Process) Close() {
 	p.closePTY()
-	p.Output.Close()
+	if p.ownsOutput {
+		p.Output.Close()
+	}
 }
 
 // logf is a placeholder for the fabric's logger, which arrives with the daemon. It deliberately
