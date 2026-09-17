@@ -35,6 +35,8 @@ Usage:
   gozellij add <name> -- <cmd> [args]  define a service
   gozellij start|stop|restart <name>   change its state
   gozellij attach <name>               attach your terminal to it (Ctrl-] detaches)
+  gozellij logs <name>                 print its recent output and exit
+  gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>                   remove it
   gozellij ping                        check the daemon is alive
 
@@ -81,6 +83,10 @@ func run(args []string) error {
 		return cmdRemove(rest)
 	case "attach":
 		return cmdAttach(rest)
+	case "logs":
+		return cmdLogs(rest)
+	case "upgrade":
+		return cmdUpgrade(rest)
 	case "ping":
 		return cmdPing(rest)
 	default:
@@ -161,7 +167,7 @@ func cmdList(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	sock := socketFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -275,7 +281,7 @@ func cmdAdd(args []string) error {
 func cmdLifecycle(op string, args []string) error {
 	fs := flag.NewFlagSet(op, flag.ContinueOnError)
 	sock := socketFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -308,7 +314,7 @@ func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	sock := socketFlag(fs)
 	noReplay := fs.Bool("no-replay", false, "do not replay the recent output before the live stream")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -323,10 +329,180 @@ func cmdAttach(args []string) error {
 	return c.Attach(fs.Arg(0), os.Stdin, os.Stdout, !*noReplay)
 }
 
+func cmdLogs(args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	maxBytes := fs.Int("n", 0, "show at most this many bytes from the end (0 = everything kept)")
+	if err := fs.Parse(hoistName(args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("logs needs exactly one service name")
+	}
+	c, err := connect(*sock)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	out, err := c.Logs(fs.Arg(0), *maxBytes)
+	if err != nil {
+		return err
+	}
+	if out.Truncated {
+		fmt.Fprintf(os.Stderr, "[showing the last %d bytes; older output was dropped]\n", len(out.Data))
+	}
+	os.Stdout.Write(out.Data)
+	if len(out.Data) == 0 {
+		// An empty answer is ambiguous between "quiet" and "not running", so say which.
+		if out.Running {
+			fmt.Fprintln(os.Stderr, "[no output yet; the service is running]")
+		} else {
+			fmt.Fprintln(os.Stderr, "[no output; the service is not running]")
+		}
+	}
+	return nil
+}
+
+// upgradeWait is how long we give the daemon to come back after replacing itself.
+const upgradeWait = 30 * time.Second
+
+// upgradeReplyGrace mirrors the daemon's own pause between accepting an upgrade and exec'ing. The
+// client waits longer than this before it starts looking for the successor, so it does not find
+// the predecessor instead.
+const upgradeReplyGrace = 150 * time.Millisecond
+
+// waitForDaemon polls until a daemon both accepts a connection and answers on it.
+func waitForDaemon(path string, within time.Duration) (*daemon.Client, error) {
+	deadline := time.Now().Add(within)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		c, err := daemon.Dial(path)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if err := c.Ping(); err != nil {
+			// Opened but did not answer: almost certainly the predecessor on its way out.
+			c.Close()
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		return c, nil
+	}
+	return nil, fmt.Errorf("the daemon did not come back within %v (last error: %v); check its log",
+		within, lastErr)
+}
+
+func cmdUpgrade(args []string) error {
+	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path := *sock
+	if path == "" {
+		path = daemon.SocketPath()
+	}
+
+	c, err := connect(path)
+	if err != nil {
+		return err
+	}
+
+	before, err := c.List()
+	if err != nil {
+		c.Close()
+		return fmt.Errorf("listing services before the upgrade: %w", err)
+	}
+	oldVersion, _ := c.PingVersion()
+
+	// Remember the pids. Comparing them afterwards is the only honest way to say whether the
+	// processes really survived - it is the check that caught this being broken in the first
+	// place, so the command that claims to keep them had better run it too.
+	wasRunning := map[string]int{}
+	for _, s := range before.Services {
+		if s.Pid != 0 {
+			wasRunning[s.Service] = s.Pid
+		}
+	}
+
+	reply, err := c.Upgrade()
+	if err != nil {
+		c.Close()
+		return err
+	}
+	c.Close()
+
+	for _, p := range reply.Problems {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", p)
+	}
+	fmt.Printf("upgrading the daemon, carrying %d process(es)...\n", reply.Processes)
+
+	// Wait for the *successor*, which is subtler than waiting for a socket to answer. The old
+	// daemon is still listening for a moment after it accepts the request - it has to be, so the
+	// reply can reach us - so the first connection that succeeds may well be the one that is
+	// about to exec itself out of existence. Connecting and then having the socket die under you
+	// is exactly what that looks like.
+	//
+	// So: give the predecessor time to go, then poll until a connection both opens *and*
+	// answers, retrying the transient failures in between instead of taking the first of them
+	// as final.
+	time.Sleep(3 * upgradeReplyGrace)
+	back, err := waitForDaemon(path, upgradeWait)
+	if err != nil {
+		return err
+	}
+	defer back.Close()
+
+	newVersion, _ := back.PingVersion()
+	after, err := back.List()
+	if err != nil {
+		return fmt.Errorf("listing services after the upgrade: %w", err)
+	}
+
+	kept, changed := 0, []string{}
+	for _, s := range after.Services {
+		old, had := wasRunning[s.Service]
+		if !had {
+			continue
+		}
+		if s.Pid == old {
+			kept++
+		} else {
+			changed = append(changed, fmt.Sprintf("%s (%d -> %d)", s.Service, old, s.Pid))
+		}
+	}
+
+	if oldVersion != newVersion {
+		fmt.Printf("daemon upgraded: %s -> %s\n", displayVersion(oldVersion), displayVersion(newVersion))
+	} else {
+		fmt.Printf("daemon restarted in place (version %s, unchanged)\n", displayVersion(newVersion))
+	}
+	fmt.Printf("%d process(es) kept their pid\n", kept)
+	if len(changed) > 0 {
+		// Do not round this up into a success. A changed pid means the process was restarted,
+		// and whoever ran this needs to know which ones.
+		fmt.Fprintf(os.Stderr, "warning: %d process(es) did NOT survive and were restarted: %s\n",
+			len(changed), strings.Join(changed, ", "))
+		return fmt.Errorf("%d process(es) were restarted by the upgrade", len(changed))
+	}
+	return nil
+}
+
+func displayVersion(v string) string {
+	if v == "" {
+		return "(unknown)"
+	}
+	return v
+}
+
 func cmdRemove(args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	sock := socketFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -348,9 +524,12 @@ func cmdRemove(args []string) error {
 	return nil
 }
 
-// addBoolFlags are the flags of `add` that take no value, which is all hoistName needs to know to
-// tell a flag's value apart from the service name.
-var addBoolFlags = map[string]bool{"-start": true, "--start": true}
+// boolFlags are the flags that take no value, which is all hoistName needs in order to tell a
+// flag's value apart from the service name.
+var boolFlags = map[string]bool{
+	"-start": true, "--start": true,
+	"-no-replay": true, "--no-replay": true,
+}
 
 // hoistName moves the first bare word (the service name) in front of the flags, and stops at "--"
 // so the command's own flags are never touched.
@@ -374,7 +553,7 @@ func hoistName(args []string) []string {
 			flags = append(flags, a)
 			// A non-boolean flag written as "-flag value" consumes the next token; one
 			// written as "-flag=value" does not.
-			if !addBoolFlags[a] && !strings.Contains(a, "=") && i+1 < len(args) {
+			if !boolFlags[a] && !strings.Contains(a, "=") && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}

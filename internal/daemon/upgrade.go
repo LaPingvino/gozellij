@@ -73,22 +73,42 @@ func clearCloexec(fd int) error {
 //
 // It does not return on success, because there is no "after" - the image is gone.
 func ExecSelf(m Manifest, binary string) error {
+	// Only work out the target when the caller did not name one.
+	//
+	// This used to run unconditionally, which meant an explicit argument was silently ignored
+	// and the daemon always exec'd /proc/self/exe. In production that happened to be the right
+	// answer, so it looked fine; in a test it meant the *test binary* exec'd itself, re-ran the
+	// suite, and exec'd again, forever. A parameter that is quietly overridden is the same
+	// failure this project keeps finding elsewhere, so: caller wins.
 	if binary == "" {
 		exe, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("finding my own binary: %w", err)
 		}
 		binary = exe
-	}
-	// Resolve through the symlink so an upgraded binary at the same path is picked up. On Linux
-	// os.Executable() reads /proc/self/exe, which after a package upgrade points at the old,
-	// deleted inode - exec'ing that would faithfully reinstall the version we are replacing.
-	if resolved, err := os.Readlink("/proc/self/exe"); err == nil && resolved != "" {
-		// A replaced binary shows as "/path (deleted)"; in that case prefer the original
-		// path, which now holds the new file.
-		if _, statErr := os.Stat(resolved); statErr == nil {
-			binary = resolved
+
+		// Resolve through the symlink so an upgraded binary at the same path is picked up.
+		// On Linux os.Executable() reads /proc/self/exe, which after a package upgrade points
+		// at the old, deleted inode - exec'ing that would faithfully reinstall the very
+		// version being replaced. A replaced binary reads back as "/path (deleted)", which
+		// will not stat, and in that case the original path (which now holds the new file) is
+		// what we want.
+		if resolved, rerr := os.Readlink("/proc/self/exe"); rerr == nil && resolved != "" {
+			if _, statErr := os.Stat(resolved); statErr == nil {
+				binary = resolved
+			}
 		}
+	}
+
+	// Check the target before committing to it. syscall.Exec does not return on success, so
+	// anything wrong with the binary has to be caught here, while there is still a program able
+	// to complain about it.
+	info, err := os.Stat(binary)
+	if err != nil {
+		return fmt.Errorf("the binary to upgrade to is not there (%s): %w", binary, err)
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return fmt.Errorf("the binary to upgrade to is not executable: %s", binary)
 	}
 
 	payload, err := json.Marshal(m)

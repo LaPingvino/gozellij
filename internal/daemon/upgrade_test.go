@@ -235,3 +235,36 @@ func TestHandoversCoverOnlyRunningServices(t *testing.T) {
 func ipcAdd(command, arg string, start bool) ipc.AddRequest {
 	return ipc.AddRequest{Command: command, Args: []string{arg}, Start: start}
 }
+
+// A failed exec must be reported, not attempted blindly. syscall.Exec does not return on success,
+// so anything wrong with the target has to be caught while there is still a program able to
+// complain - and the daemon deliberately does not close its socket first, so that a refusal here
+// leaves it serving exactly as before rather than turning a failed upgrade into an outage.
+func TestExecSelfRefusesABinaryItCannotRun(t *testing.T) {
+	m := Manifest{Version: ManifestVersion, FromPid: os.Getpid()}
+
+	missing := t.TempDir() + "/not-here"
+	err := ExecSelf(m, missing)
+	if err == nil {
+		t.Fatal("ExecSelf accepted a binary that does not exist (and would have exec'd it)")
+	}
+	if !strings.Contains(err.Error(), "not there") {
+		t.Errorf("error = %v, want it to say the binary is not there", err)
+	}
+
+	// A file that exists but is not executable.
+	notExec := t.TempDir() + "/plain"
+	if werr := os.WriteFile(notExec, []byte("not a binary"), 0o644); werr != nil {
+		t.Fatalf("WriteFile: %v", werr)
+	}
+	if err := ExecSelf(m, notExec); err == nil {
+		t.Error("ExecSelf accepted a non-executable file")
+	} else if !strings.Contains(err.Error(), "not executable") {
+		t.Errorf("error = %v, want it to say the file is not executable", err)
+	}
+
+	// A directory.
+	if err := ExecSelf(m, t.TempDir()); err == nil {
+		t.Error("ExecSelf accepted a directory")
+	}
+}

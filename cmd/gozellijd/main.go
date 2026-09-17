@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/daemon"
 	"github.com/LaPingvino/gozellij/internal/fabric"
@@ -20,6 +21,11 @@ import (
 
 // Version is set at build time with -ldflags "-X main.Version=...".
 var Version = "dev"
+
+// upgradeReplyGrace is how long the daemon waits after accepting an upgrade request before
+// replacing itself, so the client's answer is on the wire first. The exec closes the socket, and a
+// reply that arrives after the socket has gone is a reply nobody reads.
+const upgradeReplyGrace = 150 * time.Millisecond
 
 func main() {
 	var (
@@ -90,6 +96,7 @@ func run(socket, state string, verbose bool) error {
 	if err != nil {
 		return err
 	}
+	srv.SetVersion(Version)
 	log.Info("gozellij daemon listening", "socket", srv.Addr(), "state", state, "version", Version)
 
 	// A signal means "stop serving", not "kill everything". The services are the point; the
@@ -107,6 +114,18 @@ func run(socket, state string, verbose bool) error {
 		select {
 		case err := <-serveErr:
 			return err
+
+		case <-srv.Upgrades():
+			// A client asked. Give its answer a moment to reach the socket before the exec
+			// takes the socket away with it - the reply says what is about to happen, and it
+			// is no use arriving after the thing it describes.
+			time.Sleep(upgradeReplyGrace)
+			if err := upgrade(srv, fab, log); err != nil {
+				log.Error("upgrade failed; carrying on with the current binary", "err", err)
+				continue
+			}
+			log.Info("shutting down the daemon; services keep running", "reason", "upgrade")
+			return nil
 
 		case sig := <-sigs:
 			if sig == syscall.SIGUSR1 {
@@ -139,11 +158,13 @@ func upgrade(srv *daemon.Server, fab *fabric.Fabric, log *slog.Logger) error {
 
 	log.Info("upgrading in place", "processes", len(manifest.Processes), "pid", os.Getpid())
 
-	// Close the listener so the successor can bind. The socket is the daemon's, not the
-	// services'; the processes are unaffected.
-	if err := srv.Close(); err != nil {
-		log.Warn("error closing the socket before upgrade", "err", err)
-	}
-
+	// Deliberately *not* closing the listener first.
+	//
+	// The obvious order - close, then exec - has a trap in it: if the exec fails, the daemon is
+	// still running but is serving nothing, and a failed upgrade has silently become an outage.
+	// The listener's descriptor is close-on-exec like everything else Go opens, so a successful
+	// exec closes it for us; the socket file is then stale, and the successor reclaims it the
+	// same way it would after a crash. A failed exec, meanwhile, leaves us listening exactly as
+	// before, which is the whole point.
 	return daemon.ExecSelf(manifest, "")
 }

@@ -25,12 +25,28 @@ type Server struct {
 
 	ln net.Listener
 
-	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
-	closed bool
+	mu      sync.Mutex
+	conns   map[net.Conn]struct{}
+	closed  bool
+	version string
+
+	// upgrades carries an in-band upgrade request out to whoever owns the process (main), since
+	// replacing the binary is not something a connection handler can do to itself.
+	upgrades chan struct{}
 
 	wg sync.WaitGroup
 }
+
+// SetVersion records the daemon's version so clients can see what they are talking to, and what
+// they are talking to after an upgrade.
+func (s *Server) SetVersion(v string) {
+	s.mu.Lock()
+	s.version = v
+	s.mu.Unlock()
+}
+
+// Upgrades fires when a client asks for an in-place upgrade.
+func (s *Server) Upgrades() <-chan struct{} { return s.upgrades }
 
 // ErrDaemonRunning is returned when another daemon already owns the socket.
 var ErrDaemonRunning = errors.New("another gozellij daemon is already running")
@@ -70,11 +86,12 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 	}
 
 	return &Server{
-		fab:   fab,
-		log:   log,
-		path:  path,
-		ln:    ln,
-		conns: make(map[net.Conn]struct{}),
+		fab:      fab,
+		log:      log,
+		path:     path,
+		ln:       ln,
+		conns:    make(map[net.Conn]struct{}),
+		upgrades: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -233,7 +250,16 @@ func (s *Server) handle(conn net.Conn) {
 func (s *Server) dispatch(req ipc.Request) ipc.Response {
 	switch req.Op {
 	case ipc.OpPing:
-		return ipc.OKResponse(req.ID, map[string]string{"pong": "gozellij"})
+		s.mu.Lock()
+		v := s.version
+		s.mu.Unlock()
+		return ipc.OKResponse(req.ID, map[string]string{"pong": "gozellij", "version": v})
+
+	case ipc.OpServiceLogs:
+		return s.logs(req)
+
+	case ipc.OpUpgrade:
+		return s.requestUpgrade(req)
 
 	case ipc.OpServiceAdd:
 		return s.add(req)
@@ -311,6 +337,53 @@ func (s *Server) add(req ipc.Request) ipc.Response {
 		return ipc.Err(req.ID, err)
 	}
 	return s.statusAfter(req)
+}
+
+// logs returns the retained output of a service.
+func (s *Server) logs(req ipc.Request) ipc.Response {
+	var lr ipc.LogsRequest
+	if len(req.Payload) > 0 {
+		if err := json.Unmarshal(req.Payload, &lr); err != nil {
+			return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+		}
+	}
+	out, err := s.fab.Output(req.Service)
+	if err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	data, _ := out.Snapshot()
+
+	reply := ipc.LogsReply{Data: data}
+	if lr.MaxBytes > 0 && len(data) > lr.MaxBytes {
+		reply.Data = data[len(data)-lr.MaxBytes:]
+		reply.Truncated = true
+	}
+	if st, serr := s.fab.Status(req.Service); serr == nil {
+		reply.Running = st.State == fabric.StateRunning
+	}
+	return ipc.OKResponse(req.ID, reply)
+}
+
+// requestUpgrade hands the request out to the process owner and answers straight away.
+//
+// The answer has to leave before the exec does, because the exec takes the socket with it. So the
+// reply says what is *about* to happen - including which services will not survive - rather than
+// reporting afterwards, when there would be no connection left to report on.
+func (s *Server) requestUpgrade(req ipc.Request) ipc.Response {
+	manifest, problems := PrepareHandover(s.fab)
+
+	reply := ipc.UpgradeReply{Accepted: true, Processes: len(manifest.Processes)}
+	for _, p := range problems {
+		reply.Problems = append(reply.Problems, p.Error())
+	}
+
+	select {
+	case s.upgrades <- struct{}{}:
+	default:
+		// One is already queued. Say so rather than silently doing nothing with the second.
+		return ipc.Err(req.ID, errors.New("an upgrade is already in progress"))
+	}
+	return ipc.OKResponse(req.ID, reply)
 }
 
 func (s *Server) list(req ipc.Request) ipc.Response {

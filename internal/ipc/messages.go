@@ -24,6 +24,10 @@ const (
 	OpAttach Op = "attach"
 	// OpResize tells the daemon the attached client's terminal size.
 	OpResize Op = "resize"
+	// OpServiceLogs returns the retained output of a service without attaching to it.
+	OpServiceLogs Op = "service.logs"
+	// OpUpgrade asks the daemon to replace its own binary in place, keeping every process.
+	OpUpgrade Op = "upgrade"
 )
 
 // Request is one call from a client.
@@ -147,6 +151,38 @@ type StatusReply struct {
 	LastError   string    `json:"last_error,omitempty"`
 	Enabled     bool      `json:"enabled"`
 	Command     string    `json:"command,omitempty"`
+}
+
+// LogsRequest is the payload of OpServiceLogs.
+type LogsRequest struct {
+	// MaxBytes limits the answer to the most recent bytes. Zero means everything retained.
+	MaxBytes int `json:"max_bytes,omitempty"`
+}
+
+// LogsReply carries retained output.
+//
+// Data is raw bytes, escape sequences and all, because that is what the process wrote; JSON
+// encodes it as base64, which is acceptable for a one-shot query even though it would be wasteful
+// for the live stream (which uses data frames instead).
+type LogsReply struct {
+	Data []byte `json:"data"`
+	// Truncated says whether older output was left out, so "this is everything" and "this is
+	// the tail" are distinguishable rather than both just being some bytes.
+	Truncated bool `json:"truncated,omitempty"`
+	// Running says whether anything is producing output right now; without it an empty answer
+	// is ambiguous between "quiet" and "not running".
+	Running bool `json:"running"`
+}
+
+// UpgradeReply describes what an in-place upgrade did.
+type UpgradeReply struct {
+	// Accepted is false when the daemon refused to try.
+	Accepted bool `json:"accepted"`
+	// Processes is how many running processes are being carried across.
+	Processes int `json:"processes"`
+	// Problems names services that will NOT survive, so the caller learns it before the
+	// connection drops rather than by noticing a changed pid afterwards.
+	Problems []string `json:"problems,omitempty"`
 }
 
 // ListReply is the payload of a successful OpServiceList.

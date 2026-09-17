@@ -152,6 +152,46 @@ func (c *Client) Restart(name string) (ipc.StatusReply, error) {
 	return c.callStatus(ipc.OpServiceRestrt, name, nil)
 }
 
+// Logs returns the retained output of a service.
+func (c *Client) Logs(name string, maxBytes int) (ipc.LogsReply, error) {
+	resp, err := c.Call(ipc.OpServiceLogs, name, ipc.LogsRequest{MaxBytes: maxBytes})
+	if err != nil {
+		return ipc.LogsReply{}, err
+	}
+	var out ipc.LogsReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.LogsReply{}, fmt.Errorf("decoding the logs of %s: %w", name, err)
+	}
+	return out, nil
+}
+
+// Upgrade asks the daemon to replace its binary in place. The connection dies immediately
+// afterwards, by design - the daemon execs and takes the socket with it.
+func (c *Client) Upgrade() (ipc.UpgradeReply, error) {
+	resp, err := c.Call(ipc.OpUpgrade, "", nil)
+	if err != nil {
+		return ipc.UpgradeReply{}, err
+	}
+	var out ipc.UpgradeReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.UpgradeReply{}, fmt.Errorf("decoding the upgrade reply: %w", err)
+	}
+	return out, nil
+}
+
+// PingVersion returns the daemon's version string.
+func (c *Client) PingVersion() (string, error) {
+	resp, err := c.Call(ipc.OpPing, "", nil)
+	if err != nil {
+		return "", err
+	}
+	var out map[string]string
+	if err := resp.Decode(&out); err != nil {
+		return "", err
+	}
+	return out["version"], nil
+}
+
 // Remove deletes a service.
 func (c *Client) Remove(name string) error {
 	_, err := c.Call(ipc.OpServiceRemove, name, nil)
