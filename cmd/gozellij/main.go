@@ -320,13 +320,14 @@ func cmdAttach(args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("attach needs exactly one service name")
 	}
-	c, err := connect(*sock)
-	if err != nil {
-		return err
+	path := *sock
+	if path == "" {
+		path = daemon.SocketPath()
 	}
-	defer c.Close()
-
-	return c.Attach(fs.Arg(0), os.Stdin, os.Stdout, !*noReplay)
+	// AttachLoop rather than a single attach: a daemon upgrade takes the socket with it, and a
+	// terminal that silently returns to a shell prompt cannot tell you whether your service died
+	// or the daemon was replaced.
+	return daemon.AttachLoop(path, fs.Arg(0), os.Stdin, os.Stdout, !*noReplay)
 }
 
 func cmdLogs(args []string) error {

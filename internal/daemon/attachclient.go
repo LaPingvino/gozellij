@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/ipc"
 	"golang.org/x/term"
@@ -21,11 +22,94 @@ import (
 // keeps running after you walk away.
 const DetachKey = 0x1d
 
+// ReattachWindow is how long an attached client keeps trying to get back in after the stream ends
+// unexpectedly.
+//
+// The case this exists for is a daemon upgrade: the exec takes the socket with it, so every attach
+// drops even though nothing is wrong and the service never noticed. Without this, "upgrade the
+// daemon without the processes noticing" is true for the processes and a lie for the person
+// watching them, whose terminal just returns to a shell prompt with no explanation.
+const ReattachWindow = 15 * time.Second
+
+// AttachLoop connects the terminal to a service, and reconnects if the daemon goes away underneath
+// it.
+//
+// It returns when the user detaches, when the service is gone, or when the daemon does not come
+// back within ReattachWindow.
+func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool) error {
+	first := true
+	for {
+		c, err := Dial(socket)
+		if err != nil {
+			if first {
+				return err
+			}
+			return fmt.Errorf("lost the daemon and could not get back: %w", err)
+		}
+
+		detached, err := c.attachOnce(service, in, out, replay && first)
+		c.Close()
+		if err != nil {
+			return err
+		}
+		if detached {
+			return nil
+		}
+
+		// The stream ended without us asking. Either the daemon went away - an upgrade, most
+		// likely - or the connection broke. Say so, then try to get back in.
+		fmt.Fprintf(os.Stderr, "\r\n[gozellij: connection to the daemon ended; reattaching...]\r\n")
+
+		back, werr := waitForDaemonClient(socket, ReattachWindow)
+		if werr != nil {
+			return fmt.Errorf("the daemon did not come back: %w", werr)
+		}
+		back.Close()
+
+		// Do not replay on the way back in. The terminal already shows the history, and
+		// repainting it would duplicate what is on screen; but output produced while we were
+		// away is genuinely missing, and a client that cannot tell is exactly what this
+		// project keeps refusing to ship.
+		fmt.Fprintf(os.Stderr, "\r\n[gozellij: reattached; anything printed while the daemon "+
+			"was restarting was not captured here - `gozellij logs %s` has it]\r\n", service)
+		first = false
+		replay = false
+	}
+}
+
+// waitForDaemonClient polls until the daemon both accepts and answers.
+func waitForDaemonClient(socket string, within time.Duration) (*Client, error) {
+	deadline := time.Now().Add(within)
+	var last error
+	for time.Now().Before(deadline) {
+		c, err := Dial(socket)
+		if err == nil {
+			if perr := c.Ping(); perr == nil {
+				return c, nil
+			} else {
+				c.Close()
+				last = perr
+			}
+		} else {
+			last = err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("gave up after %v (last error: %v)", within, last)
+}
+
 // Attach connects the local terminal to a service until the user detaches.
 //
 // in and out are normally os.Stdin and os.Stdout; they are parameters so this is testable without
 // a controlling terminal.
 func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool) error {
+	_, err := c.attachOnce(service, in, out, replay)
+	return err
+}
+
+// attachOnce runs one attach session. It reports whether the user detached deliberately, which is
+// the difference between "we are done" and "we were cut off".
+func (c *Client) attachOnce(service string, in *os.File, out io.Writer, replay bool) (bool, error) {
 	cols, rows := 0, 0
 	restore := func() {}
 
@@ -37,7 +121,7 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 		// to the program you are attached to and not to us.
 		state, err := term.MakeRaw(int(in.Fd()))
 		if err != nil {
-			return fmt.Errorf("putting the terminal in raw mode: %w", err)
+			return false, fmt.Errorf("putting the terminal in raw mode: %w", err)
 		}
 		restore = func() { _ = term.Restore(int(in.Fd()), state) }
 	}
@@ -45,7 +129,7 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 
 	resp, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay})
 	if err != nil {
-		return err
+		return false, err
 	}
 	_ = resp
 
@@ -80,13 +164,13 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 		<-inputDone
 		restore()
 		fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
-		return nil
+		return true, nil
 	default:
 	}
 
 	c.Close()
 	<-inputDone
-	return err
+	return false, err
 }
 
 // pumpInput copies keystrokes to the daemon until the detach key or end of input.
