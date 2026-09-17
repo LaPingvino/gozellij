@@ -115,6 +115,21 @@ func (a *attachSession) writeData(b []byte) error {
 
 // pumpOutput forwards the service's output until the subscription ends.
 func (a *attachSession) pumpOutput(sub *fabric.Subscriber) {
+	defer func() {
+		// The subscription can also end *because* this client fell behind - the buffer closes
+		// the channel to wake a reader that would otherwise block forever. Check on the way
+		// out, so a client that lagged at exactly the wrong moment is still told why its
+		// stream stopped instead of watching it end for no stated reason.
+		if sub.Lagged() {
+			_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
+				Kind:    ipc.EventLagged,
+				Service: a.service,
+				At:      time.Now(),
+				Message: "output was dropped because this client could not keep up; re-attach to resynchronise",
+			})
+		}
+	}()
+
 	for chunk := range sub.C() {
 		if err := a.writeData(chunk); err != nil {
 			return

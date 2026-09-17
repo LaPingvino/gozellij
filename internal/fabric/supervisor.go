@@ -263,7 +263,13 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 				s.setStatus(func(st *Status) { st.State = StateFailed })
 				return
 			}
-			if !s.backOff(ctx, 0) {
+			delay, restarts := s.nextBackoff(0)
+			s.setStatus(func(st *Status) {
+				st.State = StateBackingOff
+				st.Restarts = restarts
+				st.NextRestart = time.Now().Add(delay)
+			})
+			if !s.waitBackoff(ctx, delay, restarts) {
 				return
 			}
 			continue
@@ -278,6 +284,11 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 			st.StartedAt = p.StartedAt()
 			st.TotalStarts++
 			st.LastError = ""
+			// Clear the old deadline. Leaving it set meant a running service carried a
+			// restart time that had already passed, for the rest of its life - and the CLI
+			// grew a `time.Until(...) > 0` guard to hide it, which treated the symptom and
+			// left the wrong data on the wire for every other consumer.
+			st.NextRestart = time.Time{}
 		})
 
 		// Wait for the process to exit, or for us to be told to stop.
@@ -294,49 +305,81 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		s.mu.Lock()
 		s.cur = nil
 		s.mu.Unlock()
+
+		// Work out where we are going *before* publishing, so the snapshot a watcher sees is
+		// internally consistent. Publishing the exit first and the state afterwards opened a
+		// window - announced by Changed(), so watchers were actively invited into it - where
+		// Status said StateRunning, Pid 0, HasExited true, all at once. Every one of those
+		// fields was true of a different instant.
+		next := StateBackingOff
+		var delay time.Duration
+		var restarts int
+		switch {
+		case ctx.Err() != nil:
+			next = StateStopped
+		case !s.svc.Restart.ShouldRestart(exit):
+			// Terminal, and say so plainly. A service that has finished is not "stopped" -
+			// stopped is something an operator did.
+			next = StateFailed
+		default:
+			// Work the delay out now, so it can be published together with the state it
+			// belongs to. Announcing StateBackingOff first and filling in NextRestart
+			// afterwards just moves the inconsistency rather than removing it: watchers then
+			// see a service backing off until an unspecified time, which is not an
+			// improvement on a running service with a stale deadline.
+			delay, restarts = s.nextBackoff(ran)
+		}
+
 		s.setStatus(func(st *Status) {
 			st.LastExit = exit
 			st.HasExited = true
 			st.Pid = 0
 			st.StartedAt = time.Time{}
+			st.State = next
+			if next == StateBackingOff {
+				st.Restarts = restarts
+				st.NextRestart = time.Now().Add(delay)
+			}
 		})
 
-		if ctx.Err() != nil {
-			s.setStatus(func(st *Status) { st.State = StateStopped })
+		if next != StateBackingOff {
 			return
 		}
 
-		if !s.svc.Restart.ShouldRestart(exit) {
-			// Terminal, and say so plainly. A service that has finished is not "stopped" -
-			// stopped is something an operator did.
-			s.setStatus(func(st *Status) { st.State = StateFailed })
-			return
-		}
-
-		if !s.backOff(ctx, ran) {
+		if !s.waitBackoff(ctx, delay, restarts) {
 			return
 		}
 	}
 }
 
-// backOff waits before the next attempt. It reports false if the wait was interrupted, in which
-// case the loop should end.
-func (s *Supervisor) backOff(ctx context.Context, ran time.Duration) bool {
+// nextBackoff advances the flapping tracker and reports the delay and restart count. Separated
+// from the waiting so the caller can publish them in the same Status update as the state.
+func (s *Supervisor) nextBackoff(ran time.Duration) (time.Duration, int) {
 	s.mu.Lock()
-	delay := s.tracker.Died(ran)
-	restarts := s.tracker.Restarts
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.tracker.Died(ran), s.tracker.Restarts
+}
 
-	s.setStatus(func(st *Status) {
-		st.State = StateBackingOff
-		st.Restarts = restarts
-		st.NextRestart = time.Now().Add(delay)
-	})
-
+// waitBackoff announces the restart and waits. It reports false if the wait was interrupted, in
+// which case the loop should end.
+func (s *Supervisor) waitBackoff(ctx context.Context, delay time.Duration, restarts int) bool {
 	// Announce the restart in the output itself. A viewer watching a pane should not have to
 	// guess why the program they were using suddenly started again from the top.
-	fmt.Fprintf(s.out, "\r\n[gozellij] %s restarting in %s (restart %d)\r\n",
-		s.svc.Name, delay.Round(time.Millisecond), restarts)
+	//
+	// If that write fails the buffer is closed, which means every future line this service
+	// produces goes nowhere and no viewer can ever attach to it again. Restarting into a void
+	// is not a service, it is a process nobody can see - so stop, and record why, instead of
+	// looping forever in the dark.
+	if _, werr := fmt.Fprintf(s.out, "\r\n[gozellij] %s restarting in %s (restart %d)\r\n",
+		s.svc.Name, delay.Round(time.Millisecond), restarts); werr != nil {
+		s.setStatus(func(st *Status) {
+			st.State = StateFailed
+			st.LastError = fmt.Sprintf("cannot write to this service's output buffer (%v); "+
+				"not restarting, because nothing would be able to see it", werr)
+			st.NextRestart = time.Time{}
+		})
+		return false
+	}
 
 	select {
 	case <-s.after(delay):

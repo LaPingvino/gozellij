@@ -55,16 +55,21 @@ func NewOutputBuffer(capacity int) *OutputBuffer {
 // Write records output. It never returns an error and never blocks on a slow reader: dropping the
 // oldest scrollback is recoverable, wedging the child process is not.
 func (o *OutputBuffer) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// The closed check comes first, before the empty-write short-circuit. The other order let
+	// Write(nil) return success on a closed buffer while Write(oneByte) returned an error, so
+	// whether the caller learned about its stale handle depended on how much it happened to be
+	// writing. The comment below says a write after close is a bug worth surfacing; this makes
+	// that true for every write.
 	if o.closed {
 		// Report it rather than pretending. A write after close means the caller has a stale
 		// handle, which is a bug worth surfacing.
 		return 0, ErrOutputClosed
+	}
+	if len(p) == 0 {
+		return 0, nil
 	}
 
 	o.append(p)
@@ -185,7 +190,7 @@ func (o *OutputBuffer) Close() {
 	}
 	o.closed = true
 	for id, s := range o.subs {
-		close(s.ch)
+		s.closeCh()
 		delete(o.subs, id)
 	}
 }
@@ -198,13 +203,21 @@ type Subscriber struct {
 	id       int
 	from     int64
 
+	// closeOnce guards ch, which three different paths want to close: Detach, the buffer's
+	// Close, and the lag path below.
+	closeOnce sync.Once
+
 	mu     sync.Mutex
 	queued int
 	lagged bool
 }
 
-// C is the channel of output chunks. It is closed when the buffer closes or the subscriber is
-// detached. Chunks are owned by the receiver and are not reused.
+// closeCh ends the subscription exactly once, whichever path gets there first.
+func (s *Subscriber) closeCh() { s.closeOnce.Do(func() { close(s.ch) }) }
+
+// C is the channel of output chunks. It is closed when the buffer closes, when the subscriber is
+// detached, or when the subscriber falls too far behind - in that last case Lagged() reports why,
+// and the reader should re-Attach. Chunks are owned by the receiver and are not reused.
 func (s *Subscriber) C() <-chan []byte { return s.ch }
 
 // From is the stream offset this subscriber started at.
@@ -231,6 +244,12 @@ func (s *Subscriber) offer(p []byte, _ int64) {
 	if s.queued+len(p) > s.maxBytes {
 		s.lagged = true
 		s.mu.Unlock()
+		// Wake the reader by ending the stream. Without this, a subscriber that lagged while
+		// its queue happened to be empty was left blocked on a channel that would never
+		// receive anything again: the fact that it had missed data was recorded on Lagged(),
+		// which a reader sitting in `range sub.C()` is by definition not consulting. A report
+		// filed where nobody is looking is design rule 1 all over again.
+		s.closeCh()
 		return
 	}
 	s.queued += len(p)
@@ -248,6 +267,7 @@ func (s *Subscriber) offer(p []byte, _ int64) {
 		s.lagged = true
 		s.queued -= len(p)
 		s.mu.Unlock()
+		s.closeCh()
 	}
 }
 
@@ -270,5 +290,5 @@ func (s *Subscriber) Detach() {
 		return
 	}
 	delete(o.subs, s.id)
-	close(s.ch)
+	s.closeCh()
 }
