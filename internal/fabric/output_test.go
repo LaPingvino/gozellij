@@ -100,24 +100,26 @@ func TestAttachHasNoGapBetweenSnapshotAndStream(t *testing.T) {
 	o := NewOutputBuffer(1 << 16)
 	mustWrite(t, o, "before;")
 
+	// Write a bounded number of chunks, fewer than a subscriber's channel can hold, so that
+	// "did not lag" is guaranteed by arithmetic rather than by the drainer winning a race. An
+	// unthrottled writer will genuinely outrun any reader, and then lagging is correct
+	// behaviour - testing the no-gap guarantee against that would be testing the scheduler.
+	const chunks = 1000 // < subscriberChunks, and 1000 bytes << the 64 KiB byte budget
 	var wg sync.WaitGroup
-	stop := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		for i := 0; i < chunks; i++ {
 			if _, err := o.Write([]byte("x")); err != nil {
 				return
 			}
+			// Spread the writes out so the Attach below lands mid-stream, which is the
+			// window this test exists to cover.
+			time.Sleep(10 * time.Microsecond)
 		}
 	}()
 
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
 	snap, sub, err := o.Attach(1 << 16)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
@@ -141,14 +143,13 @@ func TestAttachHasNoGapBetweenSnapshotAndStream(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(5 * time.Millisecond)
-	close(stop)
 	wg.Wait()
 	sub.Detach()
 	<-drained
 
 	if sub.Lagged() {
-		t.Fatal("subscriber was drained continuously but still fell behind")
+		t.Fatalf("subscriber lagged although only %d chunks were written into a %d-chunk channel",
+			chunks, subscriberChunks)
 	}
 	liveMu.Lock()
 	defer liveMu.Unlock()
