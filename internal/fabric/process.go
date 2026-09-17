@@ -69,6 +69,14 @@ type StartOptions struct {
 	Output *OutputBuffer
 	// ExtraEnv is appended after the service's own Env.
 	ExtraEnv []string
+	// LogDir is where each service's output is appended on disk. Empty means output is kept in
+	// RAM only, which is what every test that does not care about logs gets.
+	//
+	// It lives on StartOptions rather than being derived inside the fabric because the daemon
+	// owns where state goes, and a test must be able to put it under t.TempDir().
+	LogDir string
+	// LogBytes is the size at which a log file is rotated. Zero means DefaultLogBytes.
+	LogBytes int64
 }
 
 const (

@@ -37,6 +37,13 @@ type Service struct {
 	// clears it, so something you stopped on purpose stays stopped afterwards rather than
 	// quietly coming back - which is the behaviour that makes people distrust a supervisor.
 	Enabled bool `json:"enabled"`
+	// NoLog turns off writing this service's output to disk.
+	//
+	// It is off-by-absence rather than on-by-absence because the safe default for a supervisor
+	// is to keep the output: "what did that build print" is the question logs exist for. But a
+	// login shell prints whatever you `cat`, so the choice has to be available per service, and
+	// it has to be visible in the file an operator reads at 3am.
+	NoLog bool `json:"no_log,omitempty"`
 	// CreatedAt is when the service was first defined.
 	CreatedAt time.Time `json:"created_at"`
 }

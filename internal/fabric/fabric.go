@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -323,6 +324,12 @@ func (f *Fabric) Remove(name string) error {
 	}
 	s.Stop()
 
+	// Close the buffer as well as the supervisor. It is what keeps the log writer alive, and a
+	// service that no longer exists should not still have a file handle open on its behalf.
+	// Anything attached to it has its stream ended, which is the honest answer to "the service
+	// you were watching has been removed".
+	s.Output().Close()
+
 	f.mu.Lock()
 	delete(f.sups, name)
 	f.mu.Unlock()
@@ -354,6 +361,52 @@ func (f *Fabric) List() []Status {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out
+}
+
+// LogTail is one answer to "what did this service print".
+type LogTail struct {
+	Data []byte
+	// Truncated says whether older output was left out, so "this is everything" and "this is
+	// the tail" are distinguishable rather than both being some bytes.
+	Truncated bool
+	// Path is the file the answer came from, or "" when it came from the in-memory ring - which
+	// is worth saying out loud, because one of those survives the daemon and the other does not.
+	Path string
+}
+
+// Logs returns what a service printed, preferring the file on disk.
+//
+// The file is the point: a ring in RAM answers "what is it doing" but not "what did that build
+// print last night", because the daemon it lived in has been replaced twice since. The ring is the
+// fallback for a service whose logging is off, and for the window between a service being defined
+// and its first byte reaching disk.
+func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
+	// Look the supervisor up first, so an unknown service is reported as unknown rather than as
+	// a missing file.
+	sup, err := f.supervisor(name)
+	if err != nil {
+		return LogTail{}, err
+	}
+
+	if f.opts.LogDir != "" {
+		data, truncated, rerr := ReadLogTail(f.opts.LogDir, name, maxBytes)
+		switch {
+		case rerr == nil:
+			return LogTail{Data: data, Truncated: truncated, Path: LogPath(f.opts.LogDir, name)}, nil
+		case errors.Is(rerr, os.ErrNotExist):
+			// No file yet, or logging is off for this service. Fall through to the ring.
+		default:
+			return LogTail{}, rerr
+		}
+	}
+
+	data, _ := sup.Output().Snapshot()
+	truncated := false
+	if maxBytes > 0 && len(data) > maxBytes {
+		data = data[len(data)-maxBytes:]
+		truncated = true
+	}
+	return LogTail{Data: data, Truncated: truncated}, nil
 }
 
 // Output returns a service's output buffer, which outlives any one process of it.

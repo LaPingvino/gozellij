@@ -20,6 +20,12 @@ that added the line. Nothing is marked verified because it looks like it should 
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.
+- **Output that outlives the daemon.** `gozellij logs <name>` reads
+  `$XDG_STATE_HOME/gozellij/logs/<name>.log`, appended as the service runs and rotated at 16 MiB
+  with one generation kept; `gozellij logs -f` follows the live buffer. **Verified:** a service
+  printed a unique string, the daemon was `kill -9`'d, a new daemon was started, and `gozellij
+  logs` still had the string. Each daemon writes a line into the file when it opens it, so two
+  runs of the same service do not read as one.
 - **Survives a reboot**, for services marked enabled — `Enabled` is the desired state on disk and
   `Load` starts them. **Verified** across a simulated restart, not yet across a real reboot.
 
@@ -34,9 +40,12 @@ grid has to reimplement those and then be worse at them.
    works, because the attach is a byte pipe). This is the story that reopens Phase 3 — a
    product-owner pass argued panes should be cut because no user story needed them, and it was
    right about its four personas and wrong about the actual user.
-2. **Scrollback is 256 KiB of RAM and dies with the daemon.** For a shell you live in, that is the
-   difference between "what did that build print" and "I have no idea". Logs need to reach disk,
-   and `logs -f` needs to exist. This is the top of the work queue.
+2. ~~**Scrollback is 256 KiB of RAM and dies with the daemon.**~~ Done — see above. What it cost:
+   for a shell you live in, the log file now holds everything you typed at it and everything it
+   answered, including whatever you `cat`. gezellij never wrote that anywhere. 0600 on the file and
+   0700 on the directory are necessary and not sufficient, so `add -log off` exists per service and
+   `gozellijd -logs off` for the lot. The honest summary is that the daily-driver gap is closed and
+   a new decision has been handed to the user, which is better than closing it quietly.
 3. **A shell to attach to by default.** Replacing a login multiplexer means `gozellij` with no
    arguments should land you somewhere sensible, not print usage.
 4. **Nothing checks that the promise holds on this box.** "Through logouts" depends on

@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -36,6 +38,7 @@ Usage:
   gozellij start|stop|restart <name>   change its state
   gozellij attach <name>               attach your terminal to it (Ctrl-] detaches)
   gozellij logs <name>                 print its recent output and exit
+  gozellij logs -f <name>              follow its output until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>                   remove it
   gozellij ping                        check the daemon is alive
@@ -45,6 +48,15 @@ Flags for add:
   -dir <path>                     working directory
   -env KEY=VALUE                  repeatable
   -start                          start it immediately
+  -log on|off                     write its output to disk (default on)
+
+Flags for logs:
+  -n <bytes>   show at most this many bytes from the end
+  -f           follow the live output instead of printing the file
+
+logs reads the file on disk, which outlives the daemon; logs -f follows the daemon's live buffer,
+which does not. A service added with -log off has no file, and logs then falls back to that
+buffer - which holds a few hundred KiB and dies with the daemon.
 
 Global:
   -socket <path>   daemon socket (default $XDG_RUNTIME_DIR/gozellij/fabric.sock)
@@ -220,6 +232,11 @@ func printStatus(s ipc.StatusReply) {
 	if s.LastError != "" {
 		fmt.Fprintf(w, "last error:\t%s\n", s.LastError)
 	}
+	// A log that is not being written is a failure nobody notices until they go looking for
+	// output that was never there, which is the worst possible moment to find out.
+	if s.LogError != "" {
+		fmt.Fprintf(w, "log error:\t%s\n", s.LogError)
+	}
 	w.Flush()
 }
 
@@ -229,6 +246,7 @@ func cmdAdd(args []string) error {
 	restart := fs.String("restart", "no", "no|on-failure|always")
 	dir := fs.String("dir", "", "working directory")
 	start := fs.Bool("start", false, "start it immediately")
+	logMode := fs.String("log", "on", "on|off: write this service's output to disk")
 	var env stringList
 	fs.Var(&env, "env", "KEY=VALUE (repeatable)")
 	// People type the service name first - `gozellij add web -restart always -- caddy run` - but
@@ -257,6 +275,17 @@ func cmdAdd(args []string) error {
 			cmdArgs[0], name)
 	}
 
+	var noLog bool
+	switch *logMode {
+	case "on":
+	case "off":
+		noLog = true
+	default:
+		// Name the value. "invalid -log" without saying what was wrong with it is the kind of
+		// small unkindness this project keeps trying not to commit.
+		return fmt.Errorf("-log is %q; it takes on or off", *logMode)
+	}
+
 	c, err := connect(*sock)
 	if err != nil {
 		return err
@@ -270,6 +299,7 @@ func cmdAdd(args []string) error {
 		Env:     env,
 		Restart: *restart,
 		Start:   *start,
+		NoLog:   noLog,
 	})
 	if err != nil {
 		return err
@@ -333,7 +363,8 @@ func cmdAttach(args []string) error {
 func cmdLogs(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	sock := socketFlag(fs)
-	maxBytes := fs.Int("n", 0, "show at most this many bytes from the end (0 = everything kept)")
+	maxBytes := fs.Int("n", 0, "show at most this many bytes from the end (0 = as much as fits)")
+	follow := fs.Bool("f", false, "follow the live output until interrupted")
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
@@ -346,12 +377,31 @@ func cmdLogs(args []string) error {
 	}
 	defer c.Close()
 
+	if *follow {
+		// Ctrl-C is how you stop following, so it must end this cleanly rather than looking
+		// like a crash. Closing the connection unblocks the read.
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-stop
+			c.Close()
+		}()
+		return c.FollowLogs(fs.Arg(0), *maxBytes, os.Stdout, os.Stderr)
+	}
+
 	out, err := c.Logs(fs.Arg(0), *maxBytes)
 	if err != nil {
 		return err
 	}
 	if out.Truncated {
-		fmt.Fprintf(os.Stderr, "[showing the last %d bytes; older output was dropped]\n", len(out.Data))
+		if out.Path != "" {
+			// Say where the rest is. A truncation notice that does not name the file leaves
+			// the reader with a question and no way to answer it.
+			fmt.Fprintf(os.Stderr, "[showing the last %d bytes; the whole log is in %s]\n",
+				len(out.Data), out.Path)
+		} else {
+			fmt.Fprintf(os.Stderr, "[showing the last %d bytes; older output was dropped]\n", len(out.Data))
+		}
 	}
 	os.Stdout.Write(out.Data)
 	if len(out.Data) == 0 {

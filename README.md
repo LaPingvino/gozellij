@@ -73,7 +73,8 @@ $ gozellij ls
 NAME   STATE    PID      UPTIME  RESTARTS  COMMAND
 clock  running  1027290  9s      -         sh
 
-$ gozellij logs clock -n 40      # recent output, without attaching
+$ gozellij logs clock -n 40      # what it printed, from disk; survives the daemon dying
+$ gozellij logs -f clock         # follow it live; Ctrl-C stops watching, not the service
 $ gozellij attach clock          # watch it live; Ctrl-] detaches, it keeps running
 ```
 
@@ -93,6 +94,20 @@ ptys stayed open and the children stayed children. `gozellij upgrade` compares t
 fails loudly if any process did not survive, because a promise like that is worth checking rather
 than asserting.
 
+### Where the output goes
+
+Everything a service prints is appended to `$XDG_STATE_HOME/gozellij/logs/<name>.log`, rotated at
+16 MiB with one generation kept. `gozellij logs` reads that file, so it answers "what did that
+build print last night" even though the daemon has been replaced twice since; `gozellij logs -f`
+follows the daemon's live buffer instead, which is a few hundred KiB of RAM and is the thing that
+does *not* survive.
+
+The consequence is worth stating plainly rather than discovering: for an interactive shell, that
+file holds everything you typed at it and everything it answered — including whatever you `cat`.
+The files and their directory are 0600/0700, and `gozellij add <name> -log off -- ...` turns the
+file off for one service, which then keeps the in-memory ring and nothing else. `gozellijd -logs
+off` turns it off for everything.
+
 What it does **not** do yet: split a terminal into panes. A single attach is a byte pipe — your
 terminal does the emulating. See [the plan](#plan).
 
@@ -100,11 +115,12 @@ terminal does the emulating. See [the plan](#plan).
 
 | | |
 |---|---|
-| `gozellij add <name> [flags] -- <cmd>` | define a service (`-restart no\|on-failure\|always`, `-start`, `-dir`, `-env`) |
+| `gozellij add <name> [flags] -- <cmd>` | define a service (`-restart no\|on-failure\|always`, `-start`, `-dir`, `-env`, `-log on\|off`) |
 | `gozellij ls` | what exists and what it is doing |
 | `gozellij status <name>` | one service in detail, including why it will not start |
 | `gozellij start\|stop\|restart <name>` | change its state; `stop` means it stays stopped across a reboot |
-| `gozellij logs <name> [-n bytes]` | recent output without attaching |
+| `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
+| `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
 | `gozellij attach <name>` | connect your terminal; `Ctrl-]` detaches without stopping anything |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij rm <name>` | stop it and forget it |

@@ -39,6 +39,14 @@ type OutputBuffer struct {
 	subs   map[int]*Subscriber
 	nextID int
 	closed bool
+
+	// sink is the disk writer draining this buffer, when there is one, and sinkErr is why
+	// there is not. They live here rather than on the Supervisor because the sink is one per
+	// buffer: a supervisor is replaced on every stop/start (see Fabric.replaceSupervisor) and
+	// hands the buffer to its successor, and a second sink on the same file would write every
+	// byte twice.
+	sink    *LogSink
+	sinkErr string
 }
 
 // NewOutputBuffer makes a buffer holding at most capacity bytes.
@@ -193,6 +201,47 @@ func (o *OutputBuffer) Close() {
 		s.closeCh()
 		delete(o.subs, id)
 	}
+}
+
+// SetSink records the disk writer for this buffer. It is set once, when the buffer is created.
+func (o *OutputBuffer) SetSink(s *LogSink) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sink = s
+	o.sinkErr = ""
+}
+
+// SetSinkError records that this buffer has no disk writer, and why.
+func (o *OutputBuffer) SetSinkError(msg string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sinkErr = msg
+}
+
+// LogError reports what is wrong with this buffer's log, or "" when nothing is - including the
+// ordinary case of a service whose logging is off, which is a choice rather than a fault.
+func (o *OutputBuffer) LogError() string {
+	o.mu.Lock()
+	sink, msg := o.sink, o.sinkErr
+	o.mu.Unlock()
+	if msg != "" {
+		return msg
+	}
+	if sink == nil {
+		return ""
+	}
+	return sink.Err()
+}
+
+// LogPath is the file this buffer is written to, or "" when it is not written anywhere.
+func (o *OutputBuffer) LogPath() string {
+	o.mu.Lock()
+	sink := o.sink
+	o.mu.Unlock()
+	if sink == nil {
+		return ""
+	}
+	return sink.Path()
 }
 
 // Subscriber delivers live output to one attached reader.

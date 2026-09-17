@@ -58,6 +58,10 @@ type Status struct {
 	HasExited bool
 	// NextRestart is when the next attempt is due, valid in StateBackingOff.
 	NextRestart time.Time
+	// LogError is why this service's output is not reaching disk, empty when it is (or when
+	// logging is off for it on purpose). Somebody has to say so before the operator finds out
+	// by going looking for output that was never written.
+	LogError string
 	// LastError is why the most recent start attempt failed, empty when it did not.
 	//
 	// This is the field that stops a supervisor being a silent failure: a service whose binary
@@ -103,6 +107,12 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 	out := opts.Output
 	if out == nil {
 		out = NewOutputBuffer(opts.OutputBytes)
+		// The sink is created exactly where the buffer is, and only there. A supervisor handed
+		// an existing buffer is a *successor* (see Fabric.replaceSupervisor), and the buffer it
+		// was handed already has a sink; opening a second one on the same file would write
+		// every byte twice, which is the kind of quiet corruption nobody notices until they
+		// read the log.
+		attachLogSink(out, s, opts)
 	}
 	// Each spawn borrows the shared buffer.
 	opts.Output = out
@@ -114,6 +124,23 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 		after:  time.After,
 		status: Status{Service: s.Name, State: StateStopped},
 		notify: make(chan struct{}, 1),
+	}
+}
+
+// attachLogSink starts writing this buffer to disk, unless the service says not to.
+//
+// A sink that will not open is recorded on the buffer rather than returned: a service whose log
+// cannot be written should still run - it is a service, not a logger - but the operator must be
+// able to find out, which `gozellij status` now tells them.
+func attachLogSink(out *OutputBuffer, svc Service, opts StartOptions) {
+	if opts.LogDir == "" {
+		return
+	}
+	if svc.NoLog {
+		return
+	}
+	if _, err := NewLogSink(out, LogPath(opts.LogDir, svc.Name), opts.LogBytes); err != nil {
+		out.SetSinkError(err.Error())
 	}
 }
 
@@ -141,8 +168,12 @@ func (s *Supervisor) Output() *OutputBuffer { return s.out }
 // Status returns a snapshot.
 func (s *Supervisor) Status() Status {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.status
+	st := s.status
+	s.mu.Unlock()
+	// Read from the buffer, not from a copy taken when the supervisor was built: the sink keeps
+	// running while this supervisor does nothing, and a disk that filled up an hour ago is news.
+	st.LogError = s.out.LogError()
+	return st
 }
 
 // Current returns the live process, or nil when there is none.

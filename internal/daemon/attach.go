@@ -199,6 +199,26 @@ func (a *attachSession) readInput() error {
 	}
 }
 
+// readUntilHangup waits for a one-way follower to go away.
+//
+// A follower has no keyboard: `logs -f` is not an attach, and feeding what it sends to the process
+// would let a command documented as read-only type into a shell. Anything arriving here is a
+// client bug, and it is named rather than swallowed.
+func (a *attachSession) readUntilHangup() error {
+	for {
+		kind, _, err := a.r.ReadFrame()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(0,
+			fmt.Errorf("unexpected %s frame: this connection is following logs, which is one-way "+
+				"(use attach to send input)", kind)))
+	}
+}
+
 // handleInStream serves the small set of requests that make sense mid-attach.
 func (a *attachSession) handleInStream(req ipc.Request) {
 	switch req.Op {

@@ -224,6 +224,16 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 
+		// A following logs request takes the connection over too, for the same reason: after
+		// the answer the stream is data frames, not request/response.
+		if req.Op == ipc.OpServiceLogs && wantsFollow(req) {
+			if err := s.followLogs(conn, r, w, req); err != nil {
+				_ = w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, err))
+				s.log.Debug("logs -f ended", "service", req.Service, "err", err)
+			}
+			return
+		}
+
 		// Attach takes the connection over for its lifetime: after this the stream is data
 		// frames in both directions, not request/response. It writes its own answer, because
 		// it has to succeed *before* the replay starts.
@@ -332,6 +342,7 @@ func (s *Server) add(req ipc.Request) ipc.Response {
 		Dir:     add.Dir,
 		Env:     add.Env,
 		Restart: policy,
+		NoLog:   add.NoLog,
 	}
 	if err := s.fab.Add(svc, add.Start); err != nil {
 		return ipc.Err(req.ID, err)
@@ -339,29 +350,111 @@ func (s *Server) add(req ipc.Request) ipc.Response {
 	return s.statusAfter(req)
 }
 
-// logs returns the retained output of a service.
-func (s *Server) logs(req ipc.Request) ipc.Response {
+// MaxLogsBytes caps what one `logs` answer may carry.
+//
+// A one-shot reply is a single JSON frame, and ipc.MaxFrameSize is 8 MiB - of which base64 eats a
+// third before the rest of the envelope. So the daemon picks the ceiling rather than letting a
+// client ask for a 32 MiB file and get an unexplained frame error. The reply says Truncated and
+// names the file, which is a better answer than failing: the whole log is on disk and the operator
+// can read it with anything.
+const MaxLogsBytes = 4 << 20 // 4 MiB
+
+// decodeLogs unpacks a logs payload.
+func decodeLogs(req ipc.Request) (ipc.LogsRequest, error) {
 	var lr ipc.LogsRequest
-	if len(req.Payload) > 0 {
-		if err := json.Unmarshal(req.Payload, &lr); err != nil {
-			return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
-		}
+	if len(req.Payload) == 0 {
+		return lr, nil
 	}
-	out, err := s.fab.Output(req.Service)
+	if err := json.Unmarshal(req.Payload, &lr); err != nil {
+		return lr, fmt.Errorf("malformed %s payload: %w", req.Op, err)
+	}
+	return lr, nil
+}
+
+// wantsFollow reports whether a logs request asked to stream. A payload we cannot read is not a
+// follow: dispatch will decode it again and report the parse error properly.
+func wantsFollow(req ipc.Request) bool {
+	lr, err := decodeLogs(req)
+	return err == nil && lr.Follow
+}
+
+// logs returns what a service printed, from disk where there is a file for it.
+func (s *Server) logs(req ipc.Request) ipc.Response {
+	lr, err := decodeLogs(req)
 	if err != nil {
 		return ipc.Err(req.ID, err)
 	}
-	data, _ := out.Snapshot()
 
-	reply := ipc.LogsReply{Data: data}
-	if lr.MaxBytes > 0 && len(data) > lr.MaxBytes {
-		reply.Data = data[len(data)-lr.MaxBytes:]
-		reply.Truncated = true
+	max := lr.MaxBytes
+	if max <= 0 || max > MaxLogsBytes {
+		max = MaxLogsBytes
 	}
+
+	tail, err := s.fab.Logs(req.Service, max)
+	if err != nil {
+		return ipc.Err(req.ID, err)
+	}
+
+	reply := ipc.LogsReply{Data: tail.Data, Truncated: tail.Truncated, Path: tail.Path}
 	if st, serr := s.fab.Status(req.Service); serr == nil {
 		reply.Running = st.State == fabric.StateRunning
 	}
 	return ipc.OKResponse(req.ID, reply)
+}
+
+// followLogs streams a service's output to a client that is not attached to it.
+//
+// It is an attach with the keyboard unplugged, and it deliberately reads the live buffer rather
+// than tailing the file: the buffer is where the bytes are first, and a follower that tailed the
+// file would lag behind by however long the sink took to write. The one-shot form is the one that
+// answers questions about the past.
+func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Request) error {
+	lr, err := decodeLogs(req)
+	if err != nil {
+		return err
+	}
+
+	out, err := s.fab.Output(req.Service)
+	if err != nil {
+		return err
+	}
+
+	snapshot, sub, err := out.Attach(AttachQueueBytes)
+	if err != nil {
+		return err
+	}
+
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
+
+	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {
+		sub.Detach()
+		return err
+	}
+
+	if lr.MaxBytes > 0 && len(snapshot) > lr.MaxBytes {
+		snapshot = snapshot[len(snapshot)-lr.MaxBytes:]
+	}
+	if len(snapshot) > 0 {
+		if err := sess.writeData(snapshot); err != nil {
+			sub.Detach()
+			return err
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sess.pumpOutput(sub)
+	}()
+
+	err = sess.readUntilHangup()
+
+	// Same order as attach, for the same reason: Detach closes the channel the pump is ranging
+	// over, so it must happen before waiting for the pump rather than after it.
+	conn.Close()
+	sub.Detach()
+	<-done
+	return err
 }
 
 // requestUpgrade hands the request out to the process owner and answers straight away.
@@ -452,6 +545,7 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		HasExited:   st.HasExited,
 		NextRestart: st.NextRestart,
 		LastError:   st.LastError,
+		LogError:    st.LogError,
 	}
 	if def, err := s.fab.Definition(st.Service); err == nil {
 		out.Enabled = def.Enabled

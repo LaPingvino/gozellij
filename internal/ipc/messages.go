@@ -117,6 +117,8 @@ type AddRequest struct {
 	Env     []string `json:"env,omitempty"`
 	Restart string   `json:"restart,omitempty"`
 	Start   bool     `json:"start,omitempty"`
+	// NoLog asks for this service's output NOT to be written to disk.
+	NoLog bool `json:"no_log,omitempty"`
 }
 
 // AttachRequest is the payload of OpAttach.
@@ -151,12 +153,21 @@ type StatusReply struct {
 	LastError   string    `json:"last_error,omitempty"`
 	Enabled     bool      `json:"enabled"`
 	Command     string    `json:"command,omitempty"`
+	// LogError is why this service's output is not reaching disk, empty when it is.
+	LogError string `json:"log_error,omitempty"`
 }
 
 // LogsRequest is the payload of OpServiceLogs.
 type LogsRequest struct {
-	// MaxBytes limits the answer to the most recent bytes. Zero means everything retained.
+	// MaxBytes limits the answer to the most recent bytes. Zero means everything the daemon is
+	// willing to put in one frame.
 	MaxBytes int `json:"max_bytes,omitempty"`
+	// Follow turns this request into a stream: the daemon answers once and then sends data
+	// frames until the client hangs up, exactly like an attach with no keyboard attached.
+	//
+	// The one-shot form reads the file, which outlives the daemon; the follow form reads the
+	// live buffer, which does not. They answer different questions and both are wanted.
+	Follow bool `json:"follow,omitempty"`
 }
 
 // LogsReply carries retained output.
@@ -172,6 +183,10 @@ type LogsReply struct {
 	// Running says whether anything is producing output right now; without it an empty answer
 	// is ambiguous between "quiet" and "not running".
 	Running bool `json:"running"`
+	// Path is the file this came from, empty when it came from the daemon's in-memory ring.
+	// Worth saying: one of those survives the daemon being restarted and the other does not,
+	// and the client can point the operator at a file it can read with anything.
+	Path string `json:"path,omitempty"`
 }
 
 // UpgradeReply describes what an in-place upgrade did.

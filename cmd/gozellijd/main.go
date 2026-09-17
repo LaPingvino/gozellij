@@ -31,6 +31,7 @@ func main() {
 	var (
 		socket  = flag.String("socket", "", "unix socket path (default: $XDG_RUNTIME_DIR/gozellij/fabric.sock)")
 		state   = flag.String("state", "", "directory for service definitions (default: $XDG_STATE_HOME/gozellij)")
+		logs    = flag.String("logs", "", "directory for service output logs (default: <state>/logs; \"off\" keeps output in RAM only)")
 		verbose = flag.Bool("v", false, "log at debug level")
 		version = flag.Bool("version", false, "print version and exit")
 	)
@@ -41,13 +42,13 @@ func main() {
 		return
 	}
 
-	if err := run(*socket, *state, *verbose); err != nil {
+	if err := run(*socket, *state, *logs, *verbose); err != nil {
 		fmt.Fprintf(os.Stderr, "gozellijd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(socket, state string, verbose bool) error {
+func run(socket, state, logs string, verbose bool) error {
 	level := slog.LevelInfo
 	if verbose {
 		level = slog.LevelDebug
@@ -61,11 +62,21 @@ func run(socket, state string, verbose bool) error {
 		state = daemon.StateDir()
 	}
 
+	// Logs go beside the definitions, under the state directory, because they answer the same
+	// kind of question a definition does - what is this machine doing, and what did it do - and
+	// because the runtime directory is wiped on reboot, which is exactly when you want them.
+	switch logs {
+	case "":
+		logs = filepath.Join(state, "logs")
+	case "off":
+		logs = ""
+	}
+
 	reg, err := fabric.NewRegistry(filepath.Join(state, "services"))
 	if err != nil {
 		return err
 	}
-	fab := fabric.NewFabric(reg, fabric.StartOptions{})
+	fab := fabric.NewFabric(reg, fabric.StartOptions{LogDir: logs})
 
 	// Did a predecessor hand its processes over? If so we are the *same process* it was - the
 	// exec kept the pid - and the ptys it opened are still open on the descriptors it names.
@@ -97,7 +108,7 @@ func run(socket, state string, verbose bool) error {
 		return err
 	}
 	srv.SetVersion(Version)
-	log.Info("gozellij daemon listening", "socket", srv.Addr(), "state", state, "version", Version)
+	log.Info("gozellij daemon listening", "socket", srv.Addr(), "state", state, "logs", logs, "version", Version)
 
 	// A signal means "stop serving", not "kill everything". The services are the point; the
 	// daemon is replaceable, which is the whole design.

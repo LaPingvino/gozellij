@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -163,6 +164,73 @@ func (c *Client) Logs(name string, maxBytes int) (ipc.LogsReply, error) {
 		return ipc.LogsReply{}, fmt.Errorf("decoding the logs of %s: %w", name, err)
 	}
 	return out, nil
+}
+
+// FollowLogs streams a service's output to out until the connection ends or the caller's process
+// is interrupted. Notices from the daemon - such as "you fell behind" - go to notices.
+//
+// The connection is used up by this call: after it the client is only good for closing. That is
+// the same bargain as Attach, and for the same reason - the stream takes the socket over.
+func (c *Client) FollowLogs(name string, maxBytes int, out, notices io.Writer) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := ipc.Request{ID: c.nextID.Add(1), Op: ipc.OpServiceLogs, Service: name}
+	b, err := json.Marshal(ipc.LogsRequest{MaxBytes: maxBytes, Follow: true})
+	if err != nil {
+		return fmt.Errorf("encoding the logs request: %w", err)
+	}
+	req.Payload = b
+
+	// A deadline on the handshake only. Following has no timeout by design: a quiet service is
+	// the normal case, and a `logs -f` that gave up after thirty seconds of silence would be
+	// reporting on its own impatience rather than on the service.
+	if err := c.conn.SetDeadline(time.Now().Add(CallTimeout)); err != nil {
+		return fmt.Errorf("setting deadline: %w", err)
+	}
+	if err := c.w.WriteJSON(ipc.KindRequest, req); err != nil {
+		return fmt.Errorf("asking to follow %s: %w", name, err)
+	}
+	var resp ipc.Response
+	if err := c.r.ReadJSON(ipc.KindResponse, &resp); err != nil {
+		return fmt.Errorf("waiting for the answer to follow %s: %w", name, err)
+	}
+	if err := c.conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clearing deadline: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("following %s: %s", name, resp.Error)
+	}
+
+	for {
+		kind, payload, err := c.r.ReadFrame()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				// The daemon went away, or we were closed from another goroutine. Either is
+				// the ordinary end of a follow, not a failure.
+				return nil
+			}
+			return err
+		}
+		switch kind {
+		case ipc.KindData:
+			if _, werr := out.Write(payload); werr != nil {
+				return werr
+			}
+		case ipc.KindEvent:
+			var ev ipc.Event
+			if json.Unmarshal(payload, &ev) == nil && notices != nil {
+				fmt.Fprintf(notices, "[gozellij: %s]\n", ev.Message)
+			}
+		default:
+			// A response frame here means the daemon is complaining about something we sent,
+			// which a follower does not do. Say so rather than ignoring it.
+			var r ipc.Response
+			if json.Unmarshal(payload, &r) == nil && !r.OK && notices != nil {
+				fmt.Fprintf(notices, "[gozellij: %s]\n", r.Error)
+			}
+		}
+	}
 }
 
 // Upgrade asks the daemon to replace its binary in place. The connection dies immediately
