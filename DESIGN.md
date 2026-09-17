@@ -135,6 +135,40 @@ Earned the hard way in the Rust fork; these are not aspirations.
    measurements that *failed* to support it, and a confident theory implemented, measured,
    refuted, and reverted. Both are better outcomes than a plausible story.
 
+## Client transports, and the mosh idea
+
+The inversion above says the UI is replaceable. That invites a question with a very attractive
+answer: what if some of the UIs are ones we do not have to write?
+
+**mosh** is the interesting case. Its Terminal app ships on ChromeOS with mosh support, and mosh
+clients exist on essentially everything. If the fabric could speak mosh's protocol, then attaching
+from a Chromebook, or from a phone, would need no gozellij client at all — and you would inherit
+mosh's two properties that matter here for free:
+
+- **Roaming.** UDP with a session key, so the connection survives your IP changing, your laptop
+  sleeping, and your network moving. That is exactly the failure this project cares about; the
+  reason the fork grew client-parking and ghost tabs was an ssh client vanishing when a laptop
+  rebooted.
+- **Predictive local echo**, which is what makes mosh feel better than ssh on a bad link.
+
+The structural point is more important than the convenience, though: **mosh synchronises screen
+state, not bytes.** `mosh-server` contains a terminal emulator so it can compute frame diffs. So
+"speak mosh" is only possible once the grid lives in the fabric — it is a Phase 3+ idea, not a
+shortcut around Phase 1. It does, however, argue for a particular shape:
+
+- The fabric should eventually be able to hand out **screen state**, not only raw PTY bytes.
+- A raw-PTY attach (Phase 1) and a state-synchronising attach (later) are then two transports over
+  the same fabric, not two different programs.
+
+Unverified and worth checking before committing to this: whether a usable Go implementation of
+mosh's State Synchronization Protocol exists, or whether it would mean implementing SSP and its
+AES-OCB framing ourselves, plus the out-of-band key exchange mosh does over ssh. That is real
+cryptographic protocol work and the sort of thing to reuse rather than write.
+
+Lower-effort relatives of the same idea, for comparison: exposing the fabric over plain ssh with a
+forced command (works everywhere, no roaming), or a small web UI over the socket (works on
+ChromeOS trivially, no terminal fidelity).
+
 ## Not yet decided
 
 - Which VTE backend leads in Phase 3, and whether cgo is acceptable for release builds.
