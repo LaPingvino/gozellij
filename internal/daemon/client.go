@@ -1,0 +1,171 @@
+package daemon
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/LaPingvino/gozellij/internal/ipc"
+)
+
+// DialTimeout bounds how long a client waits to reach the daemon.
+//
+// Generous on purpose. Design rule 2: a short timeout is a bet that the machine is idle, and the
+// machine this is written for runs at load 20. A connect that takes two seconds is mildly annoying;
+// one that fails spuriously sends someone hunting for a daemon that was fine all along.
+const DialTimeout = 10 * time.Second
+
+// CallTimeout bounds how long a client waits for a response to a request.
+const CallTimeout = 30 * time.Second
+
+// Client talks to a daemon.
+type Client struct {
+	conn net.Conn
+	r    *ipc.Reader
+	w    *ipc.Writer
+
+	nextID atomic.Uint64
+
+	// mu serialises request/response pairs. The protocol carries ids so it could multiplex,
+	// but nothing needs that yet and a single in-flight request is far easier to reason about.
+	mu sync.Mutex
+}
+
+// ErrNoDaemon is returned when nothing is listening on the socket.
+var ErrNoDaemon = errors.New("no gozellij daemon is running")
+
+// Dial connects to a daemon.
+func Dial(path string) (*Client, error) {
+	conn, err := net.DialTimeout("unix", path, DialTimeout)
+	if err != nil {
+		// Translate the two cases a user actually hits - no socket file, or a socket nobody is
+		// listening on - into something actionable, rather than passing a syscall name up.
+		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("%w (socket %s). Start one with `gozellijd`", ErrNoDaemon, path)
+		}
+		return nil, fmt.Errorf("connecting to %s: %w", path, err)
+	}
+	return &Client{
+		conn: conn,
+		r:    ipc.NewReader(conn),
+		w:    ipc.NewWriter(conn),
+	}, nil
+}
+
+// Close hangs up.
+func (c *Client) Close() error { return c.conn.Close() }
+
+// Conn exposes the underlying connection, for attach, which takes the stream over.
+func (c *Client) Conn() net.Conn { return c.conn }
+
+// Reader and Writer expose the framing, for attach.
+func (c *Client) Reader() *ipc.Reader { return c.r }
+func (c *Client) Writer() *ipc.Writer { return c.w }
+
+// Call sends a request and returns the response.
+//
+// A failed response is returned as an error carrying the daemon's own words. Losing that text and
+// replacing it with something generic is how a precise complaint from the far end turns into "the
+// operation failed".
+func (c *Client) Call(op ipc.Op, service string, payload any) (ipc.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := ipc.Request{ID: c.nextID.Add(1), Op: op, Service: service}
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return ipc.Response{}, fmt.Errorf("encoding %s payload: %w", op, err)
+		}
+		req.Payload = b
+	}
+
+	if err := c.conn.SetDeadline(time.Now().Add(CallTimeout)); err != nil {
+		return ipc.Response{}, fmt.Errorf("setting deadline: %w", err)
+	}
+	defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
+
+	if err := c.w.WriteJSON(ipc.KindRequest, req); err != nil {
+		return ipc.Response{}, fmt.Errorf("sending %s: %w", op, err)
+	}
+
+	var resp ipc.Response
+	if err := c.r.ReadJSON(ipc.KindResponse, &resp); err != nil {
+		return ipc.Response{}, fmt.Errorf("waiting for the answer to %s: %w", op, err)
+	}
+	if resp.ID != req.ID {
+		// Should be impossible with one request in flight, and worth shouting about if it
+		// happens: it means the stream is out of step and nothing after this is trustworthy.
+		return resp, fmt.Errorf("response id %d does not match request id %d: the connection is out of step",
+			resp.ID, req.ID)
+	}
+	if !resp.OK {
+		return resp, fmt.Errorf("%s: %s", op, resp.Error)
+	}
+	return resp, nil
+}
+
+// Ping checks the daemon is answering.
+func (c *Client) Ping() error {
+	_, err := c.Call(ipc.OpPing, "", nil)
+	return err
+}
+
+// List returns every service the daemon knows about.
+func (c *Client) List() (ipc.ListReply, error) {
+	resp, err := c.Call(ipc.OpServiceList, "", nil)
+	if err != nil {
+		return ipc.ListReply{}, err
+	}
+	var out ipc.ListReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.ListReply{}, fmt.Errorf("decoding the service list: %w", err)
+	}
+	return out, nil
+}
+
+// Status returns one service's status.
+func (c *Client) Status(name string) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceStatus, name, nil)
+}
+
+// Add defines a service.
+func (c *Client) Add(name string, req ipc.AddRequest) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceAdd, name, req)
+}
+
+// Start, Stop and Restart do what they say and return the resulting status.
+func (c *Client) Start(name string) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceStart, name, nil)
+}
+
+func (c *Client) Stop(name string) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceStop, name, nil)
+}
+
+func (c *Client) Restart(name string) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceRestrt, name, nil)
+}
+
+// Remove deletes a service.
+func (c *Client) Remove(name string) error {
+	_, err := c.Call(ipc.OpServiceRemove, name, nil)
+	return err
+}
+
+func (c *Client) callStatus(op ipc.Op, name string, payload any) (ipc.StatusReply, error) {
+	resp, err := c.Call(op, name, payload)
+	if err != nil {
+		return ipc.StatusReply{}, err
+	}
+	var out ipc.StatusReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.StatusReply{}, fmt.Errorf("decoding the status of %s: %w", name, err)
+	}
+	return out, nil
+}

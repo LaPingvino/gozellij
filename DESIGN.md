@@ -135,6 +135,48 @@ Earned the hard way in the Rust fork; these are not aspirations.
    measurements that *failed* to support it, and a confident theory implemented, measured,
    refuted, and reverted. Both are better outcomes than a plausible story.
 
+## What does not work yet: restarting the daemon
+
+Measured on 2026-09-17, by running it:
+
+```
+pid before daemon restart: 978659
+pid after  daemon restart: 978766
+```
+
+**Killing the daemon kills its services.** The daemon holds every pty master; when it exits those
+close, the slaves get SIGHUP, and the children die. The next daemon then loads the definitions,
+sees `enabled: true`, and starts *new* processes — which looks like it worked unless you compare
+pids, which is how this was found.
+
+That is worth stating plainly because it contradicts the promise on the tin, and the inversion does
+not fix it by itself. What the inversion actually buys is narrower than the first draft of this
+document implied:
+
+- **UI restarts are free**, structurally. A UI holds no pty and no state; it can crash, be upgraded
+  or be killed and nothing notices. This is real and it is the common case — you replace the face
+  often and the fabric rarely.
+- **Daemon restarts are not free**, and cannot be made free by architecture alone. Whoever holds the
+  pty master is a single point of failure for the processes on the other end. Moving that role from
+  the multiplexer to a smaller, rarely-changing daemon reduces how often you have to solve the
+  problem; it does not remove it.
+
+The options, none of them free:
+
+1. **Exec in place, preserving the file descriptors.** `syscall.Exec` replaces the image while
+   keeping the pid and every fd that is not `CLOEXEC`, so the ptys stay open and the children never
+   notice. This is what the Rust fork does, and it works — it was verified on a live session with
+   79,000 seconds of uptime. It upgrades the daemon but cannot survive it crashing.
+2. **Hand the fds to a successor over a unix socket** (`SCM_RIGHTS`). Survives more, costs a
+   handover protocol and a window where both processes exist.
+3. **systemd socket activation with `FDSTORE`**, letting systemd hold the descriptors across a
+   restart. Least code, and ties the design to systemd.
+4. **Accept it**, document it, and tell people to stop services deliberately before upgrading. Worst
+   answer, but honest, and better than a promise that quietly is not kept.
+
+Until one of these is built, "your processes keep running" means *through UI restarts, logouts and
+network loss* — not through a daemon upgrade. The README says so too.
+
 ## Client transports, and the mosh idea
 
 The inversion above says the UI is replaceable. That invites a question with a very attractive

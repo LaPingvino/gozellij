@@ -1,7 +1,11 @@
 # gozellij
 
-**Your processes keep running.** Through upgrades, through logouts, through the UI crashing,
-through you rebooting the laptop you were sshed in from.
+**Your processes keep running.** Through logouts, through the UI crashing, through you rebooting
+the laptop you were sshed in from.
+
+> Not yet through a restart of the daemon itself — that currently kills them, and
+> [DESIGN.md](DESIGN.md#what-does-not-work-yet-restarting-the-daemon) says so and lists the ways
+> out. Better to write it down than to promise it.
 
 A host-native process fabric with a terminal UI on top — aiming to be lighter and safer than
 Docker, and easier to live with, for the job most people actually use Docker for on one server:
