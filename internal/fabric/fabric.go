@@ -206,6 +206,11 @@ func (f *Fabric) supervisor(name string) (*Supervisor, error) {
 }
 
 // Start runs a service and records that it should be running.
+//
+// A supervisor's loop ends for good when the service is stopped or gives up, and a Supervisor
+// cannot be started twice - so starting a service that has already run its course needs a fresh
+// one. Without this, `gozellij stop web` followed by `gozellij start web` wrote enabled: true,
+// started nothing, and exited 0: the first command pair anybody types, silently doing nothing.
 func (f *Fabric) Start(name string) error {
 	s, err := f.supervisor(name)
 	if err != nil {
@@ -214,10 +219,46 @@ func (f *Fabric) Start(name string) error {
 	if err := f.setEnabled(name, true); err != nil {
 		return err
 	}
+
+	if st := s.Status(); st.State == StateStopped || st.State == StateFailed {
+		s = f.replaceSupervisor(name, s)
+	}
+
 	if err := s.Start(f.ctx); err != nil && !errors.Is(err, ErrAlreadyStarted) {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
 	return nil
+}
+
+// replaceSupervisor swaps in a fresh supervisor for a service whose old one has finished.
+//
+// Two things are deliberately carried across and one is deliberately not:
+//
+//   - the output buffer is reused, so `logs` still shows what the service said before it was
+//     stopped. Scrollback surviving a restart is the same promise as scrollback surviving a
+//     crash-and-restart, and an operator does not care which of the two happened;
+//   - the definition is re-read from disk, because design rule 5 says a service file is meant to
+//     be repairable with a text editor. Building from the in-memory copy meant an edit was
+//     honoured by `gozellij upgrade` (which reloads) but ignored by `restart` (which did not) -
+//     half-working, which is worse than either answer;
+//   - the flapping history is not carried across. An operator has intervened, so a thirty second
+//     backoff inherited from whatever went wrong before is no longer about the present.
+func (f *Fabric) replaceSupervisor(name string, old *Supervisor) *Supervisor {
+	svc := old.Service()
+	if fromDisk, err := f.reg.Get(name); err == nil {
+		svc = fromDisk
+	}
+
+	opts := f.opts
+	opts.Output = old.Output()
+	fresh := NewSupervisor(svc, opts)
+
+	f.mu.Lock()
+	if !f.closed {
+		f.sups[name] = fresh
+	}
+	f.mu.Unlock()
+	return fresh
 }
 
 // Stop stops a service and records that it should stay stopped.
@@ -244,12 +285,7 @@ func (f *Fabric) Restart(name string) error {
 		return err
 	}
 	s.Stop()
-
-	fresh := NewSupervisor(s.Service(), f.opts)
-	f.mu.Lock()
-	f.sups[name] = fresh
-	f.mu.Unlock()
-
+	f.replaceSupervisor(name, s)
 	return f.Start(name)
 }
 
