@@ -1,0 +1,45 @@
+# gozellij fabric daemon, as a systemd *user* unit.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp gozellijd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now gozellijd
+#
+# Survive logout (otherwise the user manager stops when your last session ends):
+#   sudo loginctl enable-linger $USER
+
+[Unit]
+Description=gozellij process fabric
+Documentation=https://github.com/LaPingvino/gozellij
+# The daemon creates its own socket; it does not need one handed to it.
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gozellijd
+
+# An upgrade is a signal, not a restart. `systemctl --user reload gozellijd` replaces the binary
+# in place, keeping every supervised process and its pid - which is the entire point of the
+# program. Using restart here instead would kill exactly what we promise to keep.
+ExecReload=/bin/kill -USR1 $MAINPID
+
+# Restart if the daemon dies. Worth being honest about what this does and does not buy: the
+# services do NOT survive a daemon crash (their pty masters die with it), so this brings the
+# daemon back and it then starts the enabled services fresh. It is a recovery, not a continuation.
+# See "Restarting the daemon" in DESIGN.md.
+Restart=on-failure
+RestartSec=2
+
+# Delegate a cgroup subtree so the daemon can freeze and thaw individual services later without
+# root. This must be on the user@.service slice, not a session scope: session scopes are
+# root-owned and writing cgroup.freeze there fails with EACCES no matter what you do. (Learned in
+# the predecessor project, the hard way.)
+Delegate=yes
+
+# The daemon holds no secrets of its own, but the services it runs may have any in their
+# environment, so keep its runtime state to itself.
+UMask=0077
+
+[Install]
+WantedBy=default.target
