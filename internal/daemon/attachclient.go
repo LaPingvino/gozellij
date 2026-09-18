@@ -104,6 +104,28 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 	defer painter.Close()
 	out = screen
 
+	// A terminal that is closed, or a client that is told to stop, must still get its screen
+	// back. Without this the scrolling region stays set after the client is gone: the shell that
+	// comes next scrolls in the top rows only, with a frozen status line stuck along the bottom,
+	// and nothing in sight explains why. SIGKILL cannot be helped; these can.
+	//
+	// The handler restores and then re-raises, so the exit status is still the signal's.
+	fatal := make(chan os.Signal, 1)
+	signal.Notify(fatal, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(fatal)
+	go func() {
+		sig, ok := <-fatal
+		if !ok {
+			return
+		}
+		painter.Close()
+		restore()
+		signal.Stop(fatal)
+		if s, isUnix := sig.(syscall.Signal); isUnix {
+			_ = syscall.Kill(os.Getpid(), s)
+		}
+	}()
+
 	first := true
 	for {
 		c, err := Dial(socket)
@@ -122,7 +144,7 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			c = back
 		}
 
-		outcome, err := c.runSession(service, input, in, out, replay && first)
+		outcome, err := c.runSession(service, input, in, out, replay && first, painter.Reserved())
 		c.Close()
 		if err != nil {
 			return err
@@ -184,8 +206,11 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 				}
 				if picked == service {
 					// Cancelled, or chose where they already were. Repaint so the list is
-					// not left sitting on top of the service's screen.
+					// not left sitting on top of the service's screen - and the status line
+					// too, because clearing the screen wipes the reserved row along with
+					// everything else.
 					showService(out, service)
+					painter.Repaint()
 					first, replay = true, true
 					break dispatch
 				}
@@ -387,7 +412,9 @@ func waitForDaemonClient(socket string, within time.Duration) (*Client, error) {
 func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool) error {
 	input := startTerminalInput(in)
 	defer input.stop()
-	_, err := c.runSession(service, input, in, out, replay)
+	// No status line on this path, so no reserved row: Attach is the plain one-shot form, used
+	// by tests and by anything embedding this that draws its own furniture.
+	_, err := c.runSession(service, input, in, out, replay, 0)
 	return err
 }
 
@@ -535,11 +562,11 @@ func (t *terminalInput) run(in *os.File) {
 // terminal's bytes, the user's commands, the service's output ending, and a window resize are four
 // things that can happen next, and a loop that names all four is easier to be sure about than
 // three goroutines and a mutex.
-func (c *Client) runSession(service string, input *terminalInput, in *os.File, out io.Writer, replay bool) (attachOutcome, error) {
+func (c *Client) runSession(service string, input *terminalInput, in *os.File, out io.Writer, replay bool, reserved int) (attachOutcome, error) {
 	cols, rows := 0, 0
 	if term.IsTerminal(int(in.Fd())) {
 		if w, h, err := term.GetSize(int(in.Fd())); err == nil {
-			cols, rows = w, h
+			cols, rows = w, h-reserved
 		}
 	}
 
@@ -610,10 +637,12 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 
 		case <-winch:
 			w, h, err := term.GetSize(int(in.Fd()))
-			if err != nil || w <= 0 || h <= 0 {
+			if err != nil || w <= 0 || h-reserved <= 0 {
 				continue
 			}
-			_ = c.sendResize(w, h)
+			// Minus the reserved row here too, or a resize hands the service back the row the
+			// status line is standing on.
+			_ = c.sendResize(w, h-reserved)
 		}
 	}
 }

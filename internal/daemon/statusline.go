@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/LaPingvino/gozellij/internal/status"
@@ -46,6 +48,9 @@ func (l *lockedWriter) atomically(f func(io.Writer)) {
 //
 // That is the honest state of it, and it is the thing a terminal emulator would fix properly by
 // owning the grid.
+// statusQueryTimeout bounds one status query. See StatusContext.
+const statusQueryTimeout = 1500 * time.Millisecond
+
 type statusPainter struct {
 	out  *lockedWriter
 	in   *os.File
@@ -78,16 +83,45 @@ func newStatusPainter(out *lockedWriter, in *os.File, cfg status.Config, info fu
 	return p
 }
 
+// Reserved is how many rows of the terminal belong to the status line rather than to the service.
+//
+// The service must be told a screen that many rows shorter, and that is not a nicety. A program
+// that believes it owns the last row will draw on it: less puts its prompt there, vim puts its
+// command line there, and both were being overwritten by the next tick - the `:` vanishing from
+// under the user's fingers two seconds after they typed it. Telling the service the truth about
+// how much screen it has is what stops the collision; re-asserting our region afterwards only
+// fights over the wreckage.
+//
+// It also keeps the cursor inside the scrolling region, which is what makes the save-and-restore
+// in paint safe at all.
+func (p *statusPainter) Reserved() int {
+	if p == nil || p.cfg.Where != status.Bottom {
+		return 0
+	}
+	return 1
+}
+
 func (p *statusPainter) run() {
 	defer close(p.done)
 
 	tick := time.NewTicker(p.cfg.Every)
 	defer tick.Stop()
 
+	// A resize moves the row the line lives on, and most terminals reset the margins when they
+	// resize - so without this the line sits at the old row, in a terminal with no reserved
+	// region, until the next tick happens to notice.
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+
+	p.reserve()
 	p.paint()
 	for {
 		select {
 		case <-tick.C:
+			p.paint()
+		case <-winch:
+			p.reserve()
 			p.paint()
 		case <-p.stop:
 			p.clear()
@@ -96,13 +130,25 @@ func (p *statusPainter) run() {
 	}
 }
 
+// closeWait bounds how long detaching waits for the painter to notice.
+//
+// A paint can only be as slow as one status query, which is bounded - but "bounded" is not
+// "instant", and nothing about letting go of a terminal should wait on a daemon that has stopped
+// answering. If the painter has not finished by then, the terminal is put back from here instead;
+// the painter's own clear afterwards is the same sequence again, which costs nothing.
+const closeWait = statusQueryTimeout + time.Second
+
 // Close stops painting and puts the terminal back.
 func (p *statusPainter) Close() {
 	if p == nil {
 		return
 	}
 	p.once.Do(func() { close(p.stop) })
-	<-p.done
+	select {
+	case <-p.done:
+	case <-time.After(closeWait):
+		p.clear()
+	}
 }
 
 // Repaint draws immediately, for when something has changed that a tick should not have to wait
@@ -128,6 +174,29 @@ func (p *statusPainter) size() (cols, rows int) {
 		return 0, 0
 	}
 	return c, r
+}
+
+// reserve sets the scrolling region up once, before anything else is drawn.
+//
+// It also puts the cursor inside the region, and that is the point. Whatever was on the terminal
+// before the attach - a shell prompt at the bottom of the screen, most likely - may have left the
+// cursor on the last row, which is about to be outside the region. A cursor below the bottom
+// margin does not scroll on a line feed, so the screen simply stops moving: the user types and
+// nothing happens, which reads as a hang rather than as a bug. Measured on a real terminal: three
+// commands typed, nothing shown, the rows never moved.
+//
+// This runs before the service's output is replayed, so moving the cursor costs nothing.
+func (p *statusPainter) reserve() {
+	if p.cfg.Where != status.Bottom {
+		return
+	}
+	_, rows := p.size()
+	if rows < 2 {
+		return
+	}
+	p.out.atomically(func(w io.Writer) {
+		fmt.Fprintf(w, "\x1b[1;%dr\x1b[%d;1H", rows-1, rows-1)
+	})
 }
 
 func (p *statusPainter) paint() {
@@ -167,7 +236,11 @@ func (p *statusPainter) clear() {
 		return
 	}
 	p.out.atomically(func(w io.Writer) {
-		fmt.Fprintf(w, "\x1b7\x1b[%d;1H\x1b[2K\x1b8\x1b[r", rows)
+		// The region reset goes *inside* the save and restore. DECSTBM homes the cursor like
+		// any other DECSTBM, so resetting after the restore undid it: every detach put the
+		// cursor at the top of the screen, and the next shell prompt printed over whatever was
+		// already there. Measured on a real terminal, row 24 to row 1.
+		fmt.Fprintf(w, "\x1b7\x1b[%d;1H\x1b[2K\x1b[r\x1b8", rows)
 	})
 }
 
@@ -187,6 +260,14 @@ func StatusContext(socket, service string) status.Context {
 		return ctx
 	}
 	defer c.Close()
+
+	// A short deadline, not the ordinary thirty second one. This runs on the painter's goroutine
+	// and Close waits for that goroutine, so a daemon that has stopped answering would turn
+	// detaching into a forty second wait. A status line is a bystander: if it cannot get an
+	// answer promptly it should draw what it has and try again on the next tick.
+	if err := c.Conn().SetDeadline(time.Now().Add(statusQueryTimeout)); err != nil {
+		return ctx
+	}
 
 	list, err := c.List()
 	if err != nil {

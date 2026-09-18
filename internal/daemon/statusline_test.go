@@ -141,3 +141,124 @@ func TestNoStatusLineWhenItIsSwitchedOff(t *testing.T) {
 		t.Errorf("something was drawn with the status line off: %q", out.String())
 	}
 }
+
+// These check what the sequences mean, not merely that they were written. The first version of
+// this file asserted that the right bytes appeared, and every one of them did - while the terminal
+// they were sent to appeared to hang, because the cursor was restored below the scrolling region
+// where a line feed does not scroll. Bytes emitted is not behaviour.
+
+func TestTheReservedRowIsSetUpBeforeAnythingIsDrawn(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	if err := pty.Setsize(tty, sizedTerminal(t, 80, 24)); err != nil {
+		t.Fatalf("Setsize: %v", err)
+	}
+
+	var out syncBuffer
+	cfg := status.DefaultConfig()
+	cfg.Every = time.Hour // only the setup paint, so the order is unambiguous
+	cfg.Left = []string{"session"}
+	cfg.Right = nil
+
+	p := newStatusPainter(&lockedWriter{w: &out}, tty, cfg, func() status.Context {
+		return status.Context{Service: "web"}
+	})
+	if p == nil {
+		t.Fatal("no painter")
+	}
+	waitFor(t, func() bool { return strings.Contains(out.String(), "[web]") })
+	p.Close()
+
+	drawn := out.String()
+	region := strings.Index(drawn, "\x1b[1;23r")
+	safe := strings.Index(drawn, "\x1b[23;1H")
+	if region < 0 || safe < 0 {
+		t.Fatalf("the row was not reserved with the cursor placed inside it: %q", drawn)
+	}
+	// The cursor has to be moved into the region as part of reserving it. Whatever was on the
+	// terminal before the attach may have left it on the last row, which is about to be outside
+	// - and a cursor below the bottom margin does not scroll, so the screen stops moving.
+	if safe < region {
+		t.Errorf("the cursor was placed before the region was set: %q", drawn)
+	}
+}
+
+func TestDetachDoesNotHomeTheCursor(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	if err := pty.Setsize(tty, sizedTerminal(t, 80, 24)); err != nil {
+		t.Fatalf("Setsize: %v", err)
+	}
+
+	var out syncBuffer
+	cfg := status.DefaultConfig()
+	cfg.Every = time.Hour
+	cfg.Left = []string{"session"}
+
+	p := newStatusPainter(&lockedWriter{w: &out}, tty, cfg, func() status.Context {
+		return status.Context{Service: "web"}
+	})
+	waitFor(t, func() bool { return strings.Contains(out.String(), "[web]") })
+	p.Close()
+
+	drawn := out.String()
+	reset := strings.LastIndex(drawn, "\x1b[r")
+	restore := strings.LastIndex(drawn, "\x1b8")
+	if reset < 0 || restore < 0 {
+		t.Fatalf("no region reset and cursor restore on close: %q", drawn)
+	}
+	// DECSTBM homes the cursor like any other DECSTBM, so the reset has to come *before* the
+	// restore. The other order put the cursor at the top of the screen on every detach, and the
+	// next shell prompt printed over whatever was already there.
+	if reset > restore {
+		t.Errorf("the region was reset after the cursor was restored, so the cursor was homed: %q", drawn)
+	}
+}
+
+func TestTheServiceIsToldItHasOneRowFewer(t *testing.T) {
+	// The single thing that stops a full-screen program fighting the status line: if the service
+	// believes it has the whole screen, less will put its prompt on the reserved row and vim will
+	// put its command line there, and the next tick will wipe them.
+	cfg := status.DefaultConfig()
+
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	if err := pty.Setsize(tty, sizedTerminal(t, 80, 24)); err != nil {
+		t.Fatalf("Setsize: %v", err)
+	}
+
+	var out syncBuffer
+	p := newStatusPainter(&lockedWriter{w: &out}, tty, cfg, func() status.Context {
+		return status.Context{Service: "web"}
+	})
+	defer p.Close()
+	if got := p.Reserved(); got != 1 {
+		t.Errorf("Reserved = %d for a bottom status line, want 1", got)
+	}
+
+	cfg.Where = status.Title
+	titled := newStatusPainter(&lockedWriter{w: &out}, tty, cfg, func() status.Context {
+		return status.Context{Service: "web"}
+	})
+	defer titled.Close()
+	if got := titled.Reserved(); got != 0 {
+		t.Errorf("Reserved = %d for a title status line, want 0: it takes no row", got)
+	}
+
+	var none *statusPainter
+	if got := none.Reserved(); got != 0 {
+		t.Errorf("Reserved = %d with no painter at all, want 0", got)
+	}
+}

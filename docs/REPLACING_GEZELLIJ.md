@@ -47,10 +47,13 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   you are looking at and how many are up. **Verified** against a pty opened at a known size: the
   scrolling region is set, the line lands on the last row, and the region is released on detach.
 
-  Its limit is worth stating rather than discovering: `where=bottom` reserves the row with a
-  scrolling region, and a full-screen program that sets its own region — `vim`, `top`, `less` —
-  draws over the line until it exits, at which point it comes back within a tick. `where=title`
-  has no such problem because nothing can draw over a title bar. Doing it properly at the bottom
+  The row is reserved by telling the service its screen is one row shorter, so `vim` and `less`
+  never address the status row at all — an earlier version only set a scrolling region and left
+  the service believing it had the whole screen, and then fought it every tick: `less` lost its
+  prompt, and vim's `:` disappeared from under the user's fingers two seconds after they typed it.
+  **Verified** in tmux at 80x24 by reading the pane back: `less` keeps its prompt row, typing in
+  the shell scrolls normally, and detaching leaves the region released and the cursor where it
+  was. `where=title` avoids the question entirely because nothing can draw over a title bar. Doing it properly at the bottom
   is what owning a grid buys, and is the clearest argument this project has yet produced for the
   terminal emulator DESIGN.md defers. `gozellij doctor` says which placement is configured, and
   names anything in the config it could not understand, so the first time you see it is not the
