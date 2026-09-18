@@ -104,6 +104,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   name and no line carried the other's, one service alone stayed byte-identical and unprefixed, and
   several names without `-f` were refused rather than run together. All three were shown to fail
   when the behaviour was deliberately broken.
+- **One command, several services.** `status`, `start`, `stop`, `restart` and `rm` each take as many
+  names as you give them, and keep going past a name that fails rather than abandoning the rest —
+  the exit status carries a count. `attach` still takes exactly one, because a terminal does.
+  **Verified:** three services stopped by one command, a typo in the middle of three reported while
+  the other two were still started and the command exited non-zero, three removed with their logs.
+  Each of those was shown to fail when the behaviour was broken.
 - **Typing `gozellij` puts you in a shell.** No arguments means the `shell` service: reattached if
   it is running, defined fresh from *your* terminal if it is not. **Verified** on a real pty with
   the daemon started under `env -i`: `TERM`, `LANG` and `$HOME` are the client's, `exit` returns you

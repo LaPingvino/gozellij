@@ -123,14 +123,14 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij add <name> [flags] -- <cmd>` | define a service (`-restart no\|on-failure\|always`, `-start`, `-dir`, `-env`, `-log on\|off`) |
 | `gozellij` | land in your shell — reattached if it is running, fresh if not |
 | `gozellij ls` | what exists, what it is doing, who is watching it and how much log it has |
-| `gozellij status <name>` | one service in detail, including why it will not start |
-| `gozellij start\|stop\|restart <name>` | change its state; `stop` stops what the service started too, and means it stays stopped across a reboot |
+| `gozellij status <name>...` | one service in detail, including why it will not start; several if you name several |
+| `gozellij start\|stop\|restart <name>...` | change the state of one or several; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
-| `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
+| `gozellij logs -f <name>...` | follow the live output; several services interleave with a name on every line, and `Ctrl-C` stops watching, not the service |
 | `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] l` picks one from a list, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
-| `gozellij rm <name> [-keep-logs]` | stop it, forget it, and delete its log |
+| `gozellij rm <name>... [-keep-logs]` | stop them, forget them, delete their logs |
 
 ### A status line
 
