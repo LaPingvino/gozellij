@@ -320,7 +320,7 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 if ! command -v tmux >/dev/null 2>&1; then
     say "  SKIP  the screen checks need tmux, which is not installed"
 else
-    pane() { tmux -L "$tmuxSock" capture-pane -p; }
+    pane() { tmux -L "$tmuxSock" capture-pane -p "$@"; }
     ask()  { tmux -L "$tmuxSock" display -p "$1"; }
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
@@ -365,7 +365,7 @@ else
     if [ "$cy" -ge 19 ] && [ "$cy" -le 22 ]; then
         ok "attaching leaves the cursor where the shell had it, not at the top of the screen"
     else
-        bad "after attaching the cursor is on row $cy of 0-23; the screen was drawn over from the top"
+        bad "after attaching the cursor is on row $cy of 0-23, so the screen was drawn over"
     fi
 
     # 2. The status line is on the last row, and the service has the rest.
@@ -412,6 +412,14 @@ else
     fi
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
+
+    # Not checked here: that attaching does not overwrite the line you typed the command on.
+    #
+    # It is a real bug when it happens - reserving the bottom row used to land the cursor on the
+    # last line of your content, and the replayed prompt printed over it, leaving it in neither
+    # the screen nor the scrollback - but two attempts to reproduce it from this script did not,
+    # and a check that passes when the fix is removed is worse than no check. It reproduces by
+    # hand; the recipe is in docs/REPLACING_GEZELLIJ.md so that anyone can repeat it.
 fi
 
 say

@@ -59,6 +59,22 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   the shell scrolls normally, and detaching leaves the region released and the cursor where it
   was. `where=title` avoids the question entirely because nothing can draw over a title bar.
 
+  One case is verified by hand rather than by the script, because two attempts to reproduce it
+  there did not and a check that passes without the fix is worse than none. Attaching used to
+  overwrite the line you typed the command on — the reserved row was taken by putting the cursor
+  on the row above it, which on a terminal you have been using is the last line of your content.
+  To repeat it:
+
+  ```sh
+  tmux -L probe new-session -d -x 60 -y 12 'sh -c "PS1=\"o$ \"; export PS1; exec /bin/sh -i"'
+  tmux -L probe send-keys 'seq 20' Enter
+  tmux -L probe send-keys ": LINEHEAD-42; gozellij shell" Enter
+  sleep 3; tmux -L probe capture-pane -p -S -60 | grep -c LINEHEAD-42   # 1 = intact, 0 = eaten
+  ```
+
+  Before the fix that printed 0 and the screen showed `[joop@host ~]$ p/gzbin/gozellij shell`
+  where the typed line had been; after it, 1.
+
   Two limits remain, and neither can be fixed from outside a grid. There is a single cursor-save
   slot in a VT100, and the status line has to borrow it to draw on a row the cursor is not on: a
   program using `DECSC`/`DECRC` across a span of its own can have its saved position overwritten

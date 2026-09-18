@@ -262,3 +262,54 @@ func TestTheServiceIsToldItHasOneRowFewer(t *testing.T) {
 		t.Errorf("Reserved = %d with no painter at all, want 0", got)
 	}
 }
+
+// The reserve sequence makes room before it takes the row.
+//
+// Two things this pins that a comment could not. The scroll has to be there at all: without it the
+// cursor lands on the last line of existing content and the replayed prompt prints over it, gone
+// from the screen and from the scrollback both. And reserve has to run before the painter's
+// goroutine, because the replay starts as soon as the attach is answered - a claim made once in a
+// commit message while the call was still the first line of run(), where the edit had silently not
+// matched.
+func TestReserveMakesRoomBeforeTakingTheRow(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	t.Cleanup(func() { ptmx.Close(); tty.Close() })
+	if err := pty.Setsize(tty, sizedTerminal(t, 80, 24)); err != nil {
+		t.Fatalf("Setsize: %v", err)
+	}
+
+	var out syncBuffer
+	cfg := status.DefaultConfig()
+	cfg.Every = time.Hour
+	cfg.Left = []string{"session"}
+	cfg.Right = nil
+
+	// info blocks, so nothing but reserve can have written by the time we look: if the sequence
+	// is there, it was emitted before the goroutine got anywhere.
+	release := make(chan struct{})
+	p := newStatusPainter(&lockedWriter{w: &out}, tty, cfg, func() status.Context {
+		<-release
+		return status.Context{Service: "web"}
+	})
+	if p == nil {
+		t.Fatal("no painter")
+	}
+	drawn := out.String()
+	close(release)
+	t.Cleanup(p.Close)
+
+	if !strings.HasPrefix(drawn, "\x1b[2S") {
+		t.Errorf("reserve did not make room before taking the row: %q", drawn)
+	}
+	scroll := strings.Index(drawn, "\x1b[2S")
+	region := strings.Index(drawn, "\x1b[1;23r")
+	if scroll < 0 || region < 0 || scroll > region {
+		t.Errorf("the room was not made before the region was set: %q", drawn)
+	}
+	if !strings.Contains(drawn, "\x1b[23;1H") {
+		t.Errorf("the cursor was not placed on the freed row: %q", drawn)
+	}
+}

@@ -79,6 +79,12 @@ func newStatusPainter(out *lockedWriter, in *os.File, cfg status.Config, info fu
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
+	// Before the goroutine, not inside it. The replay of the service's screen begins as soon as
+	// the attach request is answered, and "the painter usually wins that race" is not an
+	// ordering. (This was claimed once in a commit message while the call was still the first
+	// line of run(), because the edit had silently not matched. Hence the test for it.)
+	p.reserve()
+
 	go p.run()
 	return p
 }
@@ -114,7 +120,6 @@ func (p *statusPainter) run() {
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
 
-	p.reserve()
 	p.paint()
 	for {
 		select {
@@ -195,7 +200,19 @@ func (p *statusPainter) reserve() {
 		return
 	}
 	p.out.atomically(func(w io.Writer) {
-		fmt.Fprintf(w, "\x1b[1;%dr\x1b[%d;1H", rows-1, rows-1)
+		// Make room before taking the row, rather than landing on whatever is there.
+		//
+		// Reserving the bottom row and then putting the cursor on the row above it meant that on
+		// a full screen - a terminal you have been using, which is the ordinary case - the cursor
+		// landed on the last line of your content and the replayed prompt printed over it.
+		// Measured: `o$ : LINEHEAD-42; /tm` became `[joop@host ~]$ p`, and the original was in
+		// neither the screen nor the scrollback. It was simply gone.
+		//
+		// Two line-scrolls instead: the content moves up two rows, which is what would have
+		// happened if the shell had printed two more lines, so it goes to scrollback rather than
+		// nowhere. That leaves the last row free for the status line and the one above it free
+		// for whatever the service replays.
+		fmt.Fprintf(w, "\x1b[2S\x1b[1;%dr\x1b[%d;1H", rows-1, rows-1)
 	})
 }
 

@@ -335,7 +335,10 @@ func serviceNames(socket string) ([]string, error) {
 	}
 	defer c.Close()
 
-	list, err := c.List()
+	// Bounded, like the status line's query and for the same reason: this runs on the main loop
+	// when you press Ctrl-] n or Ctrl-] l, so an unbounded call means a wedged daemon holds a
+	// service switch for the whole thirty second call timeout. Measured at 30.27s before.
+	list, err := c.ListWithin(statusQueryTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("cannot list services: %w", err)
 	}
