@@ -155,13 +155,23 @@ func (c *Client) attachOnce(service string, in *os.File, out io.Writer, replay b
 	}()
 
 	// Output from the daemon to the terminal, until the far end hangs up or we detach.
-	err = c.pumpOutput(out)
+	finished, err := c.pumpOutput(out)
+
+	if finished {
+		// The service is over and said so. That is an ending, not a disconnection, so do not
+		// go looking for the daemon: reattaching would put the terminal back into a stream
+		// that has nothing left to send.
+		c.Close()
+		releaseInput(in, inputDone)
+		restore()
+		return true, nil
+	}
 
 	select {
 	case <-detached:
 		// Ours: a clean detach, not a failure.
 		c.Close()
-		<-inputDone
+		releaseInput(in, inputDone)
 		restore()
 		fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
 		return true, nil
@@ -169,8 +179,32 @@ func (c *Client) attachOnce(service string, in *os.File, out io.Writer, replay b
 	}
 
 	c.Close()
-	<-inputDone
+	releaseInput(in, inputDone)
 	return false, err
+}
+
+// inputReleaseGrace bounds how long we wait for the keystroke pump to notice it is finished.
+const inputReleaseGrace = 500 * time.Millisecond
+
+// releaseInput stops the keystroke pump and waits for it, without waiting forever.
+//
+// The pump is blocked in read(2) on the *terminal*, not on the socket, so closing the connection
+// does not wake it - which is why waiting for it unconditionally hung the client on a real
+// terminal the moment the service finished. (It did not hang in tests, because a test's stdin is
+// not a tty and reaches EOF immediately. A bug that only appears on the thing the program is for
+// is the kind worth a comment.)
+//
+// A deadline in the past unblocks a read the runtime can poll, which covers a tty. If it cannot -
+// some descriptors are not pollable - we stop waiting rather than deadlock, and say here why that
+// is safe: we are done with this attach either way, and the deadline is cleared so a reattach on
+// the same terminal starts from a clean state.
+func releaseInput(in *os.File, inputDone <-chan error) {
+	_ = in.SetReadDeadline(time.Now())
+	select {
+	case <-inputDone:
+	case <-time.After(inputReleaseGrace):
+	}
+	_ = in.SetReadDeadline(time.Time{})
 }
 
 // pumpInput copies keystrokes to the daemon until the detach key or end of input.
@@ -194,7 +228,8 @@ func (c *Client) pumpInput(in *os.File, detached chan struct{}) error {
 			}
 		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrDeadlineExceeded) {
+				// Deadline exceeded is releaseInput telling us to stop, not a failure.
 				return nil
 			}
 			return err
@@ -203,26 +238,35 @@ func (c *Client) pumpInput(in *os.File, detached chan struct{}) error {
 }
 
 // pumpOutput writes the service's output to the terminal and surfaces events.
-func (c *Client) pumpOutput(out io.Writer) error {
+//
+// It reports whether the daemon said the service had finished, which is the difference between an
+// ending and a disconnection - and therefore between letting go and trying to reattach.
+func (c *Client) pumpOutput(out io.Writer) (bool, error) {
+	finished := false
 	for {
 		kind, payload, err := c.Reader().ReadFrame()
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				return nil
+				return finished, nil
 			}
-			return err
+			return finished, err
 		}
 		switch kind {
 		case ipc.KindData:
 			if _, werr := out.Write(payload); werr != nil {
-				return werr
+				return finished, werr
 			}
 		case ipc.KindEvent:
 			// Events are shown, not swallowed. "lagged" in particular means the screen is
 			// now wrong, and the user needs to know that rather than wonder later.
 			var ev ipc.Event
-			if jerr := jsonUnmarshal(payload, &ev); jerr == nil && ev.Message != "" {
-				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", ev.Message)
+			if jerr := jsonUnmarshal(payload, &ev); jerr == nil {
+				if ev.Kind == ipc.EventFinished {
+					finished = true
+				}
+				if ev.Message != "" {
+					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", ev.Message)
+				}
 			}
 		case ipc.KindResponse:
 			// An in-stream answer (to a resize, say). Nothing to display.

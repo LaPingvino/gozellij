@@ -45,25 +45,40 @@ func TestStopThenStartActuallyStartsItAgain(t *testing.T) {
 }
 
 // Same for a service that gave up: start must revive it rather than reporting success and sulking.
-func TestStartRevivesAFailedService(t *testing.T) {
+func TestStartRevivesAFinishedService(t *testing.T) {
 	f, _ := newTestFabric(t)
 	if err := f.Add(Service{
-		Name: "oneshot", Command: "sh", Args: []string{"-c", "exit 0"}, Restart: RestartNo,
+		Name: "oneshot", Command: "sh", Args: []string{"-c", "echo RAN"}, Restart: RestartNo,
 	}, true); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	waitFabric(t, f, "oneshot", 15*time.Second, "finished", func(st Status) bool {
-		return st.State == StateFailed
+		return st.Finished()
 	})
 
 	if err := f.Start("oneshot"); err != nil {
 		t.Fatalf("Start after it finished: %v", err)
 	}
-	st := waitFabric(t, f, "oneshot", 15*time.Second, "a second run", func(st Status) bool {
-		return st.TotalStarts >= 1 && st.State == StateFailed
-	})
-	if st.TotalStarts < 1 {
-		t.Errorf("TotalStarts = %d; the service was never run again", st.TotalStarts)
+
+	// Counted in the output, not in TotalStarts. Reviving means a *fresh* supervisor, whose
+	// counter starts at zero again - so a test that watched TotalStarts was satisfied by the
+	// first run and would have passed if Start had done nothing at all. The output buffer is
+	// carried across deliberately, so it is the thing that can see both runs.
+	out, err := f.Output("oneshot")
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		data, _ := out.Snapshot()
+		if n := strings.Count(string(data), "RAN"); n >= 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			data, _ := out.Snapshot()
+			t.Fatalf("the service was never run again; its output was %q", data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

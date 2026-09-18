@@ -18,9 +18,16 @@ const (
 	StateRunning
 	// StateBackingOff means the process exited and a restart is scheduled.
 	StateBackingOff
-	// StateFailed is a terminal state: the service exited and its policy says not to restart,
-	// or it could not be started at all.
+	// StateFailed is a terminal state: the service exited badly and its policy says not to
+	// restart, or it could not be started at all.
 	StateFailed
+	// StateExited is a terminal state for a service that finished cleanly - exit code 0, no
+	// signal - and whose policy is done with it.
+	//
+	// Split out from StateFailed because calling a clean exit a failure is a small lie that
+	// costs trust: the first time `gozellij` dropped someone into a shell and they typed exit,
+	// `ls` said their shell had failed. Nothing failed.
+	StateExited
 )
 
 func (s State) String() string {
@@ -33,6 +40,8 @@ func (s State) String() string {
 		return "backing-off"
 	case StateFailed:
 		return "failed"
+	case StateExited:
+		return "exited"
 	default:
 		return fmt.Sprintf("State(%d)", int(s))
 	}
@@ -97,9 +106,17 @@ type Supervisor struct {
 	// spawning a new one. Consumed by the first turn of the loop.
 	adopted *Process
 
-	// notify is a coalescing signal that Status changed. Capacity one: a watcher that has not
-	// caught up does not need to be told twice, it needs to read the current status.
-	notify chan struct{}
+	// watchers are coalescing signals that Status changed, one per watcher. Each has capacity
+	// one: a watcher that has not caught up does not need to be told twice, it needs to read the
+	// current status.
+	//
+	// One channel shared by everybody was the obvious version and is wrong as soon as there are
+	// two watchers: a non-blocking send lands in whichever of them happens to be reading, so an
+	// attached client could sit through the exit of the service it is watching because something
+	// else took the wakeup. Nothing had two watchers until attach grew one, which is how that
+	// kind of bug waits.
+	watchers    map[int]chan struct{}
+	nextWatcher int
 }
 
 // NewSupervisor creates a supervisor for a service. It does not start anything.
@@ -118,12 +135,12 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 	opts.Output = out
 
 	return &Supervisor{
-		svc:    s,
-		opts:   opts,
-		out:    out,
-		after:  time.After,
-		status: Status{Service: s.Name, State: StateStopped},
-		notify: make(chan struct{}, 1),
+		svc:      s,
+		opts:     opts,
+		out:      out,
+		after:    time.After,
+		status:   Status{Service: s.Name, State: StateStopped},
+		watchers: make(map[int]chan struct{}),
 	}
 }
 
@@ -183,18 +200,46 @@ func (s *Supervisor) Current() *Process {
 	return s.cur
 }
 
-// Changed signals that the status has changed. It coalesces: one wakeup may cover several
-// changes, so read Status after receiving.
-func (s *Supervisor) Changed() <-chan struct{} { return s.notify }
+// Watch returns a channel that fires when the status changes, and a function to stop watching.
+//
+// It coalesces: one wakeup may cover several changes, so read Status after receiving. The cancel
+// function closes the channel, so a watcher ranging over it ends when it is cancelled; it is safe
+// to call more than once.
+func (s *Supervisor) Watch() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+
+	s.mu.Lock()
+	id := s.nextWatcher
+	s.nextWatcher++
+	s.watchers[id] = ch
+	s.mu.Unlock()
+
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if c, ok := s.watchers[id]; ok {
+				delete(s.watchers, id)
+				close(c)
+			}
+			s.mu.Unlock()
+		})
+	}
+}
 
 func (s *Supervisor) setStatus(f func(*Status)) {
 	s.mu.Lock()
 	f(&s.status)
-	s.mu.Unlock()
-	select {
-	case s.notify <- struct{}{}:
-	default:
+	// Under the lock, so a watcher registered a moment ago cannot miss the change that its
+	// registration was racing with. The sends are non-blocking, so holding the lock here cannot
+	// stall the supervision loop on a watcher that is not reading.
+	for _, ch := range s.watchers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
+	s.mu.Unlock()
 }
 
 // ErrAlreadyStarted is returned by Start when the supervisor is already running.
@@ -350,8 +395,12 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 			next = StateStopped
 		case !s.svc.Restart.ShouldRestart(exit):
 			// Terminal, and say so plainly. A service that has finished is not "stopped" -
-			// stopped is something an operator did.
+			// stopped is something an operator did - and it has not failed if it exited
+			// cleanly.
 			next = StateFailed
+			if exit.Clean() {
+				next = StateExited
+			}
 		default:
 			// Work the delay out now, so it can be published together with the state it
 			// belongs to. Announcing StateBackingOff first and filling in NextRestart

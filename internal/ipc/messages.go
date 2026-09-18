@@ -107,6 +107,14 @@ const (
 	// EventProcessExited is sent when a service's process ends, so a viewer can say so rather
 	// than leaving a dead pane looking merely quiet.
 	EventProcessExited = "process-exited"
+	// EventFinished says the service has exited and is not coming back, so an attached client
+	// should let go rather than wait.
+	//
+	// Distinct from EventProcessExited, which also covers a process that is about to restart and
+	// a keystroke that arrived while nothing was running. A client has to be able to tell "that
+	// one is over" from "that one is busy being born", and one event kind carrying both meanings
+	// would make it guess from the wording.
+	EventFinished = "finished"
 )
 
 // AddRequest is the payload of OpServiceAdd.

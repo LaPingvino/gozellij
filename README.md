@@ -116,6 +116,7 @@ terminal does the emulating. See [the plan](#plan).
 | | |
 |---|---|
 | `gozellij add <name> [flags] -- <cmd>` | define a service (`-restart no\|on-failure\|always`, `-start`, `-dir`, `-env`, `-log on\|off`) |
+| `gozellij` | land in your shell — reattached if it is running, fresh if not |
 | `gozellij ls` | what exists and what it is doing |
 | `gozellij status <name>` | one service in detail, including why it will not start |
 | `gozellij start\|stop\|restart <name>` | change its state; `stop` means it stays stopped across a reboot |

@@ -221,7 +221,7 @@ func (f *Fabric) Start(name string) error {
 		return err
 	}
 
-	if st := s.Status(); st.State == StateStopped || st.State == StateFailed {
+	if st := s.Status(); st.State == StateStopped || st.State == StateFailed || st.State == StateExited {
 		s = f.replaceSupervisor(name, s)
 	}
 
@@ -407,6 +407,29 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 		truncated = true
 	}
 	return LogTail{Data: data, Truncated: truncated}, nil
+}
+
+// Watch returns a channel that fires when a service's status changes, and a function to stop
+// watching. See Supervisor.Watch.
+func (f *Fabric) Watch(name string) (<-chan struct{}, func(), error) {
+	sup, err := f.supervisor(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	ch, stop := sup.Watch()
+	return ch, stop, nil
+}
+
+// Finished reports whether a service has run and is not going to run again by itself.
+//
+// Deliberately not "is it stopped": a service that has never been started is stopped too, and
+// something attached to it is reasonably waiting for somebody to start it. What ends that wait is
+// a service that *has* exited and whose policy is done with it.
+func (s Status) Finished() bool {
+	if !s.HasExited {
+		return false
+	}
+	return s.State == StateFailed || s.State == StateExited || s.State == StateStopped
 }
 
 // Output returns a service's output buffer, which outlives any one process of it.

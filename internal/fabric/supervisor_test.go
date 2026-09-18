@@ -88,8 +88,10 @@ func TestRestartNoRunsOnce(t *testing.T) {
 	if st.TotalStarts != 1 {
 		t.Errorf("TotalStarts = %d, want 1", st.TotalStarts)
 	}
-	if st.State != StateFailed {
-		t.Errorf("State = %v, want failed (terminal)", st.State)
+	// Exited, not failed: `true` succeeded, and a supervisor that calls a clean exit a failure
+	// makes every reader doubt the ones that really are.
+	if st.State != StateExited {
+		t.Errorf("State = %v, want exited (terminal)", st.State)
 	}
 	if !st.HasExited || !st.LastExit.Clean() {
 		t.Errorf("LastExit = %+v (exited=%v), want a clean exit", st.LastExit, st.HasExited)
@@ -107,8 +109,24 @@ func TestRestartOnFailureAcceptsACleanExit(t *testing.T) {
 	}
 	s.Wait()
 
-	if st := s.Status(); st.TotalStarts != 1 || st.State != StateFailed {
-		t.Errorf("status = %+v, want one start and a terminal state", st)
+	if st := s.Status(); st.TotalStarts != 1 || st.State != StateExited {
+		t.Errorf("status = %+v, want one start and a clean terminal state", st)
+	}
+}
+
+// A non-zero exit under restart: no is a failure, and stays one.
+func TestRestartNoCallsABadExitAFailure(t *testing.T) {
+	s := NewSupervisor(Service{
+		Name: "bad", Command: "false", Restart: RestartNo,
+	}, StartOptions{})
+	instantBackoff(s)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Wait()
+
+	if st := s.Status(); st.State != StateFailed {
+		t.Errorf("State = %v, want failed", st.State)
 	}
 }
 
@@ -300,10 +318,53 @@ func TestChangedSignalsStatusChanges(t *testing.T) {
 	}
 	defer s.Stop()
 
+	changed, stop := s.Watch()
+	defer stop()
+
 	select {
-	case <-s.Changed():
+	case <-changed:
 	case <-time.After(10 * time.Second):
 		t.Fatal("no change signal after starting a service")
+	}
+}
+
+func TestEveryWatcherSeesEveryChange(t *testing.T) {
+	// One shared channel would have delivered each wakeup to exactly one of these, which is how
+	// an attached client sits through the exit of the service it is watching.
+	s := NewSupervisor(Service{Name: "sleeper", Command: "sleep", Args: []string{"300"}}, StartOptions{})
+
+	a, stopA := s.Watch()
+	defer stopA()
+	b, stopB := s.Watch()
+	defer stopB()
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	for i, ch := range []<-chan struct{}{a, b} {
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("watcher %d never woke up", i)
+		}
+	}
+}
+
+func TestStopWatchingEndsTheChannel(t *testing.T) {
+	s := NewSupervisor(Service{Name: "sleeper", Command: "true"}, StartOptions{})
+	ch, stop := s.Watch()
+	stop()
+	stop() // twice, because a caller with a defer and an early return will do exactly this
+
+	select {
+	case _, open := <-ch:
+		if open {
+			t.Error("channel delivered a value after the watcher was cancelled")
+		}
+	case <-time.After(time.Second):
+		t.Error("channel was not closed when the watcher was cancelled")
 	}
 }
 

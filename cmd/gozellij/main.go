@@ -32,6 +32,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `gozellij %s - a host-native process fabric
 
 Usage:
+  gozellij                             land in your shell (starts one if there is none)
   gozellij ls                          list services
   gozellij status <name>               show one service
   gozellij add <name> -- <cmd> [args]  define a service
@@ -40,6 +41,7 @@ Usage:
   gozellij logs <name>                 print its recent output and exit
   gozellij logs -f <name>              follow its output until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
+  gozellij shell [-name <name>]        the same, with a different service name
   gozellij rm <name>                   remove it
   gozellij ping                        check the daemon is alive
 
@@ -66,9 +68,11 @@ The daemon is gozellijd. Services keep running when it stops.
 }
 
 func run(args []string) error {
+	// No arguments means "put me somewhere useful". Printing usage was the wrong answer for a
+	// program whose job is to be the thing you land in when you log in: nobody types the name of
+	// their multiplexer in order to read its help.
 	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+		return cmdShell(nil)
 	}
 
 	switch args[0] {
@@ -83,6 +87,8 @@ func run(args []string) error {
 	cmd, rest := args[0], args[1:]
 
 	switch cmd {
+	case "shell":
+		return cmdShell(rest)
 	case "ls", "list":
 		return cmdList(rest)
 	case "status":
@@ -106,6 +112,137 @@ func run(args []string) error {
 		// Name it. "Unknown command" without saying which is a small unkindness that adds up.
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// DefaultShellService is the service bare `gozellij` lands you in.
+//
+// A name, not a session: in this design a shell is just a service, which is a different model from
+// gezellij's named sessions. Whether that is the better model is an open question; what is not open
+// is that typing the program's name has to put you somewhere.
+const DefaultShellService = "shell"
+
+// shellEnv are the variables a shell needs from the terminal you are typing in, rather than from
+// whatever environment the daemon happens to have.
+//
+// This matters more than it looks. Under the systemd user unit the daemon has no TERM at all, and
+// a service started from it gets TERM=dumb and no locale - so less, vim and top are broken in a
+// shell that otherwise looks fine. Every by-hand test before this one started the daemon from a
+// terminal and inherited the answer by accident.
+var shellEnv = []string{"TERM", "COLORTERM", "LANG"}
+
+// captureShellEnv reads the terminal's environment for a shell we are about to define.
+func captureShellEnv() []string {
+	var env []string
+	for _, k := range shellEnv {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	// Locale is spelled across a family of variables and taking only LANG gets it subtly wrong
+	// for anyone who sets LC_TIME or LC_COLLATE on its own.
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "LC_") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// cmdShell lands you in a shell, creating one if there is not one already.
+//
+// The rule, which is worth stating because it decides what happens to a customised service: if the
+// shell is running, you are reattached to it, environment and all, exactly as you left it. If it is
+// not running, it is defined again from the terminal you are typing in now - because a shell that
+// is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how you
+// end up with a vim that draws garbage. Keep a shell you have customised under another name and
+// attach to it by name.
+func cmdShell(args []string) error {
+	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	name := fs.String("name", DefaultShellService, "the service to land in")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	path := *sock
+	if path == "" {
+		path = daemon.SocketPath()
+	}
+
+	c, err := daemon.Dial(path)
+	if err != nil {
+		if errors.Is(err, daemon.ErrNoDaemon) {
+			// The bare invocation is the one a person types at login, so the answer has to be
+			// the next command rather than the name of a program.
+			return fmt.Errorf("%w\nStart it with:  systemctl --user start gozellijd\n"+
+				"or, without systemd:  gozellijd >/dev/null 2>&1 &", err)
+		}
+		return err
+	}
+
+	running, known, err := shellState(c, *name)
+	if err != nil {
+		c.Close()
+		return err
+	}
+
+	if !running {
+		if known {
+			// Defined but not running: replace the definition, so the shell you are about to
+			// get belongs to the terminal you are in.
+			if err := c.Remove(*name); err != nil {
+				c.Close()
+				return fmt.Errorf("replacing the old %s definition: %w", *name, err)
+			}
+		}
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		home, _ := os.UserHomeDir()
+		env := captureShellEnv()
+		// Say where you are, the way tmux sets $TMUX and zellij sets $ZELLIJ.
+		//
+		// This is not decoration. A login shell runs your profile, and profiles start
+		// multiplexers: the first time this was run by hand it dropped straight into gezellij,
+		// because ~/.profile autostarts it and nothing said "you are already in one". Anything
+		// that autostarts a session should guard on this variable.
+		env = append(env, "GOZELLIJ="+*name)
+		if _, err := c.Add(*name, ipc.AddRequest{
+			Command: shell,
+			// A login shell: under systemd the daemon's environment is nearly empty, so the
+			// shell has to build its own rather than inherit one that was never set up.
+			Args:    []string{"-l"},
+			Dir:     home,
+			Env:     env,
+			Restart: "no",
+			Start:   true,
+		}); err != nil {
+			c.Close()
+			return err
+		}
+	}
+	c.Close()
+
+	return daemon.AttachLoop(path, *name, os.Stdin, os.Stdout, true)
+}
+
+// shellState reports whether the service is running and whether it exists at all.
+//
+// It asks for the list rather than matching on the text of a "no such service" error: an error
+// string is a message for a person, and branching on it breaks the first time somebody improves
+// the wording.
+func shellState(c *daemon.Client, name string) (running, known bool, err error) {
+	list, err := c.List()
+	if err != nil {
+		return false, false, err
+	}
+	for _, svc := range list.Services {
+		if svc.Service == name {
+			return svc.State == "running", true, nil
+		}
+	}
+	return false, false, nil
 }
 
 // connect dials the daemon, honouring a -socket flag already parsed into path.

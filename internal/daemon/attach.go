@@ -77,6 +77,13 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 		}
 	}
 
+	// A third goroutine watches for the service finishing. Without it, `exit` in an attached
+	// shell left the terminal in an attach that would never end: the pump is ranging over a
+	// buffer nobody closes, and readInput only notices a dead process when you type at it. The
+	// first thing anybody does with a login shell is exit it.
+	watchDone := make(chan struct{})
+	stopWatching := sess.watchForExit(req.Service, watchDone)
+
 	// One goroutine pumps output to the client; this one reads the client's input. They end
 	// together: whichever notices the connection is gone closes it, and the other unblocks.
 	done := make(chan struct{})
@@ -87,6 +94,9 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 
 	err = sess.readInput()
 
+	stopWatching()
+	<-watchDone
+
 	// Order matters here, and getting it wrong deadlocks. Detach must come *before* waiting for
 	// the pump: the pump ranges over the subscriber's channel, and only Detach closes it. With
 	// a `defer sub.Detach()` instead, this function waits for a goroutine that is waiting for
@@ -95,6 +105,60 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	sub.Detach() // close the channel the pump is ranging over
 	<-done
 	return err
+}
+
+// watchForExit ends the attach when the service has finished for good.
+//
+// Backing off is deliberately not finished: the supervisor has already written the restart notice
+// into the output the client is watching, and a `restart always` service should carry its viewer
+// across the gap rather than dropping them at a shell prompt. What ends the attach is a service
+// that has exited and is not coming back.
+//
+// Returns a function that stops the watch; it must be called, and the done channel waited on,
+// before the attach returns.
+func (a *attachSession) watchForExit(service string, done chan struct{}) func() {
+	changed, stop, err := a.srv.fab.Watch(service)
+	if err != nil {
+		// The service went away between the lookup above and here. Nothing to watch, and the
+		// attach will end on its own when the buffer closes.
+		close(done)
+		return func() {}
+	}
+
+	finished := func() bool {
+		st, serr := a.srv.fab.Status(service)
+		return serr != nil || st.Finished()
+	}
+
+	go func() {
+		defer close(done)
+		// Check before waiting: attaching to a service that has already finished must not wait
+		// for a change that has already happened.
+		for !finished() {
+			if _, open := <-changed; !open {
+				return
+			}
+		}
+		st, _ := a.srv.fab.Status(service)
+		a.notify(ipc.EventFinished, exitWords(st))
+		// Closing the connection is what actually releases the client: it unblocks readInput,
+		// which is sitting on a read that nothing else will ever satisfy.
+		a.conn.Close()
+	}()
+
+	return stop
+}
+
+// exitWords says how a service ended in a way a person can act on.
+func exitWords(st fabric.Status) string {
+	switch {
+	case st.LastExit.Signal != "":
+		return fmt.Sprintf("%s was killed by %s and is not restarting", st.Service, st.LastExit.Signal)
+	case st.LastExit.Code == 0:
+		return fmt.Sprintf("%s exited", st.Service)
+	default:
+		return fmt.Sprintf("%s exited with code %d and is not restarting", st.Service, st.LastExit.Code)
+	}
 }
 
 // writeData sends output to the client in frames that fit.

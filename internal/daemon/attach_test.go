@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -411,4 +413,78 @@ func TestTwoClientsCanWatchTheSameService(t *testing.T) {
 	}
 	collect(t, a, "shout", 15*time.Second, serviceDiag(fab, "shared"))
 	collect(t, b, "shout", 15*time.Second, serviceDiag(fab, "shared"))
+}
+
+// TestAttachEndsWhenTheServiceFinishes is the `exit` story. Before this, typing exit in an attached
+// shell left the terminal in an attach that would never end: the output pump ranges over a buffer
+// nobody closes, and the input pump only notices a dead process when you type at it.
+func TestAttachEndsWhenTheServiceFinishes(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("quick", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "echo bye"}, Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	attacher, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer attacher.Close()
+
+	in, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer in.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- attacher.Attach("quick", in, io.Discard, true) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Attach = %v, want nil once the service is over", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the attach never ended, although the service had finished")
+	}
+}
+
+// A service that is restarting must NOT drop its viewer: the restart notice is already in the
+// output they are watching, and being dumped at a shell prompt because a supervised service did
+// exactly what it was told to do is the opposite of the promise.
+func TestAttachSurvivesARestart(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("flappy", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "echo round"}, Restart: "always", Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	attacher, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer attacher.Close()
+
+	in, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer in.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- attacher.Attach("flappy", in, io.Discard, true) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("the attach ended (%v) although the service is only restarting", err)
+	case <-time.After(2 * time.Second):
+		// Still attached, which is the point.
+	}
 }
