@@ -25,6 +25,22 @@ const DrainGrace = 250 * time.Millisecond
 // StopGrace is how long a process gets to exit after SIGTERM before it is sent SIGKILL.
 const StopGrace = 5 * time.Second
 
+// DrainAbandon is how long reap waits for the pty reader to finish *after* closing the pty, before
+// giving up on it.
+//
+// It has to give up, and that is worth explaining. Closing an os.File does not interrupt a read
+// already in flight on a descriptor the runtime cannot poll, and a pty master is one of those: the
+// read returns when something writes or when the last writer closes the slave. A grandchild
+// holding the slave open therefore keeps the reader blocked for as long as it lives - and reap was
+// waiting for that reader unconditionally, so Process.Wait never returned, so `gozellij stop` hung
+// for ever. (Measured: a service with a child that ignores SIGHUP made stop hang until the client
+// timed out at thirty seconds, and the daemon never finished stopping it at all.)
+//
+// Killing the process group, below, makes this rare. It cannot make it impossible, because a
+// grandchild that calls setsid leaves the group. So the wait is bounded, and what is left behind
+// is said out loud rather than hidden.
+const DrainAbandon = 2 * time.Second
+
 // Process is one running instance of a Service.
 //
 // It owns the child, its pty, and the goroutines draining it. Everything a viewer needs is in
@@ -177,12 +193,22 @@ func (p *Process) reap() {
 	}
 
 	// The child is gone, but bytes it wrote may still be in flight. Give the reader a moment,
-	// then close the pty so it cannot block forever on a grandchild holding the slave open.
+	// then close the pty - and then stop waiting for it, because closing is not guaranteed to
+	// wake it. See DrainAbandon.
 	select {
 	case <-p.drained:
 	case <-time.After(DrainGrace):
 		p.closePTY()
-		<-p.drained
+		select {
+		case <-p.drained:
+		case <-time.After(DrainAbandon):
+			// Say so in the service's own output, where somebody reading its logs will find
+			// it, rather than only in the daemon's log where nobody is looking.
+			fmt.Fprintf(p.Output, "\r\n[gozellij] %s: something is still holding this "+
+				"service's terminal open, so its output is no longer being read\r\n",
+				p.Service.Name)
+			p.logf("gave up waiting for the pty reader after %s; something still holds the slave open", DrainAbandon)
+		}
 	}
 
 	p.mu.Lock()
@@ -353,7 +379,65 @@ func (p *Process) Signal(sig os.Signal) error {
 	return nil
 }
 
+// ErrNotGroupLeader means the child does not lead its own process group, so its group cannot be
+// signalled without signalling processes that are not ours.
+var ErrNotGroupLeader = errors.New("process does not lead its own process group")
+
+// SignalGroup sends a signal to the child's whole process group.
+//
+// Stopping only the child is not stopping the service. A service is usually a shell, and a shell
+// starts things: those children die when the pty is closed and they get SIGHUP, but one that
+// ignores SIGHUP simply stays - measured, and it also wedged the pty reader, which is what made
+// `stop` hang for ever.
+//
+// The guard is the important part. The child is a session leader (the pty setup calls setsid), so
+// its process group id equals its pid, and killing -pid reaches exactly its descendants. If that
+// is somehow not true, this refuses: a process group we do not lead may be *ours* - the daemon's
+// own - and `kill(-pgid)` would take down the fabric and every other service with it. Refusing and
+// falling back to the single pid is strictly better than being clever here.
+func (p *Process) SignalGroup(sig syscall.Signal) error {
+	if p.pid <= 0 {
+		return ErrProcessGone
+	}
+	pgid, err := syscall.Getpgid(p.pid)
+	if err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return ErrProcessGone
+		}
+		return fmt.Errorf("finding the process group of %s: %w", p.Service.Name, err)
+	}
+	if pgid != p.pid {
+		return ErrNotGroupLeader
+	}
+	if err := syscall.Kill(-pgid, sig); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return ErrProcessGone
+		}
+		return fmt.Errorf("signalling the process group of %s: %w", p.Service.Name, err)
+	}
+	return nil
+}
+
+// stopSignal sends sig to the whole process group, falling back to the child alone.
+func (p *Process) stopSignal(sig syscall.Signal) {
+	err := p.SignalGroup(sig)
+	if err == nil || errors.Is(err, ErrProcessGone) {
+		return
+	}
+	if !errors.Is(err, ErrNotGroupLeader) {
+		p.logf("%v to the process group failed: %v", sig, err)
+	}
+	if err := p.Signal(sig); err != nil && !errors.Is(err, ErrProcessGone) {
+		// Nothing useful to do about it, but it should not vanish either.
+		p.logf("%v failed: %v", sig, err)
+	}
+}
+
 // Stop asks the process to exit: SIGTERM, then SIGKILL if it is still there after StopGrace.
+//
+// Both go to the whole process group, so stopping a service stops what the service started. A
+// grandchild that has called setsid is in a different session and survives this; that needs a
+// cgroup, and is the reason the systemd unit asks for one.
 //
 // It returns how the process ended. A process that ignores SIGTERM is not an error - it is the
 // normal case for a few programs - but the caller can tell the difference, because a killed
@@ -363,10 +447,7 @@ func (p *Process) Stop() Exit {
 		return p.Wait()
 	}
 
-	if err := p.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, ErrProcessGone) {
-		// Nothing useful to do about it, but it should not vanish either.
-		p.logf("SIGTERM failed: %v", err)
-	}
+	p.stopSignal(syscall.SIGTERM)
 
 	select {
 	case <-p.done:
@@ -374,9 +455,7 @@ func (p *Process) Stop() Exit {
 	case <-time.After(StopGrace):
 	}
 
-	if err := p.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, ErrProcessGone) {
-		p.logf("SIGKILL failed: %v", err)
-	}
+	p.stopSignal(syscall.SIGKILL)
 	return p.Wait()
 }
 

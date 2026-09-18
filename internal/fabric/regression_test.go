@@ -8,9 +8,12 @@ package fabric
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -297,6 +300,78 @@ func waitForWatcher(t *testing.T, f *Fabric, name string, changed <-chan struct{
 		case <-deadline:
 			st, _ := f.Status(name)
 			t.Fatalf("%s; status was %+v", complaint, st)
+		}
+	}
+}
+
+// alive reports whether a pid still exists. Signal 0 checks without sending anything.
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// Stopping a service must stop what the service started.
+//
+// A shell's children die of SIGHUP when the pty closes - unless they ignore it, and then they used
+// to simply stay. Worse, one holding the pty slave open wedged the reader that reap waits for, so
+// `gozellij stop` never returned at all.
+func TestStoppingAServiceStopsWhatItStarted(t *testing.T) {
+	s := NewSupervisor(Service{
+		Name: "parent", Command: "sh",
+		// A child that ignores SIGHUP and keeps the terminal open.
+		Args:    []string{"-c", `trap "" HUP; (trap "" HUP; exec sleep 600) & echo CHILD=$!; wait`},
+		Restart: RestartNo,
+	}, StartOptions{})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var child int
+	deadline := time.Now().Add(10 * time.Second)
+	for child == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the service never reported its child's pid")
+		}
+		data, _ := s.Output().Snapshot()
+		if _, after, ok := strings.Cut(string(data), "CHILD="); ok {
+			if line, _, ok := strings.Cut(after, "\n"); ok {
+				child, _ = strconv.Atoi(strings.TrimSpace(line))
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !alive(child) {
+		t.Fatalf("precondition: child %d is not running", child)
+	}
+	t.Cleanup(func() {
+		if alive(child) {
+			syscall.Kill(child, syscall.SIGKILL)
+		}
+	})
+
+	// Bounded, because the bug was an unbounded wait rather than a slow one.
+	done := make(chan struct{})
+	go func() { defer close(done); s.Stop() }()
+	select {
+	case <-done:
+	case <-time.After(StopGrace + DrainAbandon + 10*time.Second):
+		t.Fatal("Stop never returned; something is still holding the pty and reap is waiting for it")
+	}
+
+	for i := 0; i < 100 && alive(child); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if alive(child) {
+		t.Errorf("child %d outlived the service it belonged to", child)
+	}
+}
+
+// The guard that keeps a process-group kill from reaching the daemon's own group.
+func TestSignalGroupRefusesAProcessItDoesNotLead(t *testing.T) {
+	// Our own process is (almost certainly) not a group leader, and even if it were, this must
+	// not signal anything: the point is that it refuses rather than guesses.
+	p := &Process{Service: Service{Name: "pretend"}, pid: os.Getpid()}
+	err := p.SignalGroup(syscall.SIGTERM)
+	if pgid, gerr := syscall.Getpgid(os.Getpid()); gerr == nil && pgid != os.Getpid() {
+		if !errors.Is(err, ErrNotGroupLeader) {
+			t.Errorf("SignalGroup = %v, want ErrNotGroupLeader for a process that leads no group", err)
 		}
 	}
 }

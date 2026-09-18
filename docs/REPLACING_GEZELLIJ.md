@@ -74,8 +74,22 @@ grid has to reimplement those and then be worse at them.
    broken now, so a warning does not break a script that calls it. **Verified** against a scratch
    fabric in each state, and on this machine — where it correctly reports that **linger is off**,
    so nothing here currently survives a logout.
-5. **A service that daemonises cannot be fully stopped.** Ordinary children die with the pty's
-   SIGHUP; one that calls `setsid` survives. **Verified.** Needs a process-group or cgroup kill.
+5. **A service that daemonises cannot be *fully* stopped — but `stop` now works.** `stop` signals
+   the whole process group, so what the service started stops with it. **Verified** on this
+   machine: a child that ignores SIGHUP used to survive and now does not.
+
+   Going after it turned up something much worse than the orphan. A grandchild holding the pty
+   slave open wedged the reader that `reap` waits for — and closing an `os.File` does not interrupt
+   a read already in flight on a descriptor the runtime cannot poll — so `Process.Wait` never
+   returned and **`gozellij stop` hung for ever**, with the client's thirty second timeout the only
+   thing that ended it. **Verified** by goroutine dump. Stopping all three test services now takes
+   2.5 seconds in total; before, none of them completed at all.
+
+   What is still open: a grandchild that calls `setsid` leaves the process group and survives.
+   **Verified.** That needs a cgroup, and on this machine the daemon runs in a *session scope*,
+   which is root-owned and cannot be subdivided — so the cgroup path only exists under the systemd
+   user unit, which sets `Delegate=yes` for exactly this reason. `gozellij doctor` should say which
+   of the two modes is in force.
 6. **No session concept.** gezellij has named sessions you attach to; here there are services, and
    a shell is just a service. That may be the better model — but it is a different model, and
    swapping daily drivers means the muscle memory has to land somewhere.
