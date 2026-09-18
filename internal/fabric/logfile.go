@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,7 +49,15 @@ type LogSink struct {
 	sub     *Subscriber
 	closing bool
 	lastErr string
-	dropped int64
+	// rotateErr is kept separately from lastErr because it is sticky.
+	//
+	// A write error is transient - a full disk that gets space back should stop being reported -
+	// so a successful write clears lastErr. A *rotation* failure is not transient: the file goes
+	// on growing past its cap forever afterwards, and the very next successful write was wiping
+	// the only record that anything was wrong. `gozellij status` then said nothing at all while
+	// the log ate the disk.
+	rotateErr string
+	dropped   int64
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -137,10 +146,16 @@ func (l *LogSink) Path() string { return l.path }
 func (l *LogSink) Err() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.lastErr == "" {
-		return ""
+
+	var parts []string
+	if l.lastErr != "" {
+		parts = append(parts, fmt.Sprintf("%s (%d bytes of output not written)", l.lastErr, l.dropped))
 	}
-	return fmt.Sprintf("%s (%d bytes of output not written)", l.lastErr, l.dropped)
+	if l.rotateErr != "" {
+		parts = append(parts, fmt.Sprintf("cannot rotate this log, so it will grow past its %d byte limit: %s",
+			l.max, l.rotateErr))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Close stops writing and waits for the file to be closed.
@@ -285,8 +300,11 @@ func (l *LogSink) rotate() {
 	}
 	if err := os.Rename(l.path, l.path+".1"); err != nil && !os.IsNotExist(err) {
 		// Say so, but carry on: a log that cannot be rotated should keep being written, not
-		// stop. The size limit is then not honoured, which is the lesser problem.
-		l.fail(err, 0)
+		// stop. The size limit is then not honoured, which is the lesser problem - and is
+		// recorded where the next successful write cannot erase it.
+		l.setRotateErr(err.Error())
+	} else {
+		l.setRotateErr("")
 	}
 	f, err := openLog(l.path)
 	if err != nil {
@@ -308,6 +326,12 @@ func (l *LogSink) fail(err error, lost int) {
 func (l *LogSink) clearErr() {
 	l.mu.Lock()
 	l.lastErr = ""
+	l.mu.Unlock()
+}
+
+func (l *LogSink) setRotateErr(msg string) {
+	l.mu.Lock()
+	l.rotateErr = msg
 	l.mu.Unlock()
 }
 

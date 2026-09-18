@@ -395,7 +395,7 @@ func (s *Server) logs(req ipc.Request) ipc.Response {
 		return ipc.Err(req.ID, err)
 	}
 
-	reply := ipc.LogsReply{Data: tail.Data, Truncated: tail.Truncated, Path: tail.Path}
+	reply := ipc.LogsReply{Data: tail.Data, Truncated: tail.Truncated, Path: tail.Path, LogError: tail.Err}
 	if st, serr := s.fab.Status(req.Service); serr == nil {
 		reply.Running = st.State == fabric.StateRunning
 	}

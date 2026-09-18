@@ -67,6 +67,15 @@ type Status struct {
 	HasExited bool
 	// NextRestart is when the next attempt is due, valid in StateBackingOff.
 	NextRestart time.Time
+	// Ended is true once the supervision loop has finished, which is the exact question
+	// "is anything more going to happen to this service?" - and therefore the question an
+	// attached client is really asking.
+	//
+	// It is not derivable from State. Stopped covers both a service nobody has started yet and
+	// one whose loop has ended; failed-at-spawn never sets HasExited because nothing ever
+	// exited. Answering from those left attached clients waiting on services that were never
+	// going to move again.
+	Ended bool
 	// LogError is why this service's output is not reaching disk, empty when it is (or when
 	// logging is off for it on purpose). Somebody has to say so before the operator finds out
 	// by going looking for output that was never written.
@@ -106,21 +115,19 @@ type Supervisor struct {
 	// spawning a new one. Consumed by the first turn of the loop.
 	adopted *Process
 
-	// watchers are coalescing signals that Status changed, one per watcher. Each has capacity
-	// one: a watcher that has not caught up does not need to be told twice, it needs to read the
-	// current status.
-	//
-	// One channel shared by everybody was the obvious version and is wrong as soon as there are
-	// two watchers: a non-blocking send lands in whichever of them happens to be reading, so an
-	// attached client could sit through the exit of the service it is watching because something
-	// else took the wakeup. Nothing had two watchers until attach grew one, which is how that
-	// kind of bug waits.
-	watchers    map[int]chan struct{}
-	nextWatcher int
+	// watchers is shared across supervisor replacements, like the output buffer above and for
+	// the same reason: the thing being watched is the *service*, and a supervisor is only its
+	// current incarnation.
+	watchers *StatusWatchers
 }
 
 // NewSupervisor creates a supervisor for a service. It does not start anything.
 func NewSupervisor(s Service, opts StartOptions) *Supervisor {
+	watchers := opts.Watchers
+	if watchers == nil {
+		watchers = NewStatusWatchers()
+	}
+
 	out := opts.Output
 	if out == nil {
 		out = NewOutputBuffer(opts.OutputBytes)
@@ -140,7 +147,7 @@ func NewSupervisor(s Service, opts StartOptions) *Supervisor {
 		out:      out,
 		after:    time.After,
 		status:   Status{Service: s.Name, State: StateStopped},
-		watchers: make(map[int]chan struct{}),
+		watchers: watchers,
 	}
 }
 
@@ -201,45 +208,21 @@ func (s *Supervisor) Current() *Process {
 }
 
 // Watch returns a channel that fires when the status changes, and a function to stop watching.
-//
-// It coalesces: one wakeup may cover several changes, so read Status after receiving. The cancel
-// function closes the channel, so a watcher ranging over it ends when it is cancelled; it is safe
-// to call more than once.
-func (s *Supervisor) Watch() (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
+// See StatusWatchers.
+func (s *Supervisor) Watch() (<-chan struct{}, func()) { return s.watchers.Watch() }
 
-	s.mu.Lock()
-	id := s.nextWatcher
-	s.nextWatcher++
-	s.watchers[id] = ch
-	s.mu.Unlock()
-
-	var once sync.Once
-	return ch, func() {
-		once.Do(func() {
-			s.mu.Lock()
-			if c, ok := s.watchers[id]; ok {
-				delete(s.watchers, id)
-				close(c)
-			}
-			s.mu.Unlock()
-		})
-	}
-}
+// Watchers is the watcher set, so a replacement supervisor can inherit it.
+func (s *Supervisor) Watchers() *StatusWatchers { return s.watchers }
 
 func (s *Supervisor) setStatus(f func(*Status)) {
 	s.mu.Lock()
 	f(&s.status)
-	// Under the lock, so a watcher registered a moment ago cannot miss the change that its
-	// registration was racing with. The sends are non-blocking, so holding the lock here cannot
-	// stall the supervision loop on a watcher that is not reading.
-	for _, ch := range s.watchers {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
 	s.mu.Unlock()
+	// After the lock is released, so a watcher that wakes up and immediately reads Status cannot
+	// be blocked by the goroutine that is telling it. The ordering that matters is the other
+	// one: the status is already updated before anybody is told, so a watcher that registers,
+	// reads, and then waits either sees the new status or is woken by this.
+	s.watchers.Notify()
 }
 
 // ErrAlreadyStarted is returned by Start when the supervisor is already running.
@@ -304,6 +287,9 @@ func (s *Supervisor) Wait() {
 // run is the supervision loop.
 func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	// Registered after close(done), so it runs *before* it: anybody woken by the loop finishing
+	// must already be able to see that it finished.
+	defer s.setStatus(func(st *Status) { st.Ended = true })
 
 	for {
 		if ctx.Err() != nil {

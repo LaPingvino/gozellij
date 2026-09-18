@@ -80,6 +80,22 @@ grid has to reimplement those and then be worse at them.
    a shell is just a service. That may be the better model — but it is a different model, and
    swapping daily drivers means the muscle memory has to land somewhere.
 
+## Known gaps, written down rather than papered over
+
+- **The first keystroke after a reattach can be swallowed.** When the daemon is replaced, the
+  client reconnects — but its old keystroke pump is still blocked in `read(2)` on the terminal,
+  because `SetReadDeadline` is refused on a tty (`file type does not support deadline`, measured).
+  A second pump starts alongside it, and whichever wakes first takes the next byte. Fixing it
+  properly means one input pump for the whole reattach loop, which is its own change.
+- **`gozellij rm` does not delete the service's log.** For a shell that file is the full transcript
+  of everything you typed and everything it answered, so removing the service does not remove the
+  record; delete `$XDG_STATE_HOME/gozellij/logs/<name>.log` yourself. A later service of the same
+  name appends to it, with a line marking where each daemon started writing — and a service added
+  with `-log off` is never answered from it.
+- **Two terminals running bare `gozellij` at the same moment** can race over defining the shell:
+  one of them gets an error and succeeds on a second try. It is loud rather than silent, so it is
+  recorded here rather than fixed.
+
 ## What is deliberately not on this list
 
 - **Per-service ULA addresses.** The package exists (`internal/ula`) and is not wired in. An

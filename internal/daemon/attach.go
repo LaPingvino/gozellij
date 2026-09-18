@@ -82,20 +82,22 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// buffer nobody closes, and readInput only notices a dead process when you type at it. The
 	// first thing anybody does with a login shell is exit it.
 	watchDone := make(chan struct{})
-	stopWatching := sess.watchForExit(req.Service, watchDone)
+	stopWatching := sess.watchForExit(req.Service, sub, watchDone)
 
 	// One goroutine pumps output to the client; this one reads the client's input. They end
 	// together: whichever notices the connection is gone closes it, and the other unblocks.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Closing the connection when the output ends is what releases readInput, which is
+		// otherwise blocked on a read nothing will ever satisfy. Without it, anything that
+		// ends the stream from the far side - the service finishing, or `gozellij rm` closing
+		// the buffer out from under an attached client - left the client hanging.
+		defer conn.Close()
 		sess.pumpOutput(sub)
 	}()
 
 	err = sess.readInput()
-
-	stopWatching()
-	<-watchDone
 
 	// Order matters here, and getting it wrong deadlocks. Detach must come *before* waiting for
 	// the pump: the pump ranges over the subscriber's channel, and only Detach closes it. With
@@ -104,6 +106,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	conn.Close() // unblock the pump if it is mid-write
 	sub.Detach() // close the channel the pump is ranging over
 	<-done
+
+	// The watcher last, and only once the pump is finished: it may itself be detaching the
+	// subscriber, and stopping it first would close the channel it is selecting on.
+	stopWatching()
+	<-watchDone
 	return err
 }
 
@@ -114,9 +121,15 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 // across the gap rather than dropping them at a shell prompt. What ends the attach is a service
 // that has exited and is not coming back.
 //
+// Ending the attach is done by detaching the subscriber rather than by closing the connection.
+// That difference is a line of output: a closed connection cuts off whatever the pump still has
+// queued, which for a shell is the last thing it printed before you typed exit. Closing the
+// subscriber's channel lets the pump drain what is already in it and then finish, and the pump
+// closes the connection on its way out.
+//
 // Returns a function that stops the watch; it must be called, and the done channel waited on,
 // before the attach returns.
-func (a *attachSession) watchForExit(service string, done chan struct{}) func() {
+func (a *attachSession) watchForExit(service string, sub *fabric.Subscriber, done chan struct{}) func() {
 	changed, stop, err := a.srv.fab.Watch(service)
 	if err != nil {
 		// The service went away between the lookup above and here. Nothing to watch, and the
@@ -140,24 +153,33 @@ func (a *attachSession) watchForExit(service string, done chan struct{}) func() 
 			}
 		}
 		st, _ := a.srv.fab.Status(service)
-		a.notify(ipc.EventFinished, exitWords(st))
-		// Closing the connection is what actually releases the client: it unblocks readInput,
-		// which is sitting on a read that nothing else will ever satisfy.
-		a.conn.Close()
+		a.notify(ipc.EventFinished, exitWords(service, st))
+		sub.Detach()
 	}()
 
 	return stop
 }
 
 // exitWords says how a service ended in a way a person can act on.
-func exitWords(st fabric.Status) string {
+//
+// The name comes from the caller rather than from the status, because the status may be a zero
+// value: the service can be removed out from under an attached client, and "[gozellij:  exited]"
+// with a blank name is not an improvement on saying nothing.
+func exitWords(service string, st fabric.Status) string {
 	switch {
+	case st.State == fabric.StateStopped && st.HasExited:
+		// Stopped is something an operator did. Reporting the SIGTERM we sent as though the
+		// service had been killed by something is technically true and completely misleading.
+		return service + " was stopped"
+	case st.LastError != "" && !st.HasExited:
+		// It never ran at all - a missing binary, most often. The error is the whole message.
+		return fmt.Sprintf("%s could not start: %s", service, st.LastError)
 	case st.LastExit.Signal != "":
-		return fmt.Sprintf("%s was killed by %s and is not restarting", st.Service, st.LastExit.Signal)
+		return fmt.Sprintf("%s was killed by %s and is not restarting", service, st.LastExit.Signal)
 	case st.LastExit.Code == 0:
-		return fmt.Sprintf("%s exited", st.Service)
+		return service + " exited"
 	default:
-		return fmt.Sprintf("%s exited with code %d and is not restarting", st.Service, st.LastExit.Code)
+		return fmt.Sprintf("%s exited with code %d and is not restarting", service, st.LastExit.Code)
 	}
 }
 

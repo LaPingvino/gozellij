@@ -104,6 +104,7 @@ does *not* survive.
 
 The consequence is worth stating plainly rather than discovering: for an interactive shell, that
 file holds everything you typed at it and everything it answered — including whatever you `cat`.
+`gozellij rm` does not delete it, so removing the service does not remove the record.
 The files and their directory are 0600/0700, and `gozellij add <name> -log off -- ...` turns the
 file off for one service, which then keeps the in-memory ring and nothing else. `gozellijd -logs
 off` turns it off for everything.

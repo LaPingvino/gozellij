@@ -77,6 +77,10 @@ type StartOptions struct {
 	LogDir string
 	// LogBytes is the size at which a log file is rotated. Zero means DefaultLogBytes.
 	LogBytes int64
+	// Watchers, when set, is an existing watcher set for a replacement supervisor to inherit,
+	// so that whoever is watching the *service* keeps being told about it. Like Output, the
+	// lender still owns it.
+	Watchers *StatusWatchers
 }
 
 const (

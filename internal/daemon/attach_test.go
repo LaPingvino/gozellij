@@ -488,3 +488,86 @@ func TestAttachSurvivesARestart(t *testing.T) {
 		// Still attached, which is the point.
 	}
 }
+
+// Removing a service must release anything attached to it. Fabric.Remove closes the output buffer,
+// which ends the output pump - but the attach was blocked reading input, on a read nothing would
+// ever satisfy, so `rm` in one terminal left an attach hanging in another.
+func TestRemovingAServiceReleasesItsAttachedClients(t *testing.T) {
+	_, fab, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("doomed", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "sleep 30"}, Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	attacher, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer attacher.Close()
+
+	in, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer in.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- attacher.Attach("doomed", in, io.Discard, true) }()
+	time.Sleep(300 * time.Millisecond)
+
+	if err := fab.Remove("doomed"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the attach outlived the service being removed")
+	}
+}
+
+// The last thing a service printed must reach the client. Ending the attach by closing the
+// connection cut off whatever the output pump still had queued, which for a shell is the line
+// right before you typed exit.
+func TestTheLastOutputBeforeExitReachesTheClient(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("last", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "echo THE-LAST-LINE"}, Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	attacher, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer attacher.Close()
+
+	in, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer in.Close()
+
+	var got bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- attacher.Attach("last", in, &got, true) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the attach never ended")
+	}
+
+	if !strings.Contains(got.String(), "THE-LAST-LINE") {
+		t.Errorf("the client saw %q, which is missing the last thing the service printed", got.String())
+	}
+}

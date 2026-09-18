@@ -543,6 +543,11 @@ func cmdLogs(args []string) error {
 			fmt.Fprintf(os.Stderr, "[showing the last %d bytes; older output was dropped]\n", len(out.Data))
 		}
 	}
+	// Before the output, not after: a warning printed under a screen of scrollback is a warning
+	// nobody reads.
+	if out.LogError != "" {
+		fmt.Fprintf(os.Stderr, "[gozellij: this log is not being written and may be behind: %s]\n", out.LogError)
+	}
 	os.Stdout.Write(out.Data)
 	if len(out.Data) == 0 {
 		// An empty answer is ambiguous between "quiet" and "not running", so say which.

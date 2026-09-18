@@ -195,6 +195,10 @@ type LogsReply struct {
 	// Worth saying: one of those survives the daemon being restarted and the other does not,
 	// and the client can point the operator at a file it can read with anything.
 	Path string `json:"path,omitempty"`
+	// LogError is why this answer may be incomplete - the writer is broken, so the file is
+	// older than what the service has printed. An incomplete answer that does not say it is
+	// incomplete is the one failure this project keeps refusing to ship.
+	LogError string `json:"log_error,omitempty"`
 }
 
 // UpgradeReply describes what an in-place upgrade did.

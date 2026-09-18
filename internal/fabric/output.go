@@ -86,7 +86,23 @@ func (o *OutputBuffer) Write(p []byte) (int, error) {
 	for _, s := range o.subs {
 		s.offer(p, o.written)
 	}
+	o.pruneLaggedLocked()
 	return len(p), nil
+}
+
+// pruneLaggedLocked drops subscribers that have fallen too far behind.
+//
+// offer cannot do it: it runs inside the range loop above, with o.mu already held, and deleting
+// from a map being ranged over is asking for trouble. So a lagged subscriber used to have its
+// channel closed - waking its reader, which is the important part - and then stay in the map
+// forever, iterated on every single write. A reader that re-subscribes after lagging (the disk log
+// writer does exactly that) left one dead entry behind each time.
+func (o *OutputBuffer) pruneLaggedLocked() {
+	for id, s := range o.subs {
+		if s.Lagged() {
+			delete(o.subs, id)
+		}
+	}
 }
 
 // append copies p into the ring, dropping the oldest bytes if it does not fit.
@@ -231,6 +247,21 @@ func (o *OutputBuffer) LogError() string {
 		return ""
 	}
 	return sink.Err()
+}
+
+// Sink is the disk writer for this buffer, or nil when there is none.
+func (o *OutputBuffer) Sink() *LogSink {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.sink
+}
+
+// Subscribers reports how many readers are attached. For tests, and for noticing when one is
+// never cleaned up.
+func (o *OutputBuffer) Subscribers() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.subs)
 }
 
 // LogPath is the file this buffer is written to, or "" when it is not written anywhere.

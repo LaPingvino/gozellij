@@ -119,6 +119,12 @@ func (f *Fabric) AdoptAll(handovers []Handover) []error {
 		if err != nil {
 			// Say so and carry on: Load will start it fresh below, which is a worse outcome
 			// than a true handover but a much better one than a service that vanishes.
+			//
+			// Close the buffer on the way past. Building the supervisor opened a log file and
+			// started a writer goroutine for it, and abandoning the supervisor here left both
+			// alive for the life of the daemon - one leaked descriptor per failed handover,
+			// per upgrade.
+			sup.Output().Close()
 			errs = append(errs, err)
 			continue
 		}
@@ -242,6 +248,8 @@ func (f *Fabric) Start(name string) error {
 //     be repairable with a text editor. Building from the in-memory copy meant an edit was
 //     honoured by `gozellij upgrade` (which reloads) but ignored by `restart` (which did not) -
 //     half-working, which is worse than either answer;
+//   - the watcher set is reused, because what a client asked to watch is the service, not this
+//     particular supervisor of it;
 //   - the flapping history is not carried across. An operator has intervened, so a thirty second
 //     backoff inherited from whatever went wrong before is no longer about the present.
 func (f *Fabric) replaceSupervisor(name string, old *Supervisor) *Supervisor {
@@ -252,6 +260,10 @@ func (f *Fabric) replaceSupervisor(name string, old *Supervisor) *Supervisor {
 
 	opts := f.opts
 	opts.Output = old.Output()
+	// The watcher set comes across too. It is not an optimisation: something attached to this
+	// service is waiting to be told when it finishes, and leaving its watcher on the supervisor
+	// we are throwing away is how that client ends up waiting forever.
+	opts.Watchers = old.Watchers()
 	fresh := NewSupervisor(svc, opts)
 
 	f.mu.Lock()
@@ -280,14 +292,34 @@ func (f *Fabric) Stop(name string) error {
 
 // Restart stops a service and starts it again, clearing its flapping history so the operator does
 // not inherit a thirty second backoff from whatever went wrong before.
+//
+// The successor is installed *before* the old one is stopped, and the order is the whole point.
+// Stopping first published a status that said stopped, exited, killed by SIGTERM - every word of
+// it true of the old process and none of it true of the service - and anything watching for the
+// service to finish believed it. An attached client was dropped by a plain `gozellij restart`,
+// told its service had been killed, while the service was two milliseconds from running again.
+//
+// With the successor already in place, a watcher woken during the stop reads a supervisor that has
+// not run yet, which is not finished, which is the truth.
 func (f *Fabric) Restart(name string) error {
-	s, err := f.supervisor(name)
+	old, err := f.supervisor(name)
 	if err != nil {
 		return err
 	}
-	s.Stop()
-	f.replaceSupervisor(name, s)
-	return f.Start(name)
+
+	fresh := f.replaceSupervisor(name, old)
+
+	// Still before the new spawn: two copies of a service running at once is a worse failure
+	// than any status confusion. Stop waits for the old loop to finish.
+	old.Stop()
+
+	if err := f.setEnabled(name, true); err != nil {
+		return err
+	}
+	if err := fresh.Start(f.ctx); err != nil && !errors.Is(err, ErrAlreadyStarted) {
+		return fmt.Errorf("restarting %s: %w", name, err)
+	}
+	return nil
 }
 
 // setEnabled records the desired state on disk.
@@ -372,6 +404,10 @@ type LogTail struct {
 	// Path is the file the answer came from, or "" when it came from the in-memory ring - which
 	// is worth saying out loud, because one of those survives the daemon and the other does not.
 	Path string
+	// Err is why this answer may be incomplete: the log writer is broken, so what is on disk is
+	// older than what the service has actually printed. Without it, `logs` hands over a stale
+	// file with the confidence of a complete one.
+	Err string
 }
 
 // Logs returns what a service printed, preferring the file on disk.
@@ -388,13 +424,36 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 		return LogTail{}, err
 	}
 
-	if f.opts.LogDir != "" {
+	// A service with logging off must never be answered from a file, even when one exists.
+	// Removing a service leaves its log behind, so `rm x` followed by `add x -log off` would
+	// otherwise print the *previous* service's output and label it as this one's - which is not
+	// a stale answer, it is somebody else's answer.
+	logged := f.opts.LogDir != ""
+	if def, derr := f.reg.Get(name); derr == nil && def.NoLog {
+		logged = false
+	}
+
+	// A broken writer changes which half is worth having. The file holds the long history but
+	// stops at the moment the writing broke; the ring holds the most recent output, which is
+	// what somebody typing `logs` almost always wants. So answer from the ring and say plainly
+	// that the file is there and is behind - rather than handing over the older half with the
+	// confidence of a complete answer.
+	var logErr string
+	if logged {
+		if e := sup.Output().LogError(); e != "" {
+			logErr = fmt.Sprintf("%s; %s stops where the writing stopped, and this is the "+
+				"most recent output instead", e, LogPath(f.opts.LogDir, name))
+			logged = false
+		}
+	}
+
+	if logged {
 		data, truncated, rerr := ReadLogTail(f.opts.LogDir, name, maxBytes)
 		switch {
 		case rerr == nil:
 			return LogTail{Data: data, Truncated: truncated, Path: LogPath(f.opts.LogDir, name)}, nil
 		case errors.Is(rerr, os.ErrNotExist):
-			// No file yet, or logging is off for this service. Fall through to the ring.
+			// No file yet. Fall through to the ring.
 		default:
 			return LogTail{}, rerr
 		}
@@ -406,7 +465,9 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 		data = data[len(data)-maxBytes:]
 		truncated = true
 	}
-	return LogTail{Data: data, Truncated: truncated}, nil
+	// Path stays empty: this came from memory, and saying otherwise would misreport where it
+	// came from in exactly the situation where that matters most.
+	return LogTail{Data: data, Truncated: truncated, Err: logErr}, nil
 }
 
 // Watch returns a channel that fires when a service's status changes, and a function to stop
@@ -420,17 +481,20 @@ func (f *Fabric) Watch(name string) (<-chan struct{}, func(), error) {
 	return ch, stop, nil
 }
 
-// Finished reports whether a service has run and is not going to run again by itself.
+// Finished reports whether the supervisor is done with this service.
 //
-// Deliberately not "is it stopped": a service that has never been started is stopped too, and
-// something attached to it is reasonably waiting for somebody to start it. What ends that wait is
-// a service that *has* exited and whose policy is done with it.
-func (s Status) Finished() bool {
-	if !s.HasExited {
-		return false
-	}
-	return s.State == StateFailed || s.State == StateExited || s.State == StateStopped
-}
+// The question an attached client is asking is "will anything more happen here?", and the honest
+// answer is whether the supervision loop has ended - not whether a process exited. Three cases got
+// this wrong when it was derived from the state instead:
+//
+//   - a service whose binary does not exist fails at spawn, so nothing ever exited;
+//   - a service stopped before it managed to spawn is stopped without having exited either;
+//   - a service nobody has started yet is also stopped, and something attached to it is
+//     reasonably waiting for somebody to start it - which is the case that must still wait.
+//
+// Ended distinguishes the last one from the first two, which no combination of State and HasExited
+// does.
+func (s Status) Finished() bool { return s.Ended }
 
 // Output returns a service's output buffer, which outlives any one process of it.
 func (f *Fabric) Output(name string) (*OutputBuffer, error) {

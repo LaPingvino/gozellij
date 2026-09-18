@@ -194,12 +194,24 @@ const inputReleaseGrace = 500 * time.Millisecond
 // not a tty and reaches EOF immediately. A bug that only appears on the thing the program is for
 // is the kind worth a comment.)
 //
-// A deadline in the past unblocks a read the runtime can poll, which covers a tty. If it cannot -
-// some descriptors are not pollable - we stop waiting rather than deadlock, and say here why that
-// is safe: we are done with this attach either way, and the deadline is cleared so a reattach on
-// the same terminal starts from a clean state.
+// A deadline in the past unblocks a read the *runtime can poll*. That was the plan, and on a real
+// terminal it does not work: os.Stdin on a tty is a blocking descriptor that Go does not register
+// with the netpoller, and SetReadDeadline answers "file type does not support deadline". So the
+// deadline is attempted, and when it is refused we do not sit through a grace period waiting for
+// something that cannot happen - we leave immediately and leave the goroutine where it is.
+//
+// Leaving it is safe here and not elsewhere, which is worth being precise about. On the way out of
+// the program it dies with us. On a reattach after a daemon upgrade it is a real gap: a second
+// pump starts on the same descriptor while the first is still in read(2), so the first keystroke
+// after a reattach can be swallowed by the goroutine that is no longer connected to anything. That
+// is recorded in docs/REPLACING_GEZELLIJ.md rather than papered over, because fixing it properly
+// means one input pump for the whole AttachLoop, which is a different change.
 func releaseInput(in *os.File, inputDone <-chan error) {
-	_ = in.SetReadDeadline(time.Now())
+	if err := in.SetReadDeadline(time.Now()); err != nil {
+		// Not pollable: nothing will interrupt the read, so waiting only adds latency to every
+		// exit and detach.
+		return
+	}
 	select {
 	case <-inputDone:
 	case <-time.After(inputReleaseGrace):
