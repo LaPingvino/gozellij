@@ -262,6 +262,40 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     fi
 }
 
+# ------------------------------------------------------- following several services at once
+{
+    "$gz" add follow_a -start -- sh -c 'i=0; while [ $i -lt 20 ]; do echo AAA-$i; i=$((i+1)); sleep 0.3; done' >/dev/null 2>&1
+    "$gz" add follow_b -start -- sh -c 'i=0; while [ $i -lt 20 ]; do echo BBB-$i; i=$((i+1)); sleep 0.3; done' >/dev/null 2>&1
+    sleep 1
+    both=$(timeout 3 "$gz" logs -f follow_a follow_b 2>&1)
+    one=$(timeout 2 "$gz" logs -f follow_a 2>&1)
+    refused=$("$gz" logs follow_a follow_b 2>&1); refused_rc=$?
+    "$gz" rm follow_a follow_b >/dev/null 2>&1
+
+    # Both services, and every line of each carrying its own name. Checking only that both names
+    # appear would pass if the prefixes were attached to the wrong lines, which is the way this
+    # can actually go wrong.
+    if printf '%s' "$both" | grep -q 'follow_a | AAA-' && printf '%s' "$both" | grep -q 'follow_b | BBB-' \
+       && ! printf '%s' "$both" | grep -q 'follow_a | BBB-\|follow_b | AAA-'; then
+        ok "logs -f follows several services, each line under its own name"
+    else
+        bad "following two services did not interleave correctly: $(printf '%s' "$both" | head -3)"
+    fi
+
+    # One service must be untouched, because `logs -f x | grep` should not have to strip a prefix.
+    if printf '%s' "$one" | grep -q '^AAA-' && ! printf '%s' "$one" | grep -q 'follow_a |'; then
+        ok "logs -f with one service is unprefixed, as it always was"
+    else
+        bad "following one service added something: $(printf '%s' "$one" | head -2)"
+    fi
+
+    if [ "$refused_rc" -ne 0 ] && printf '%s' "$refused" | grep -q 'several with -f'; then
+        ok "several names without -f is refused rather than run together"
+    else
+        bad "logs of two services without -f was accepted (rc=$refused_rc)"
+    fi
+}
+
 # --------------------------------------------------------------- enabled services come back
 {
     # The daemon was just restarted above; anything marked enabled should be running again.
