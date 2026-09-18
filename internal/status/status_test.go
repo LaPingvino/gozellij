@@ -144,3 +144,46 @@ func TestTheExampleConfigIsItselfValid(t *testing.T) {
 		t.Errorf("the example configuration does not parse cleanly: %v", cfg.Problems)
 	}
 }
+
+func TestAnImpossiblyFastRefreshIsClampedAndSaidSo(t *testing.T) {
+	// Each redraw dials the daemon. Accepting `every=1ms` and honouring it makes the status line
+	// the load it is reporting; accepting it and quietly ignoring it is the other kind of wrong.
+	cfg := parse(strings.NewReader("every=1ms\n"), DefaultConfig(), "test")
+
+	if cfg.Every != MinEvery {
+		t.Errorf("every = %v, want it clamped to %v", cfg.Every, MinEvery)
+	}
+	if len(cfg.Problems) != 1 {
+		t.Errorf("problems = %v, want one saying it was clamped", cfg.Problems)
+	}
+	// And a sane value is left alone.
+	if cfg := parse(strings.NewReader("every=5s\n"), DefaultConfig(), "test"); cfg.Every != 5*time.Second {
+		t.Errorf("every = %v, want 5s untouched", cfg.Every)
+	}
+}
+
+func TestALineWithNoWidgetsIsTreatedAsOff(t *testing.T) {
+	// Otherwise it is a row of the terminal given up for a blank stripe, with nothing anywhere
+	// saying why.
+	cfg := parse(strings.NewReader("left=\"\"\nright=\"\"\n"), DefaultConfig(), "test")
+
+	if cfg.Where != Off {
+		t.Errorf("where = %q, want off when there is nothing to draw", cfg.Where)
+	}
+	if len(cfg.Problems) != 1 {
+		t.Errorf("problems = %v, want one explaining the empty line", cfg.Problems)
+	}
+
+	// Emptying them by commenting every widget out counts too - that is the likeliest way to
+	// arrive here by accident.
+	cfg = parse(strings.NewReader("left=\"#session\"\nright=\"#time\"\n"), DefaultConfig(), "test")
+	if cfg.Where != Off {
+		t.Errorf("where = %q after commenting out every widget, want off", cfg.Where)
+	}
+
+	// But an explicit where=off is not an error worth reporting: it is what was asked for.
+	cfg = parse(strings.NewReader("where=off\nleft=\"\"\nright=\"\"\n"), DefaultConfig(), "test")
+	if len(cfg.Problems) != 0 {
+		t.Errorf("problems = %v for an explicit where=off, want none", cfg.Problems)
+	}
+}

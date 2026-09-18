@@ -48,6 +48,13 @@ var (
 // visible, slow enough that it is not what is causing it.
 const DefaultEvery = 2 * time.Second
 
+// MinEvery is the fastest refresh that will be honoured.
+//
+// Each redraw dials the daemon, so `every=1ms` is a thousand connections a second per attached
+// terminal - a status line that becomes the load it is reporting. Accepting the number and
+// ignoring it would be the silent kind of wrong, so it is clamped and said out loud.
+const MinEvery = 250 * time.Millisecond
+
 // DefaultConfig is what you get having configured nothing.
 func DefaultConfig() Config {
 	return Config{
@@ -131,6 +138,13 @@ func parse(r io.Reader, cfg Config, path string) Config {
 					fmt.Sprintf("%s:%d: every=%q; it takes a duration like 2s", path, line, value))
 				break
 			}
+			if d < MinEvery {
+				cfg.Problems = append(cfg.Problems,
+					fmt.Sprintf("%s:%d: every=%q is faster than %s, which is the limit: each redraw "+
+						"asks the daemon, so this would make the status line the load it reports",
+						path, line, value, MinEvery))
+				d = MinEvery
+			}
 			cfg.Every = d
 		default:
 			cfg.Problems = append(cfg.Problems, fmt.Sprintf("%s:%d: unknown setting %q", path, line, key))
@@ -138,6 +152,15 @@ func parse(r io.Reader, cfg Config, path string) Config {
 	}
 	if err := scan.Err(); err != nil {
 		cfg.Problems = append(cfg.Problems, fmt.Sprintf("%s: %v", path, err))
+	}
+
+	// A line with no widgets in it is a row of the terminal given up for a blank bar. Somebody who
+	// wants no status line means where=off; somebody who has emptied both lists by accident should
+	// hear about it rather than wonder what the empty stripe along the bottom is.
+	if cfg.Where != Off && len(cfg.Left) == 0 && len(cfg.Right) == 0 {
+		cfg.Problems = append(cfg.Problems, fmt.Sprintf(
+			"%s: no widgets left in either list, so there is nothing to show; treating it as where=off", path))
+		cfg.Where = Off
 	}
 	return cfg
 }

@@ -10,6 +10,14 @@
 // Everything here is Linux-specific and says so by returning nothing rather than guessing: a
 // widget that cannot answer prints nothing at all, and a line with a gap in it is a better report
 // than a line with an invented number in it.
+//
+// One limit cannot be fixed from here, and it is worth naming because it is the argument for the
+// terminal emulator DESIGN.md defers. Drawing on a row the cursor is not on means saving the
+// cursor, moving, drawing and restoring - and a program that uses the terminal's own save and
+// restore (DECSC/DECRC) across a span of its own can have that saved position overwritten by a
+// tick landing in the middle. There is one save slot in a VT100 and we are sharing it. A
+// multiplexer that owns the grid has its own copy of the screen and never touches the real
+// terminal's cursor state at all; this one is a byte pipe, and this is the price.
 package status
 
 import (

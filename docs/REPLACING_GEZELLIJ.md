@@ -57,7 +57,15 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   prompt, and vim's `:` disappeared from under the user's fingers two seconds after they typed it.
   **Verified** in tmux at 80x24 by reading the pane back: `less` keeps its prompt row, typing in
   the shell scrolls normally, and detaching leaves the region released and the cursor where it
-  was. `where=title` avoids the question entirely because nothing can draw over a title bar. Doing it properly at the bottom
+  was. `where=title` avoids the question entirely because nothing can draw over a title bar.
+
+  One limit remains and cannot be fixed from outside a grid: there is a single cursor-save slot in
+  a VT100, and the status line has to borrow it to draw on a row the cursor is not on. A program
+  using `DECSC`/`DECRC` across a span of its own can have its saved position overwritten by a tick
+  landing in the middle. A multiplexer that owns the grid keeps its own copy of the screen and
+  never touches the terminal's cursor state; this one is a byte pipe, and that is the price. It is
+  the clearest concrete argument this project has for building the emulator — and DESIGN.md is
+  explicit that the oracle comes first when that day arrives. Doing it properly at the bottom
   is what owning a grid buys, and is the clearest argument this project has yet produced for the
   terminal emulator DESIGN.md defers. `gozellij doctor` says which placement is configured, and
   names anything in the config it could not understand, so the first time you see it is not the
