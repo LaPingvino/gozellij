@@ -1,0 +1,4 @@
+# size 20x5
+# Wide characters. Each occupies two columns, so the line ends at column 14, and the second column
+# of each is a continuation cell rather than a character.
+\e[H\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e abc\r\n

@@ -1,0 +1,4 @@
+# size 20x5
+# Plain text past the right margin. Where the wrap lands and where the cursor ends up are the two
+# things every emulator gets subtly differently.
+0123456789abcdefghijklmnopqrstuvwxyz\r\nsecond\r\n

@@ -1,0 +1,4 @@
+# size 20x5
+# A scrolling region over the top four rows, then enough line feeds to push content out of it.
+# The last row must be untouched: that is the whole premise of the status line.
+\e[1;4r\e[Hone\r\ntwo\r\nthree\r\nfour\r\nfive\r\n
