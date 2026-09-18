@@ -1,0 +1,146 @@
+package status
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func ctx() Context {
+	return Context{
+		Service: "web", Position: 2, Of: 5,
+		Running: 3, Services: 5, Viewers: 2, LogBytes: 5 << 20,
+		Now: time.Date(2026, 9, 18, 15, 4, 0, 0, time.UTC),
+	}
+}
+
+func TestRenderPushesTheRightHandFieldsToTheMargin(t *testing.T) {
+	line := Render(ctx(), []string{"session"}, []string{"time"}, 40)
+	if len(line) != 40 {
+		t.Errorf("line is %d wide, want 40: %q", len(line), line)
+	}
+	if !strings.HasPrefix(line, "[web 2/5]") {
+		t.Errorf("left field is not at the left: %q", line)
+	}
+	if !strings.HasSuffix(line, "15:04") {
+		t.Errorf("right field is not at the right margin: %q", line)
+	}
+}
+
+func TestRenderDropsRightHandFieldsRatherThanOverflowing(t *testing.T) {
+	// byobu orders the right-hand fields least to most important, so what goes is the uptime and
+	// what stays is the clock. A line that wraps is worse than a line that is shorter.
+	wide := Render(ctx(), []string{"session"}, []string{"uptime", "services", "time"}, 200)
+	narrow := Render(ctx(), []string{"session"}, []string{"uptime", "services", "time"}, 24)
+
+	if !strings.Contains(wide, "3/5 up") {
+		t.Fatalf("precondition: the wide line should have every field: %q", wide)
+	}
+	if len(narrow) > 24 {
+		t.Errorf("the narrow line is %d wide, want at most 24: %q", len(narrow), narrow)
+	}
+	if !strings.Contains(narrow, "15:04") {
+		t.Errorf("the clock was dropped before the less important fields: %q", narrow)
+	}
+}
+
+func TestAWidgetWithNothingToSaySaysNothing(t *testing.T) {
+	// A gap is a better report than an invented number. `viewers` is the clearest case: one
+	// viewer is you, and saying so every two seconds is noise.
+	if got := Render(Context{Service: "web", Viewers: 1}, nil, []string{"viewers"}, 0); got != "" {
+		t.Errorf("viewers rendered %q for a single viewer, want nothing", got)
+	}
+	if got := Render(Context{Service: "web", Viewers: 3}, nil, []string{"viewers"}, 0); got != "3 viewers" {
+		t.Errorf("viewers = %q, want 3 viewers", got)
+	}
+	if got := Render(Context{}, nil, []string{"session", "services", "logs"}, 0); got != "" {
+		t.Errorf("widgets with no data rendered %q, want nothing at all", got)
+	}
+}
+
+func TestUnknownWidgetsAreSkippedNotRendered(t *testing.T) {
+	if got := Render(ctx(), []string{"session", "no_such_widget"}, nil, 0); got != "[web 2/5]" {
+		t.Errorf("render = %q; an unknown name must not appear in the line", got)
+	}
+}
+
+func TestBytesPromotesOnTheRoundedValue(t *testing.T) {
+	cases := map[int64]string{
+		0: "0", 512: "512B", 2048: "2.0K",
+		1024*1024 - 1: "1.0M", 1 << 20: "1.0M", 1<<30 - 1: "1.0G",
+	}
+	for n, want := range cases {
+		if got := Bytes(n); got != want {
+			t.Errorf("Bytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestDurationReadsLikeAnUptime(t *testing.T) {
+	cases := map[time.Duration]string{
+		30 * time.Second:       "0m",
+		90 * time.Minute:       "1h30m",
+		50 * time.Hour:         "2d2h",
+		(24*6 + 4) * time.Hour: "6d4h",
+	}
+	for d, want := range cases {
+		if got := Duration(d); got != want {
+			t.Errorf("Duration(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestConfigFollowsByobusShape(t *testing.T) {
+	cfg := parse(strings.NewReader(`
+# a comment
+where=title
+left="session #services"
+right="time"
+every=5s
+`), DefaultConfig(), "test")
+
+	if cfg.Where != Title {
+		t.Errorf("where = %q, want title", cfg.Where)
+	}
+	// A leading # switches a widget off without deleting it, as byobu does.
+	if len(cfg.Left) != 1 || cfg.Left[0] != "session" {
+		t.Errorf("left = %v, want [session] with services commented out", cfg.Left)
+	}
+	if cfg.Every != 5*time.Second {
+		t.Errorf("every = %v, want 5s", cfg.Every)
+	}
+	if len(cfg.Problems) != 0 {
+		t.Errorf("problems on a valid file: %v", cfg.Problems)
+	}
+}
+
+func TestConfigReportsWhatItCouldNotUnderstandAndKeepsTheRest(t *testing.T) {
+	cfg := parse(strings.NewReader(`
+where=sideways
+left="session widgetthatisnotreal"
+nonsense
+every=fortnight
+right="time"
+`), DefaultConfig(), "test")
+
+	if len(cfg.Problems) != 4 {
+		t.Errorf("problems = %v, want one for each of the four bad lines", cfg.Problems)
+	}
+	// One misspelt widget must not cost you the other eleven.
+	if len(cfg.Left) != 1 || cfg.Left[0] != "session" {
+		t.Errorf("left = %v, want the good widget kept", cfg.Left)
+	}
+	if len(cfg.Right) != 1 || cfg.Right[0] != "time" {
+		t.Errorf("right = %v, want the later good line still applied", cfg.Right)
+	}
+	if cfg.Where != Bottom {
+		t.Errorf("where = %q; an unusable value must leave the default in place", cfg.Where)
+	}
+}
+
+func TestTheExampleConfigIsItselfValid(t *testing.T) {
+	cfg := parse(strings.NewReader(Example()), DefaultConfig(), "example")
+	if len(cfg.Problems) != 0 {
+		t.Errorf("the example configuration does not parse cleanly: %v", cfg.Problems)
+	}
+}

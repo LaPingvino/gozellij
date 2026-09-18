@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LaPingvino/gozellij/internal/ipc"
+	"github.com/LaPingvino/gozellij/internal/status"
 	"golang.org/x/term"
 )
 
@@ -90,6 +91,19 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 	input := startTerminalInput(in)
 	defer input.stop()
 
+	// The status line, if it is switched on. It writes to the same terminal as the service's
+	// output, so everything that draws goes through one lock from here on.
+	screen := &lockedWriter{w: out}
+	cfg := status.Load()
+	for _, p := range cfg.Problems {
+		fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", p)
+	}
+	painter := newStatusPainter(screen, in, cfg, func() status.Context {
+		return StatusContext(socket, service)
+	})
+	defer painter.Close()
+	out = screen
+
 	first := true
 	for {
 		c, err := Dial(socket)
@@ -144,6 +158,7 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 				}
 				service = next
 				showService(out, service)
+				painter.Repaint()
 				first, replay = true, true
 				break dispatch
 
@@ -176,6 +191,7 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 				}
 				service = picked
 				showService(out, service)
+				painter.Repaint()
 				first, replay = true, true
 				break dispatch
 			}

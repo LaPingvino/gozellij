@@ -132,6 +132,29 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name> [-keep-logs]` | stop it, forget it, and delete its log |
 
+### A status line
+
+```sh
+$ gozellij stats
+[shell 1/3] 2/3 up    up 6d4h 0.42 0.31 0.28 8cpu 3.1G/7.7G 18G free 2026-09-18 15:34
+```
+
+The same line is drawn at the bottom of an attach. The widget names and the configuration follow
+byobu's, because that is what the fingers of anyone who wants this already know: a leading `#`
+switches one off, and the defaults are the set byobu enables for tmux, plus the two things only
+this program knows — which service you are looking at, and how many are up.
+
+```sh
+gozellij stats -example > ~/.config/gozellij/status   # the defaults, written out
+gozellij stats -list                                  # every widget name
+```
+
+`where=bottom` (the default) reserves the last row with a scrolling region. That needs no terminal
+emulator, which is why it is possible here at all — and it is also why it is not perfect: a
+full-screen program such as `vim` or `top` sets its own region and draws over the line, which comes
+back by itself when the program exits. `where=title` puts the line in the terminal's title instead,
+where nothing can draw over it; `where=off` draws nothing.
+
 ## Does it still do what it says?
 
 ```sh

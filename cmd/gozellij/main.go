@@ -46,6 +46,7 @@ Usage:
   gozellij rm <name> [-keep-logs]      stop it, forget it, and delete its log
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
+  gozellij stats                       print the status line once and exit
 
 Flags for add:
   -restart no|on-failure|always   what to do when it exits (default no)
@@ -61,6 +62,9 @@ Flags for logs:
 logs reads the file on disk, which outlives the daemon; logs -f follows the daemon's live buffer,
 which does not. A service added with -log off has no file, and logs then falls back to that
 buffer - which holds a few hundred KiB and dies with the daemon.
+
+The status line at the bottom of an attach is byobu-shaped: the same widget names, and a leading
+# in the config switches one off. See gozellij stats -example.
 
 While attached, Ctrl-] is gozellij's own key:
   Ctrl-] d         detach; the service keeps running
@@ -118,6 +122,8 @@ func run(args []string) error {
 		return cmdPing(rest)
 	case "doctor":
 		return cmdDoctor(rest)
+	case "stats":
+		return cmdStats(rest)
 	default:
 		usage()
 		// Name it. "Unknown command" without saying which is a small unkindness that adds up.
