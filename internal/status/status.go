@@ -97,12 +97,17 @@ func Known(name string) bool {
 
 // Render lays out one line: left-hand fields, then right-hand fields pushed to the right margin.
 //
-// When the two halves do not fit, the left is kept and the right is trimmed from its left end -
-// the right-hand fields are ordered least to most important in byobu's defaults, so the clock
-// survives and the uptime goes first.
+// When the two halves do not fit, the left is kept and the right is dropped a *widget* at a time
+// from its left end - the right-hand fields are ordered least to most important in byobu's
+// defaults, so the clock survives and the uptime goes first.
+//
+// A widget at a time, not a word at a time. Several widgets contain spaces - the load average is
+// three numbers - so trimming by word left "0.31 0.28" on the line, which does not look like a
+// truncated load average. It looks like a load average.
 func Render(ctx Context, left, right []string, width int) string {
 	l := join(ctx, left)
-	r := join(ctx, right)
+	rendered := renderEach(ctx, right)
+	r := strings.Join(rendered, " ")
 
 	if width <= 0 {
 		if l == "" {
@@ -118,12 +123,9 @@ func Render(ctx Context, left, right []string, width int) string {
 	// right-hand end of the line in the wrong column when this measured len(), and truncating by
 	// byte offset could cut a rune in half - which is not a cosmetic problem, it is an invalid
 	// sequence sent to the terminal.
-	for vt.StringWidth(l)+vt.StringWidth(r)+1 > width && r != "" {
-		if i := strings.Index(r, " "); i >= 0 {
-			r = r[i+1:]
-			continue
-		}
-		r = ""
+	for len(rendered) > 0 && vt.StringWidth(l)+vt.StringWidth(r)+1 > width {
+		rendered = rendered[1:]
+		r = strings.Join(rendered, " ")
 	}
 	if vt.StringWidth(l) > width {
 		l = vt.TruncateToWidth(l, width)
@@ -136,6 +138,12 @@ func Render(ctx Context, left, right []string, width int) string {
 }
 
 func join(ctx Context, names []string) string {
+	return strings.Join(renderEach(ctx, names), " ")
+}
+
+// renderEach renders each named widget, dropping the ones with nothing to say and the ones that do
+// not exist. Kept separate from joining so that trimming can work on whole widgets.
+func renderEach(ctx Context, names []string) []string {
 	var parts []string
 	for _, name := range names {
 		w, ok := widgets[name]
@@ -146,7 +154,53 @@ func join(ctx Context, names []string) string {
 			parts = append(parts, s)
 		}
 	}
-	return strings.Join(parts, " ")
+	return parts
+}
+
+// Needed is how many columns the whole line wants, before anything is dropped.
+//
+// For telling somebody that their terminal is narrower than their configuration, which the line
+// itself cannot say: it just quietly arrives shorter.
+func Needed(ctx Context, left, right []string) int {
+	l := join(ctx, left)
+	r := join(ctx, right)
+	switch {
+	case l == "" && r == "":
+		return 0
+	case l == "" || r == "":
+		return vt.StringWidth(l) + vt.StringWidth(r)
+	default:
+		return vt.StringWidth(l) + 1 + vt.StringWidth(r)
+	}
+}
+
+// Dropped names the right-hand widgets that will not fit in width, in the order they are lost.
+func Dropped(ctx Context, left, right []string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	l := join(ctx, left)
+	rendered := renderEach(ctx, right)
+
+	// Which *names* those rendered strings came from, so the answer is something a person can go
+	// and edit rather than a fragment of output.
+	names := make([]string, 0, len(rendered))
+	for _, name := range right {
+		w, ok := widgets[name]
+		if !ok {
+			continue
+		}
+		if w(ctx) != "" {
+			names = append(names, name)
+		}
+	}
+
+	var lost []string
+	for len(rendered) > 0 && vt.StringWidth(l)+vt.StringWidth(strings.Join(rendered, " "))+1 > width {
+		lost = append(lost, names[0])
+		rendered, names = rendered[1:], names[1:]
+	}
+	return lost
 }
 
 // ---------------------------------------------------------------- gozellij's own fields

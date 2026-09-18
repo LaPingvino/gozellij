@@ -187,3 +187,51 @@ func TestALineWithNoWidgetsIsTreatedAsOff(t *testing.T) {
 		t.Errorf("problems = %v for an explicit where=off, want none", cfg.Problems)
 	}
 }
+
+func TestTrimmingDropsWholeWidgetsNotWords(t *testing.T) {
+	// Several widgets contain spaces - the load average is three numbers - so trimming by word
+	// left "0.31 0.28" on the line. That does not look like a truncated load average; it looks
+	// like a load average, which is worse than not showing one.
+	c := ctx()
+	full := Render(c, []string{"session"}, []string{"services", "viewers", "time"}, 200)
+	if !strings.Contains(full, "3/5 up") || !strings.Contains(full, "2 viewers") {
+		t.Fatalf("precondition: the wide line should hold every field: %q", full)
+	}
+
+	// Narrow enough that the first right-hand widget cannot fit.
+	narrow := Render(c, []string{"session"}, []string{"services", "viewers", "time"}, 30)
+	if strings.Contains(narrow, "3/5") || strings.Contains(narrow, "/5 up") {
+		t.Errorf("a fragment of the services widget survived trimming: %q", narrow)
+	}
+	if !strings.Contains(narrow, "15:04") {
+		t.Errorf("the most important field was dropped before the least: %q", narrow)
+	}
+}
+
+func TestNeededAndDroppedSayWhatWillNotFit(t *testing.T) {
+	c := ctx()
+	left := []string{"session"}
+	right := []string{"services", "viewers", "time"}
+
+	needed := Needed(c, left, right)
+	if needed <= 0 {
+		t.Fatalf("Needed = %d, want the full width of the line", needed)
+	}
+	// At the width it asks for, nothing is lost.
+	if lost := Dropped(c, left, right, needed); len(lost) != 0 {
+		t.Errorf("Dropped = %v at exactly the needed width, want nothing", lost)
+	}
+	// One column short, and the first right-hand widget goes - named, so it can be edited.
+	lost := Dropped(c, left, right, needed-1)
+	if len(lost) != 1 || lost[0] != "services" {
+		t.Errorf("Dropped = %v one column short, want [services]", lost)
+	}
+	// And the names come back in the order they are lost.
+	if lost := Dropped(c, left, right, 20); len(lost) < 2 || lost[0] != "services" || lost[1] != "viewers" {
+		t.Errorf("Dropped = %v at 20 columns, want services then viewers", lost)
+	}
+	// A width of zero means "no limit", not "everything is dropped".
+	if lost := Dropped(c, left, right, 0); len(lost) != 0 {
+		t.Errorf("Dropped = %v with no width given, want nothing", lost)
+	}
+}

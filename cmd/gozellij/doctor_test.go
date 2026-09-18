@@ -196,3 +196,58 @@ func TestStatusLineCheckNamesEveryProblemAndStillReports(t *testing.T) {
 		t.Errorf("no fix offered for a broken config: %q", got[0].fix)
 	}
 }
+
+func TestStatusLineWarnsWhenItWillNotFit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status")
+	t.Setenv("GOZELLIJ_STATUS_CONFIG", path)
+	body := "left=\"session services whoami hostname release\"\n" +
+		"right=\"uptime load_average cpu_count memory disk date time\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// A terminal too narrow for that list. The line cannot say so itself - it simply arrives
+	// shorter, with the widgets nearest the left of the right-hand group missing and nothing
+	// anywhere explaining where the uptime went.
+	old := terminalWidth
+	t.Cleanup(func() { terminalWidth = old })
+	terminalWidth = func() int { return 40 }
+
+	var warned *check
+	for i, c := range checkStatusLine() {
+		if c.name == "status line width" {
+			warned = &checkStatusLine()[i]
+			break
+		}
+	}
+	if warned == nil {
+		t.Fatal("no warning that the line will not fit in 40 columns")
+	}
+	if !strings.Contains(warned.detail, "40") {
+		t.Errorf("the warning does not say how wide the terminal is: %q", warned.detail)
+	}
+	if !strings.Contains(warned.detail, "dropped") {
+		t.Errorf("the warning does not say what happens: %q", warned.detail)
+	}
+	if warned.fix == "" {
+		t.Error("no fix offered for a line that does not fit")
+	}
+
+	// Wide enough, and it says nothing: a warning that fires when nothing is wrong is noise that
+	// teaches people to skip the output.
+	terminalWidth = func() int { return 400 }
+	for _, c := range checkStatusLine() {
+		if c.name == "status line width" {
+			t.Errorf("warned about width on a 400-column terminal: %q", c.detail)
+		}
+	}
+
+	// And no terminal at all - output redirected to a file - is not a width problem.
+	terminalWidth = func() int { return 0 }
+	for _, c := range checkStatusLine() {
+		if c.name == "status line width" {
+			t.Errorf("warned about width with no terminal: %q", c.detail)
+		}
+	}
+}

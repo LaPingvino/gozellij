@@ -13,6 +13,7 @@ import (
 	"github.com/LaPingvino/gozellij/internal/daemon"
 	"github.com/LaPingvino/gozellij/internal/fabric"
 	"github.com/LaPingvino/gozellij/internal/status"
+	"golang.org/x/term"
 )
 
 // `gozellij doctor` exists because several of this program's promises are kept by things outside
@@ -428,6 +429,19 @@ func serviceEnvValue(_ *daemon.Client, service, key string) (string, error) {
 	return "", nil
 }
 
+// terminalWidth is how wide the terminal is, or 0 when there is not one.
+//
+// A variable rather than a call so that a test can say how wide the terminal is. The check it
+// feeds is about what happens at a particular width, and a test that can only ask about the width
+// it happens to be running at is not asking anything.
+var terminalWidth = func() int {
+	cols, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || cols <= 0 {
+		return 0
+	}
+	return cols
+}
+
 // checkStatusLine reports what the status line will do before it does it.
 //
 // It is the one part of this program that writes escape sequences to your terminal rather than
@@ -455,6 +469,23 @@ func checkStatusLine() []check {
 			level:  levelOK,
 			detail: fmt.Sprintf("in the terminal title, %d widget(s); nothing can draw over it", len(cfg.Left)+len(cfg.Right)),
 		})
+	}
+
+	// Does it fit? The line cannot say when it does not: it simply arrives shorter, with the
+	// widgets nearest the left of the right-hand group missing and nothing anywhere explaining
+	// where the uptime went.
+	if cols := terminalWidth(); cols > 0 {
+		ctx := status.Context{Service: DefaultShellService, Position: 1, Of: 1, StateDir: daemon.StateDir()}
+		if needed := status.Needed(ctx, cfg.Left, cfg.Right); needed > cols {
+			lost := status.Dropped(ctx, cfg.Left, cfg.Right, cols)
+			out = append(out, check{
+				name:  "status line width",
+				level: levelWarn,
+				detail: fmt.Sprintf("the line wants about %d columns and this terminal is %d, so %s "+
+					"will be dropped without saying so", needed, cols, strings.Join(lost, " and ")),
+				fix: "remove a widget, or comment one out with a leading # in " + status.ConfigPath(),
+			})
+		}
 	}
 
 	// Bottom. Worth a note rather than a clean bill of health: it is the placement that can be
