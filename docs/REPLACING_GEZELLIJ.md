@@ -42,6 +42,19 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   **Verified** on a real pty: switching repaints, wraps round, keystrokes typed after two switches
   arrived at the right service and only at that one, and the list marks where you are, selects by
   number and leaves you where you were on any other key.
+- **A byobu-shaped status line.** `gozellij stats` prints it; an attach draws it at the bottom by
+  default. byobu's widget names, byobu's `#`-to-disable, byobu's tmux defaults, plus which service
+  you are looking at and how many are up. **Verified** against a pty opened at a known size: the
+  scrolling region is set, the line lands on the last row, and the region is released on detach.
+
+  Its limit is worth stating rather than discovering: `where=bottom` reserves the row with a
+  scrolling region, and a full-screen program that sets its own region — `vim`, `top`, `less` —
+  draws over the line until it exits, at which point it comes back within a tick. `where=title`
+  has no such problem because nothing can draw over a title bar. Doing it properly at the bottom
+  is what owning a grid buys, and is the clearest argument this project has yet produced for the
+  terminal emulator DESIGN.md defers. `gozellij doctor` says which placement is configured, and
+  names anything in the config it could not understand, so the first time you see it is not the
+  first time you hear about it.
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.

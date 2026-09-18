@@ -21,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/LaPingvino/gozellij/internal/vt"
 )
 
 // Context is what the widgets have to work with.
@@ -104,17 +106,21 @@ func Render(ctx Context, left, right []string, width int) string {
 		return l + "  " + r
 	}
 
-	for len(l)+len(r)+1 > width && r != "" {
+	// Columns, not bytes. A hostname or a release name with a non-ASCII character in it put the
+	// right-hand end of the line in the wrong column when this measured len(), and truncating by
+	// byte offset could cut a rune in half - which is not a cosmetic problem, it is an invalid
+	// sequence sent to the terminal.
+	for vt.StringWidth(l)+vt.StringWidth(r)+1 > width && r != "" {
 		if i := strings.Index(r, " "); i >= 0 {
 			r = r[i+1:]
 			continue
 		}
 		r = ""
 	}
-	if len(l) > width {
-		l = l[:width]
+	if vt.StringWidth(l) > width {
+		l = vt.TruncateToWidth(l, width)
 	}
-	gap := width - len(l) - len(r)
+	gap := width - vt.StringWidth(l) - vt.StringWidth(r)
 	if gap < 0 {
 		gap = 0
 	}

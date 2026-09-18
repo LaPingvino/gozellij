@@ -12,6 +12,7 @@ import (
 
 	"github.com/LaPingvino/gozellij/internal/daemon"
 	"github.com/LaPingvino/gozellij/internal/fabric"
+	"github.com/LaPingvino/gozellij/internal/status"
 )
 
 // `gozellij doctor` exists because several of this program's promises are kept by things outside
@@ -92,6 +93,7 @@ func cmdDoctor(args []string) error {
 	checks = append(checks, checkShellEnvironment(c, dialErr)...)
 	checks = append(checks, checkServiceLogs(c, dialErr)...)
 	checks = append(checks, checkLogDisk(c, dialErr))
+	checks = append(checks, checkStatusLine()...)
 
 	worst := printChecks(checks)
 
@@ -424,6 +426,46 @@ func serviceEnvValue(_ *daemon.Client, service, key string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// checkStatusLine reports what the status line will do before it does it.
+//
+// It is the one part of this program that writes escape sequences to your terminal rather than
+// passing somebody else's through, so a configuration that is wrong is a configuration you find
+// out about by having your shell drawn over. Checking it here means you can look first.
+func checkStatusLine() []check {
+	cfg := status.Load()
+
+	var out []check
+	for _, p := range cfg.Problems {
+		out = append(out, check{
+			name:   "status line config",
+			level:  levelWarn,
+			detail: p,
+			fix:    "gozellij stats -example > " + status.ConfigPath(),
+		})
+	}
+
+	switch cfg.Where {
+	case status.Off:
+		return append(out, check{name: "status line", level: levelOK, detail: "off"})
+	case status.Title:
+		return append(out, check{
+			name:   "status line",
+			level:  levelOK,
+			detail: fmt.Sprintf("in the terminal title, %d widget(s); nothing can draw over it", len(cfg.Left)+len(cfg.Right)),
+		})
+	}
+
+	// Bottom. Worth a note rather than a clean bill of health: it is the placement that can be
+	// drawn over, and somebody reading this output should know that before they see it happen.
+	return append(out, check{
+		name:  "status line",
+		level: levelNote,
+		detail: fmt.Sprintf("at the bottom, %d widget(s), refreshed every %s; a full-screen program "+
+			"(vim, top) draws over it until it exits",
+			len(cfg.Left)+len(cfg.Right), cfg.Every),
+	})
 }
 
 // checkLogDisk says how much disk the logs are using.

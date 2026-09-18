@@ -111,6 +111,14 @@ func (p *statusPainter) Repaint() {
 	if p == nil {
 		return
 	}
+	// Not after Close. Painting again would re-assert the scrolling region that Close just
+	// released, and leave the terminal short by a row for whatever runs next - which is the
+	// state a detach is supposed to get you out of.
+	select {
+	case <-p.stop:
+		return
+	default:
+	}
 	p.paint()
 }
 

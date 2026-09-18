@@ -140,3 +140,59 @@ func TestViewerWordSaysNobodyRatherThanZero(t *testing.T) {
 		t.Errorf("viewerWord(3) = %q, want 3", got)
 	}
 }
+
+func TestStatusLineCheckReportsWhereItWillDraw(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status")
+	t.Setenv("GOZELLIJ_STATUS_CONFIG", path)
+
+	// Off and title are clean bills of health; bottom is a note, because it is the placement a
+	// full-screen program can draw over and somebody should hear that before they see it.
+	cases := map[string]checkLevel{
+		"where=off\n":    levelOK,
+		"where=title\n":  levelOK,
+		"where=bottom\n": levelNote,
+	}
+	for body, want := range cases {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		got := checkStatusLine()
+		if len(got) != 1 {
+			t.Fatalf("%q produced %d checks, want 1", body, len(got))
+		}
+		if got[0].level != want {
+			t.Errorf("%q gave level %v, want %v (%s)", body, got[0].level, want, got[0].detail)
+		}
+	}
+}
+
+func TestStatusLineCheckNamesEveryProblemAndStillReports(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status")
+	t.Setenv("GOZELLIJ_STATUS_CONFIG", path)
+
+	body := "where=sideways\nleft=\"session nosuchwidget\"\nevery=fortnight\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got := checkStatusLine()
+	// Three complaints and then the report: one bad line must not swallow the other two, nor the
+	// summary of what will actually happen.
+	warnings := 0
+	for _, c := range got {
+		if c.level == levelWarn {
+			warnings++
+		}
+	}
+	if warnings != 3 {
+		t.Errorf("%d warnings, want 3 (one per bad line): %+v", warnings, got)
+	}
+	if got[len(got)-1].level == levelWarn {
+		t.Error("the run ended on a warning with no summary of where the line will draw")
+	}
+	if !strings.Contains(got[0].fix, "stats -example") {
+		t.Errorf("no fix offered for a broken config: %q", got[0].fix)
+	}
+}

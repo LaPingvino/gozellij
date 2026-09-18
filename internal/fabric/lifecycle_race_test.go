@@ -88,13 +88,38 @@ func TestRestartAndEnsureTogetherLeaveOneProcess(t *testing.T) {
 		t.Fatalf("Restart: %v", err)
 	}
 
-	// Give both spawns a moment to write their pids.
-	time.Sleep(500 * time.Millisecond)
-	alive := alivePids(pidfile)
-	if len(alive) != 1 {
-		st, _ := f.Status("shell")
-		t.Errorf("%d processes alive after restart+ensure (%v), want 1; the fabric knows only about pid %d",
-			len(alive), alive, st.Pid)
+	// Wait for the survivor rather than sleeping and sampling. A fixed wait fails in both
+	// directions on a loaded machine: too short and the legitimate process has not written its
+	// pid yet (measured - this reported zero processes once on a box at load 11), too long and a
+	// second process that is about to appear has not appeared yet.
+	waitFabric(t, f, "shell", 15*time.Second, "running again", func(st Status) bool {
+		return st.State == StateRunning
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	var alive []int
+	for {
+		alive = alivePids(pidfile)
+		if len(alive) >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			st, _ := f.Status("shell")
+			t.Fatalf("no process alive after restart+ensure; the fabric says pid %d, state %v", st.Pid, st.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// And then that it stays at one. The bug this guards against is a second, orphaned process,
+	// which appears slightly later than the legitimate one - so a single sample taken at the
+	// right moment would miss it.
+	settle := time.Now().Add(2 * time.Second)
+	for time.Now().Before(settle) {
+		if alive = alivePids(pidfile); len(alive) > 1 {
+			st, _ := f.Status("shell")
+			t.Fatalf("%d processes alive after restart+ensure (%v), want 1; the fabric knows only about pid %d",
+				len(alive), alive, st.Pid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
