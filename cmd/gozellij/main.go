@@ -5,10 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -40,7 +42,7 @@ Usage:
   gozellij start|stop|restart <name>   change its state
   gozellij attach <name>               attach your terminal to it
   gozellij logs <name>                 print its recent output and exit
-  gozellij logs -f <name>              follow its output until you press Ctrl-C
+  gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij shell [-name <name>]        the same, with a different service name
   gozellij rm <name> [-keep-logs]      stop it, forget it, and delete its log
@@ -549,26 +551,25 @@ func cmdLogs(args []string) error {
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("logs needs exactly one service name")
+	if fs.NArg() == 0 {
+		return errors.New("logs needs at least one service name")
 	}
+	if fs.NArg() > 1 && !*follow {
+		// Printing several finished logs one after another would run them together with no way
+		// to tell where one ended. Following them interleaves them with a name on every line,
+		// which is the thing several services at once is actually for.
+		return errors.New("logs takes one service name, or several with -f")
+	}
+
+	if *follow {
+		return followLogs(*sock, fs.Args(), *maxBytes)
+	}
+
 	c, err := connect(*sock)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-
-	if *follow {
-		// Ctrl-C is how you stop following, so it must end this cleanly rather than looking
-		// like a crash. Closing the connection unblocks the read.
-		stop := make(chan os.Signal, 1)
-		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-stop
-			c.Close()
-		}()
-		return c.FollowLogs(fs.Arg(0), *maxBytes, os.Stdout, os.Stderr)
-	}
 
 	out, err := c.Logs(fs.Arg(0), *maxBytes)
 	if err != nil {
@@ -599,6 +600,154 @@ func cmdLogs(args []string) error {
 		}
 	}
 	return nil
+}
+
+// followLogs follows one service, or several at once with a name on every line.
+//
+// One connection each rather than one multiplexed stream: the daemon already knows how to send a
+// service's output down a connection, and a second mechanism for the same thing would be a second
+// mechanism to get wrong. The cost is a socket per service, which for a handful of services on a
+// local socket is not a cost.
+func followLogs(socket string, names []string, maxBytes int) error {
+	// Ctrl-C is how you stop following, so it must end this cleanly rather than looking like a
+	// crash. Closing the connections unblocks the reads.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+
+	var (
+		mu      sync.Mutex
+		clients []*daemon.Client
+		closed  bool
+	)
+	closeAll := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		for _, c := range clients {
+			c.Close()
+		}
+	}
+	defer closeAll()
+
+	go func() {
+		<-stop
+		closeAll()
+	}()
+
+	// One writer, locked, so two services cannot interleave mid-line.
+	out := &prefixedOutput{w: os.Stdout}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(names))
+	for _, name := range names {
+		c, err := connect(socket)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		if closed {
+			// Interrupted while we were still connecting.
+			mu.Unlock()
+			c.Close()
+			return nil
+		}
+		clients = append(clients, c)
+		mu.Unlock()
+
+		prefix := ""
+		if len(names) > 1 {
+			prefix = name + " | "
+		}
+
+		wg.Add(1)
+		go func(c *daemon.Client, name, prefix string) {
+			defer wg.Done()
+			if err := c.FollowLogs(name, maxBytes, out.for_(prefix), os.Stderr); err != nil {
+				errs <- fmt.Errorf("following %s: %w", name, err)
+			}
+		}(c, name, prefix)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	mu.Lock()
+	interrupted := closed
+	mu.Unlock()
+	if interrupted {
+		// Ctrl-C closed the connections underneath the readers, so every one of them has an
+		// error to report about it. That is what the user asked for, not a failure.
+		return nil
+	}
+	// The first real failure, if any.
+	for err := range errs {
+		return err
+	}
+	return nil
+}
+
+// prefixedOutput writes several services' output to one place, putting a name at the start of
+// every line and never letting two of them share one.
+type prefixedOutput struct {
+	mu sync.Mutex
+	w  io.Writer
+	// atStart is whether the next byte begins a physical line, and last is whose bytes are on
+	// the current one. Both are about the output, not about any one service: a chunk that
+	// arrives split across a newline must not lose its prefix, and a service that writes while
+	// another is mid-line must not continue that line.
+	atStart bool
+	last    string
+	begun   bool
+}
+
+func (p *prefixedOutput) for_(prefix string) io.Writer {
+	return prefixWriter{out: p, prefix: prefix}
+}
+
+type prefixWriter struct {
+	out    *prefixedOutput
+	prefix string
+}
+
+func (w prefixWriter) Write(b []byte) (int, error) {
+	w.out.mu.Lock()
+	defer w.out.mu.Unlock()
+
+	if w.prefix == "" {
+		// One service: its bytes go through untouched, escape sequences and all, exactly as
+		// before. Prefixing a single stream would only get in the way of `logs -f | grep`.
+		return w.out.w.Write(b)
+	}
+	if !w.out.begun {
+		w.out.atStart, w.out.begun = true, true
+	}
+
+	// Built up and written once: a write per byte would be a syscall per byte, and a service
+	// that logs fast would spend all of it here.
+	out := make([]byte, 0, len(b)+len(w.prefix)*8)
+	if !w.out.atStart && w.out.last != w.prefix {
+		// Another service is mid-line. Break it rather than continuing it under the wrong name:
+		// a line whose first half belongs to one service and second half to another is worse
+		// than a line that ends early, because nothing about it says so.
+		out = append(out, '\n')
+		w.out.atStart = true
+	}
+	for _, c := range b {
+		if w.out.atStart {
+			out = append(out, w.prefix...)
+			w.out.atStart = false
+		}
+		out = append(out, c)
+		if c == '\n' {
+			w.out.atStart = true
+		}
+	}
+	w.out.last = w.prefix
+	if _, err := w.out.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 // upgradeWait is how long we give the daemon to come back after replacing itself.
