@@ -114,9 +114,14 @@ grid has to reimplement those and then be worse at them.
    **`gozellij stop` hung for ever**, the client's thirty second timeout being the only thing that
    ended it. **Verified** by goroutine dump, and fixed by bounding that wait.
 
-6. **No session concept.** gezellij has named sessions you attach to; here there are services, and
-   a shell is just a service. That may be the better model — but it is a different model, and
-   swapping daily drivers means the muscle memory has to land somewhere.
+6. **No session concept — mostly answered, and worth deciding on.** gezellij has named sessions you
+   attach to; here a shell is just a service, and the pieces that make that usable now exist:
+   `gozellij` lands you in one, `gozellij shell -name work` gives you another, `Ctrl-] l` picks
+   between them, and `gozellij ls` shows which one your other terminal is sitting in. What is left
+   is a naming question rather than a missing feature: whether "session" should exist as a word at
+   all, or whether a shell being an ordinary service — supervised, logged, restartable, stoppable —
+   is simply the better model and the muscle memory should move. That is Joop's call to make by
+   using it.
 
 ## Known gaps, written down rather than papered over
 

@@ -65,6 +65,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 
 	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
 
+	// Counted from here, where the subscription exists, to the end of this function. Counting
+	// from the request instead would report a viewer for an attach that was refused.
+	leaving := s.watching(req.Service)
+	defer leaving()
+
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {

@@ -29,6 +29,12 @@ type Server struct {
 	conns   map[net.Conn]struct{}
 	closed  bool
 	version string
+	// viewers counts the clients currently attached to each service.
+	//
+	// Only the daemon can answer "is anyone watching this?", and it is worth answering: it is
+	// the difference between a service nobody has looked at in a week and the one your other
+	// terminal is sitting in. A client asking about itself could only ever count to one.
+	viewers map[string]int
 
 	// upgrades carries an in-band upgrade request out to whoever owns the process (main), since
 	// replacing the binary is not something a connection handler can do to itself.
@@ -91,6 +97,7 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 		path:     path,
 		ln:       ln,
 		conns:    make(map[net.Conn]struct{}),
+		viewers:  make(map[string]int),
 		upgrades: make(chan struct{}, 1),
 	}, nil
 }
@@ -415,6 +422,34 @@ func (s *Server) ensure(req ipc.Request) ipc.Response {
 	return s.statusAfter(req)
 }
 
+// watching records that a client has attached, and returns the function that records it leaving.
+func (s *Server) watching(service string) func() {
+	s.mu.Lock()
+	s.viewers[service]++
+	s.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.viewers[service] > 0 {
+				s.viewers[service]--
+			}
+			if s.viewers[service] == 0 {
+				delete(s.viewers, service)
+			}
+			s.mu.Unlock()
+		})
+	}
+}
+
+// viewerCount reports how many clients are attached to a service.
+func (s *Server) viewerCount(service string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.viewers[service]
+}
+
 // remove deletes a service and, unless asked otherwise, its log.
 func (s *Server) remove(req ipc.Request) ipc.Response {
 	var rr ipc.RemoveRequest
@@ -604,10 +639,19 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		NextRestart: st.NextRestart,
 		LastError:   st.LastError,
 		LogError:    st.LogError,
+		Viewers:     s.viewerCount(st.Service),
 	}
 	if def, err := s.fab.Definition(st.Service); err == nil {
 		out.Enabled = def.Enabled
 		out.Command = def.Command
+	}
+	if files := s.fab.LogFiles(st.Service); len(files) > 0 {
+		out.LogPath = files[0]
+		for _, f := range files {
+			if fi, err := os.Stat(f); err == nil {
+				out.LogBytes += fi.Size()
+			}
+		}
 	}
 	return out
 }

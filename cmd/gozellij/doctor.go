@@ -91,6 +91,7 @@ func cmdDoctor(args []string) error {
 	checks = append(checks, checkUnit())
 	checks = append(checks, checkShellEnvironment(c, dialErr)...)
 	checks = append(checks, checkServiceLogs(c, dialErr)...)
+	checks = append(checks, checkLogDisk(c, dialErr))
 
 	worst := printChecks(checks)
 
@@ -423,6 +424,39 @@ func serviceEnvValue(_ *daemon.Client, service, key string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// checkLogDisk says how much disk the logs are using.
+//
+// A supervisor that keeps every service's output spends disk quietly, and on the machine this is
+// written for that is a small VPS. Sixteen megabytes per service times two generations is a number
+// worth being told before it is a number you discover.
+func checkLogDisk(c *daemon.Client, dialErr error) check {
+	if dialErr != nil {
+		return check{name: "log disk", level: levelNote, detail: "cannot ask without a daemon"}
+	}
+	list, err := c.List()
+	if err != nil {
+		return check{name: "log disk", level: levelWarn, detail: "could not list services: " + err.Error()}
+	}
+
+	var total int64
+	var logged int
+	for _, svc := range list.Services {
+		total += svc.LogBytes
+		if svc.LogBytes > 0 {
+			logged++
+		}
+	}
+	if logged == 0 {
+		return check{name: "log disk", level: levelOK, detail: "nothing written yet"}
+	}
+	return check{
+		name:  "log disk",
+		level: levelOK,
+		detail: fmt.Sprintf("%s across %d service(s); each is capped at %s plus one rotated generation",
+			byteWord(total), logged, byteWord(fabric.DefaultLogBytes)),
+	}
 }
 
 // checkServiceLogs surfaces any service whose output is not reaching disk. That failure is

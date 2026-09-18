@@ -122,7 +122,7 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 |---|---|
 | `gozellij add <name> [flags] -- <cmd>` | define a service (`-restart no\|on-failure\|always`, `-start`, `-dir`, `-env`, `-log on\|off`) |
 | `gozellij` | land in your shell — reattached if it is running, fresh if not |
-| `gozellij ls` | what exists and what it is doing |
+| `gozellij ls` | what exists, what it is doing, who is watching it and how much log it has |
 | `gozellij status <name>` | one service in detail, including why it will not start |
 | `gozellij start\|stop\|restart <name>` | change its state; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |

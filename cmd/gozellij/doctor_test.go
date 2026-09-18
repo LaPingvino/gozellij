@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/LaPingvino/gozellij/internal/ipc"
 )
 
 func TestSocketPathTooLongIsAFailureThatSaysWhy(t *testing.T) {
@@ -105,5 +107,32 @@ func TestLevelsAreOrderedWorstLast(t *testing.T) {
 	// rather than cosmetic.
 	if !(levelOK < levelNote && levelNote < levelWarn && levelWarn < levelFail) {
 		t.Fatal("check levels are not ordered from least to most serious")
+	}
+}
+
+func TestByteWordIsReadableAtAGlance(t *testing.T) {
+	cases := map[int64]string{
+		0:                "-",
+		-1:               "-",
+		512:              "512B",
+		2048:             "2K",
+		1024 * 1024:      "1.0M",
+		17 * 1024 * 1024: "17.0M",
+		3 << 30:          "3.0G",
+	}
+	for n, want := range cases {
+		if got := byteWord(n); got != want {
+			t.Errorf("byteWord(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestViewerWordSaysNobodyRatherThanZero(t *testing.T) {
+	// A column of zeroes reads as a measurement; what is being said is that nobody is there.
+	if got := viewerWord(ipc.StatusReply{Viewers: 0}); got != "-" {
+		t.Errorf("viewerWord(0) = %q, want -", got)
+	}
+	if got := viewerWord(ipc.StatusReply{Viewers: 3}); got != "3" {
+		t.Errorf("viewerWord(3) = %q, want 3", got)
 	}
 }

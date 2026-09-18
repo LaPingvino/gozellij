@@ -582,3 +582,89 @@ func TestTheLastOutputBeforeExitReachesTheClient(t *testing.T) {
 		t.Errorf("the client saw %q, which is missing the last thing the service printed", got.String())
 	}
 }
+
+// Only the daemon can say whether anyone is watching a service, and it is worth saying: it is the
+// difference between a service nobody has looked at in a week and the one your other terminal is
+// sitting in.
+func TestViewersAreCountedWhileAttachedAndReleasedAfter(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("watched", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "sleep 30"}, Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if st, err := c.Status("watched"); err != nil || st.Viewers != 0 {
+		t.Fatalf("Viewers = %d (err %v), want 0 before anyone attaches", st.Viewers, err)
+	}
+
+	// Two clients, because a count is the point: a boolean could not tell one terminal from two.
+	var stop []func()
+	for i := 0; i < 2; i++ {
+		attacher, err := Dial(sock)
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		in, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- attacher.Attach("watched", in, io.Discard, true) }()
+		stop = append(stop, func() {
+			attacher.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("an attach did not end after its connection was closed")
+			}
+			in.Close()
+		})
+	}
+
+	waitViewers(t, c, "watched", 2)
+
+	for _, s := range stop {
+		s()
+	}
+	waitViewers(t, c, "watched", 0)
+}
+
+func waitViewers(t *testing.T, c *Client, service string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var got int
+	for time.Now().Before(deadline) {
+		st, err := c.Status(service)
+		if err == nil {
+			got = st.Viewers
+			if got == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Viewers = %d, want %d", got, want)
+}
+
+// An attach that is refused must not leave a viewer behind.
+func TestARefusedAttachCountsNoViewer(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := attachRaw(t, sock, "ghost", ipc.AttachRequest{Replay: true}); err == nil {
+		t.Fatal("attaching to an unknown service succeeded")
+	}
+	if _, err := c.Add("ghost", ipc.AddRequest{Command: "sh", Args: []string{"-c", "sleep 30"}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	st, err := c.Status("ghost")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Viewers != 0 {
+		t.Errorf("Viewers = %d after a refused attach, want 0", st.Viewers)
+	}
+}

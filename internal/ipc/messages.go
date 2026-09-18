@@ -167,6 +167,14 @@ type StatusReply struct {
 	Command     string    `json:"command,omitempty"`
 	// LogError is why this service's output is not reaching disk, empty when it is.
 	LogError string `json:"log_error,omitempty"`
+	// Viewers is how many clients are attached right now. Only the daemon can know this, and it
+	// is what tells you which service your other terminal is sitting in.
+	Viewers int `json:"viewers,omitempty"`
+	// LogPath and LogBytes are where this service's output is kept and how much of it there is,
+	// counting the rotated generation. Disk is the resource a log-keeping supervisor quietly
+	// spends, so it should be visible without going looking for the directory.
+	LogPath  string `json:"log_path,omitempty"`
+	LogBytes int64  `json:"log_bytes,omitempty"`
 }
 
 // RemoveRequest is the payload of OpServiceRemove.

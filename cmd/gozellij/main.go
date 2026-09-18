@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -296,10 +297,11 @@ func cmdList(args []string) error {
 		fmt.Println("no services defined")
 	} else {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tSTATE\tPID\tUPTIME\tRESTARTS\tCOMMAND")
+		fmt.Fprintln(w, "NAME\tSTATE\tPID\tUPTIME\tRESTARTS\tVIEWERS\tLOG\tCOMMAND")
 		for _, s := range list.Services {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				s.Service, stateWord(s), pidWord(s), uptime(s), restartWord(s), s.Command)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				s.Service, stateWord(s), pidWord(s), uptime(s), restartWord(s),
+				viewerWord(s), byteWord(s.LogBytes), s.Command)
 		}
 		w.Flush()
 	}
@@ -334,6 +336,34 @@ func cmdStatus(args []string) error {
 	return nil
 }
 
+// viewerWord says how many terminals are watching, and "-" for none.
+//
+// A dash rather than a zero: a column of zeroes reads as a measurement, and what is being said is
+// that nobody is there.
+func viewerWord(s ipc.StatusReply) string {
+	if s.Viewers == 0 {
+		return "-"
+	}
+	return strconv.Itoa(s.Viewers)
+}
+
+// byteWord is a size a person can read at a glance. Exact bytes matter to nobody looking at a
+// list of services; whether a log is 40 MB matters to everybody on a small disk.
+func byteWord(n int64) string {
+	switch {
+	case n <= 0:
+		return "-"
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.0fK", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1fM", float64(n)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1fG", float64(n)/(1024*1024*1024))
+	}
+}
+
 func printStatus(s ipc.StatusReply) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "service:\t%s\n", s.Service)
@@ -348,6 +378,12 @@ func printStatus(s ipc.StatusReply) {
 	}
 	if s.TotalStarts > 0 {
 		fmt.Fprintf(w, "starts:\t%d\n", s.TotalStarts)
+	}
+	if s.Viewers > 0 {
+		fmt.Fprintf(w, "viewers:\t%d\n", s.Viewers)
+	}
+	if s.LogPath != "" {
+		fmt.Fprintf(w, "log:\t%s (%s)\n", s.LogPath, byteWord(s.LogBytes))
 	}
 	if s.Restarts > 0 {
 		fmt.Fprintf(w, "restarts:\t%d\n", s.Restarts)
