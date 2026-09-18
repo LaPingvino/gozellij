@@ -470,16 +470,27 @@ func TestAttachSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer attacher.Close()
 
 	in, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer in.Close()
+	// Registered first, so it runs last: this test deliberately leaves the attach running, and
+	// closing the file it is reading before the attach has stopped is a race the detector is
+	// right to complain about. Deferred calls run *before* cleanups, which is why both of these
+	// are cleanups.
+	t.Cleanup(func() { in.Close() })
 
 	done := make(chan error, 1)
 	go func() { done <- attacher.Attach("flappy", in, io.Discard, true) }()
+	t.Cleanup(func() {
+		attacher.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the attach did not end after its connection was closed")
+		}
+	})
 
 	select {
 	case err := <-done:

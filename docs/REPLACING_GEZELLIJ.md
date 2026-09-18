@@ -16,7 +16,11 @@ that added the line. Nothing is marked verified because it looks like it should 
   shell 132x43; resizing to 160x50 and sending SIGWINCH gets `tput cols` to 160 on the far end.
 - **Full-screen programs.** **Verified:** escape sequences pass through untouched (`\033[2J\033[H`,
   `top` output). They have to: the attach is a byte pipe and your terminal does the emulating.
-- **Detach without stopping.** `Ctrl-]`, and the service keeps running. **Verified.**
+- **Detach without stopping.** `Ctrl-] d`, and the service keeps running. **Verified.**
+- **Tabs: several services in one terminal.** `Ctrl-] n` and `Ctrl-] p` move to the next and
+  previous service without leaving the terminal. **Verified** on a real pty: switching repaints,
+  wraps round, and keystrokes typed after two switches arrived at the right service and only at
+  that one.
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.
@@ -39,11 +43,26 @@ grid has to reimplement those and then be worse at them.
 
 ## What is missing, in the order it would bite
 
-1. **More than one thing at a time in one terminal.** gezellij has tabs. Here, each service is its
-   own attach, so today the answer is a second terminal, or running gozellij inside tmux (which
-   works, because the attach is a byte pipe). This is the story that reopens Phase 3 — a
-   product-owner pass argued panes should be cut because no user story needed them, and it was
-   right about its four personas and wrong about the actual user.
+1. **Splitting the screen.** Two things *visible at once* still needs a terminal emulator, and
+   that has not changed. What has changed is that the common case did not need one: gezellij's
+   daily value is tabs, and tabs are switching which service this terminal shows — which a byte
+   pipe does for free, because the escape sequences that drew the screen are in the bytes being
+   replayed. `Ctrl-] n` does it today.
+
+   Whether to build the grid at all is now a real question rather than an assumed yes:
+
+   - **For:** side-by-side is genuinely different from switching — watching a log while you type
+     in a shell is the case tabs cannot cover.
+   - **Against:** it is the expensive 98.8% this project exists to avoid (see DESIGN.md), the Go
+     VTE landscape is poor enough that the one Go multiplexer with real users ships two emulators
+     behind one interface, and owning the grid *costs* the accidental advantage below — your own
+     terminal's scrollback, search and copy/paste stop working and have to be reimplemented worse.
+     Meanwhile gozellij already composes with tmux, precisely because the attach is a byte pipe.
+
+   The recommendation is to leave it here until the lack of splitting actually bites in daily use,
+   and if it does, to do Phase 2 (the oracle) first as DESIGN.md says. This is Joop's call, and it
+   is no longer blocking the replacement.
+
 2. ~~**Scrollback is 256 KiB of RAM and dies with the daemon.**~~ Done — see above. What it cost:
    for a shell you live in, the log file now holds everything you typed at it and everything it
    answered, including whatever you `cat`. gezellij never wrote that anywhere. 0600 on the file and
@@ -100,11 +119,6 @@ grid has to reimplement those and then be worse at them.
 
 ## Known gaps, written down rather than papered over
 
-- **The first keystroke after a reattach can be swallowed.** When the daemon is replaced, the
-  client reconnects — but its old keystroke pump is still blocked in `read(2)` on the terminal,
-  because `SetReadDeadline` is refused on a tty (`file type does not support deadline`, measured).
-  A second pump starts alongside it, and whichever wakes first takes the next byte. Fixing it
-  properly means one input pump for the whole reattach loop, which is its own change.
 - **`gozellij rm` does not delete the service's log.** For a shell that file is the full transcript
   of everything you typed and everything it answered, so removing the service does not remove the
   record; delete `$XDG_STATE_HOME/gozellij/logs/<name>.log` yourself. A later service of the same

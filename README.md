@@ -75,7 +75,8 @@ clock  running  1027290  9s      -         sh
 
 $ gozellij logs clock -n 40      # what it printed, from disk; survives the daemon dying
 $ gozellij logs -f clock         # follow it live; Ctrl-C stops watching, not the service
-$ gozellij attach clock          # watch it live; Ctrl-] detaches, it keeps running
+$ gozellij attach clock          # watch it live; Ctrl-] d detaches, it keeps running
+                                 # Ctrl-] n / Ctrl-] p switch services without leaving the terminal
 ```
 
 Now upgrade the daemon under it:
@@ -109,8 +110,10 @@ The files and their directory are 0600/0700, and `gozellij add <name> -log off -
 file off for one service, which then keeps the in-memory ring and nothing else. `gozellijd -logs
 off` turns it off for everything.
 
-What it does **not** do yet: split a terminal into panes. A single attach is a byte pipe — your
-terminal does the emulating. See [the plan](#plan).
+What it does **not** do: split the screen. Several services in one terminal are *tabs* — `Ctrl-] n`
+switches — which needs no terminal emulator, because the attach is a byte pipe and replaying the
+bytes repaints the screen. Two things visible at once would need a grid, and that is a deliberate
+open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZELLIJ.md`.
 
 ### Commands
 
@@ -123,7 +126,7 @@ terminal does the emulating. See [the plan](#plan).
 | `gozellij start\|stop\|restart <name>` | change its state; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
 | `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
-| `gozellij attach <name>` | connect your terminal; `Ctrl-]` detaches without stopping anything |
+| `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name>` | stop it and forget it |

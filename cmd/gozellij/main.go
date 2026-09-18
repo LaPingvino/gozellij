@@ -37,7 +37,7 @@ Usage:
   gozellij status <name>               show one service
   gozellij add <name> -- <cmd> [args]  define a service
   gozellij start|stop|restart <name>   change its state
-  gozellij attach <name>               attach your terminal to it (Ctrl-] detaches)
+  gozellij attach <name>               attach your terminal to it
   gozellij logs <name>                 print its recent output and exit
   gozellij logs -f <name>              follow its output until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
@@ -60,6 +60,12 @@ Flags for logs:
 logs reads the file on disk, which outlives the daemon; logs -f follows the daemon's live buffer,
 which does not. A service added with -log off has no file, and logs then falls back to that
 buffer - which holds a few hundred KiB and dies with the daemon.
+
+While attached, Ctrl-] is gozellij's own key:
+  Ctrl-] d         detach; the service keeps running
+  Ctrl-] n / p     next / previous service, in this same terminal
+  Ctrl-] ?         show these keys
+  Ctrl-] Ctrl-]    send a literal Ctrl-] to the service
 
 Global:
   -socket <path>   daemon socket (default $XDG_RUNTIME_DIR/gozellij/fabric.sock)

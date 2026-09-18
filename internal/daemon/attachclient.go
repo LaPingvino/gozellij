@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,12 +17,39 @@ import (
 	"golang.org/x/term"
 )
 
-// DetachKey is the key that lets go of a session without touching what is running in it.
+// PrefixKey introduces a command to gozellij itself rather than to the service you are attached to.
 //
-// Ctrl-] , as telnet has used for decades. The distinction matters more than the choice: detaching
-// must never be confused with stopping, because the entire point of this program is that the thing
-// keeps running after you walk away.
-const DetachKey = 0x1d
+// Ctrl-] , as telnet has used for decades. Everything else on the wire is the service's: the
+// attach is a byte pipe, so exactly one key can be ours and it has to be one no program wants.
+//
+// It was a bare detach key until services became switchable. A prefix costs one extra keystroke to
+// detach and buys every other command there will ever be, which is the trade tmux and zellij both
+// made; `Ctrl-] Ctrl-]` sends a literal Ctrl-] through for the programs that do want it.
+const PrefixKey = 0x1d
+
+// DetachKey is the old name for PrefixKey, kept because it is referenced from docs and tests.
+const DetachKey = PrefixKey
+
+// attachOutcome is why an attach session ended. The difference between these is the difference
+// between reconnecting, moving somewhere else, and going home.
+type attachOutcome int
+
+const (
+	// outcomeDisconnected means the stream ended without us asking - a daemon upgrade, usually.
+	outcomeDisconnected attachOutcome = iota
+	// outcomeDetached means the user asked to leave.
+	outcomeDetached
+	// outcomeFinished means the service is over and said so.
+	outcomeFinished
+	// outcomeNext and outcomePrev mean the user asked for a different service in the same
+	// terminal - tabs, without a terminal emulator anywhere in the picture.
+	outcomeNext
+	outcomePrev
+)
+
+// prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
+// was showing.
+const prefixHelp = "Ctrl-] d detach · n/p next/previous service · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // ReattachWindow is how long an attached client keeps trying to get back in after the stream ends
 // unexpectedly.
@@ -37,6 +66,22 @@ const ReattachWindow = 15 * time.Second
 // It returns when the user detaches, when the service is gone, or when the daemon does not come
 // back within ReattachWindow.
 func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool) error {
+	// Raw mode and the terminal reader belong to the loop, not to one session: keystrokes go to
+	// the far end untouched (including Ctrl-C, which belongs to the program you are attached to
+	// and not to us), and switching services must not hand the terminal back and forth.
+	restore := func() {}
+	if term.IsTerminal(int(in.Fd())) {
+		state, err := term.MakeRaw(int(in.Fd()))
+		if err != nil {
+			return fmt.Errorf("putting the terminal in raw mode: %w", err)
+		}
+		restore = func() { _ = term.Restore(int(in.Fd()), state) }
+	}
+	defer restore()
+
+	input := startTerminalInput(in)
+	defer input.stop()
+
 	first := true
 	for {
 		c, err := Dial(socket)
@@ -47,13 +92,40 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			return fmt.Errorf("lost the daemon and could not get back: %w", err)
 		}
 
-		detached, err := c.attachOnce(service, in, out, replay && first)
+		outcome, err := c.runSession(service, input, in, out, replay && first)
 		c.Close()
 		if err != nil {
 			return err
 		}
-		if detached {
+
+		switch outcome {
+		case outcomeDetached:
+			restore()
+			fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
 			return nil
+		case outcomeFinished:
+			restore()
+			return nil
+
+		case outcomeNext, outcomePrev:
+			// Tabs, the cheap way. Switching which service this terminal is showing needs no
+			// terminal emulator at all: the attach is a byte pipe, so replaying the new
+			// service's output repaints the screen because the escape sequences that drew it
+			// are in the bytes. A multiplexer that owns a grid has to render this; here the
+			// terminal does, exactly as it does on a first attach.
+			next, nerr := neighbourService(socket, service, outcome == outcomeNext)
+			if nerr != nil {
+				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", nerr)
+				// Staying put beats dropping the user at a shell prompt because a list
+				// lookup failed.
+				first, replay = false, false
+				continue
+			}
+			service = next
+			fmt.Fprint(out, "\x1b[H\x1b[2J")
+			fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
+			first, replay = true, true
+			continue
 		}
 
 		// The stream ended without us asking. Either the daemon went away - an upgrade, most
@@ -75,6 +147,54 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 		first = false
 		replay = false
 	}
+}
+
+// neighbourService is the service before or after this one, wrapping around.
+//
+// The list is fetched on a fresh connection because the attached one has been given over to the
+// stream. Sorted by name, which is arbitrary but stable - and a switcher whose order changes
+// between presses would be useless.
+func neighbourService(socket, current string, forward bool) (string, error) {
+	c, err := Dial(socket)
+	if err != nil {
+		return "", fmt.Errorf("cannot list services: %w", err)
+	}
+	defer c.Close()
+
+	list, err := c.List()
+	if err != nil {
+		return "", fmt.Errorf("cannot list services: %w", err)
+	}
+	names := make([]string, 0, len(list.Services))
+	for _, svc := range list.Services {
+		names = append(names, svc.Service)
+	}
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		return "", errors.New("there are no services to switch to")
+	}
+	if len(names) == 1 {
+		return "", fmt.Errorf("%s is the only service", names[0])
+	}
+
+	at := -1
+	for i, n := range names {
+		if n == current {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		// The service we are attached to is no longer listed - removed while we watched. Going
+		// to the first one beats refusing to move.
+		return names[0], nil
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	return names[(at+step+len(names))%len(names)], nil
 }
 
 // waitForDaemonClient polls until the daemon both accepts and answers.
@@ -103,148 +223,219 @@ func waitForDaemonClient(socket string, within time.Duration) (*Client, error) {
 // in and out are normally os.Stdin and os.Stdout; they are parameters so this is testable without
 // a controlling terminal.
 func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool) error {
-	_, err := c.attachOnce(service, in, out, replay)
+	input := startTerminalInput(in)
+	defer input.stop()
+	_, err := c.runSession(service, input, in, out, replay)
 	return err
 }
 
-// attachOnce runs one attach session. It reports whether the user detached deliberately, which is
-// the difference between "we are done" and "we were cut off".
-func (c *Client) attachOnce(service string, in *os.File, out io.Writer, replay bool) (bool, error) {
-	cols, rows := 0, 0
-	restore := func() {}
+// terminalInput reads the terminal once, for the whole time the user is here.
+//
+// One reader, not one per session, and that is the point. A read on a tty cannot be cancelled -
+// SetReadDeadline is refused on it, measured - so a session that started its own reader left it
+// blocked in read(2) when it ended, and the next session started a second one beside it. Two
+// goroutines reading the same terminal means the next keystroke goes to whichever wakes first, and
+// half the time that is the one attached to a connection that is already closed. With one switch
+// per session that was a rare lost keystroke after a daemon upgrade; with a key that switches
+// services it would be every other press.
+type terminalInput struct {
+	// data carries bytes meant for whatever service is attached.
+	data chan []byte
+	// cmds carries the things the user asked gozellij itself for.
+	cmds chan attachOutcome
+	// ended fires when the terminal reaches EOF or fails.
+	ended chan error
 
+	done chan struct{}
+	once sync.Once
+}
+
+// startTerminalInput begins reading the terminal.
+func startTerminalInput(in *os.File) *terminalInput {
+	t := &terminalInput{
+		// Buffered so a burst read is not held up by a session that is mid-switch.
+		data:  make(chan []byte, 64),
+		cmds:  make(chan attachOutcome, 1),
+		ended: make(chan error, 1),
+		done:  make(chan struct{}),
+	}
+	go t.run(in)
+	return t
+}
+
+// stop abandons the reader. It does not interrupt the read in progress - nothing can - but it does
+// mean nothing is ever delivered again, and the goroutine ends on the next keystroke or at exit.
+func (t *terminalInput) stop() { t.once.Do(func() { close(t.done) }) }
+
+// run is the two-state machine: everything is forwarded until PrefixKey, and the byte after that
+// is a command for us.
+//
+// Bytes are forwarded in runs rather than one at a time, because a paste is a single read of
+// several thousand of them and a frame per byte would be visible.
+func (t *terminalInput) run(in *os.File) {
+	buf := make([]byte, 4096)
+	var pending []byte
+	prefixed := false
+
+	flush := func() bool {
+		if len(pending) == 0 {
+			return true
+		}
+		chunk := make([]byte, len(pending))
+		copy(chunk, pending)
+		pending = pending[:0]
+		select {
+		case t.data <- chunk:
+			return true
+		case <-t.done:
+			return false
+		}
+	}
+	command := func(o attachOutcome) bool {
+		if !flush() {
+			return false
+		}
+		select {
+		case t.cmds <- o:
+			return true
+		case <-t.done:
+			return false
+		}
+	}
+
+	for {
+		n, err := in.Read(buf)
+		for i := 0; i < n; i++ {
+			b := buf[i]
+
+			if prefixed {
+				prefixed = false
+				switch b {
+				case PrefixKey:
+					// A literal, for the programs that want this key themselves.
+					pending = append(pending, b)
+				case 'd', 'D':
+					if !command(outcomeDetached) {
+						return
+					}
+				case 'n', 'N', ' ':
+					if !command(outcomeNext) {
+						return
+					}
+				case 'p', 'P':
+					if !command(outcomePrev) {
+						return
+					}
+				case '?', 'h':
+					if !flush() {
+						return
+					}
+					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", prefixHelp)
+				default:
+					// Say what to do rather than swallowing it. A prefix key that silently
+					// eats the next keystroke is indistinguishable from a dropped one.
+					if !flush() {
+						return
+					}
+					fmt.Fprintf(os.Stderr, "\r\n[gozellij: Ctrl-] %q does nothing. %s]\r\n", b, prefixHelp)
+				}
+				continue
+			}
+
+			if b == PrefixKey {
+				prefixed = true
+				continue
+			}
+			pending = append(pending, b)
+		}
+
+		if !flush() {
+			return
+		}
+		if err != nil {
+			select {
+			case t.ended <- err:
+			case <-t.done:
+			}
+			return
+		}
+	}
+}
+
+// runSession runs one attach and reports why it ended, which is the difference between going home,
+// moving to another service, and being cut off.
+//
+// Everything happens in one select rather than in goroutines writing to shared variables: the
+// terminal's bytes, the user's commands, the service's output ending, and a window resize are four
+// things that can happen next, and a loop that names all four is easier to be sure about than
+// three goroutines and a mutex.
+func (c *Client) runSession(service string, input *terminalInput, in *os.File, out io.Writer, replay bool) (attachOutcome, error) {
+	cols, rows := 0, 0
 	if term.IsTerminal(int(in.Fd())) {
 		if w, h, err := term.GetSize(int(in.Fd())); err == nil {
 			cols, rows = w, h
 		}
-		// Raw mode: keystrokes go to the far end untouched, including Ctrl-C, which belongs
-		// to the program you are attached to and not to us.
-		state, err := term.MakeRaw(int(in.Fd()))
-		if err != nil {
-			return false, fmt.Errorf("putting the terminal in raw mode: %w", err)
-		}
-		restore = func() { _ = term.Restore(int(in.Fd()), state) }
 	}
-	defer restore()
 
-	resp, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay})
-	if err != nil {
-		return false, err
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay}); err != nil {
+		return outcomeDisconnected, err
 	}
-	_ = resp
 
 	// Forward window changes, so a full-screen program follows the terminal it is displayed in.
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
+
+	type outputResult struct {
+		finished bool
+		err      error
+	}
+	output := make(chan outputResult, 1)
 	go func() {
-		for range winch {
+		f, e := c.pumpOutput(out)
+		output <- outputResult{f, e}
+	}()
+
+	// Local copies, so that a terminal which reaches EOF can be dropped out of the select
+	// without ending the session. Redirected input runs out; the service's output still
+	// matters, and a viewer that quit the moment its stdin closed would be useless for
+	// `gozellij attach web </dev/null` and for every test that does the same.
+	data, cmds, ended := input.data, input.cmds, input.ended
+
+	for {
+		select {
+		case chunk := <-data:
+			if err := c.Writer().WriteFrame(ipc.KindData, chunk); err != nil {
+				// The connection is gone; let the output pump report why.
+				c.Close()
+				got := <-output
+				return outcomeDisconnected, got.err
+			}
+
+		case want := <-cmds:
+			// Closing is what ends the output pump: it is blocked on a read from the daemon,
+			// which has no reason to say anything just because the user pressed a key.
+			c.Close()
+			<-output
+			return want, nil
+
+		case <-ended:
+			// The terminal is gone, so nothing more will be typed - but plenty may still be
+			// printed. Stop listening to it and carry on watching.
+			data, cmds, ended = nil, nil, nil
+
+		case got := <-output:
+			if got.finished {
+				return outcomeFinished, nil
+			}
+			return outcomeDisconnected, got.err
+
+		case <-winch:
 			w, h, err := term.GetSize(int(in.Fd()))
 			if err != nil || w <= 0 || h <= 0 {
 				continue
 			}
 			_ = c.sendResize(w, h)
-		}
-	}()
-
-	// Keystrokes to the daemon, watching for the detach key.
-	inputDone := make(chan error, 1)
-	detached := make(chan struct{})
-	go func() {
-		inputDone <- c.pumpInput(in, detached)
-	}()
-
-	// Output from the daemon to the terminal, until the far end hangs up or we detach.
-	finished, err := c.pumpOutput(out)
-
-	if finished {
-		// The service is over and said so. That is an ending, not a disconnection, so do not
-		// go looking for the daemon: reattaching would put the terminal back into a stream
-		// that has nothing left to send.
-		c.Close()
-		releaseInput(in, inputDone)
-		restore()
-		return true, nil
-	}
-
-	select {
-	case <-detached:
-		// Ours: a clean detach, not a failure.
-		c.Close()
-		releaseInput(in, inputDone)
-		restore()
-		fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
-		return true, nil
-	default:
-	}
-
-	c.Close()
-	releaseInput(in, inputDone)
-	return false, err
-}
-
-// inputReleaseGrace bounds how long we wait for the keystroke pump to notice it is finished.
-const inputReleaseGrace = 500 * time.Millisecond
-
-// releaseInput stops the keystroke pump and waits for it, without waiting forever.
-//
-// The pump is blocked in read(2) on the *terminal*, not on the socket, so closing the connection
-// does not wake it - which is why waiting for it unconditionally hung the client on a real
-// terminal the moment the service finished. (It did not hang in tests, because a test's stdin is
-// not a tty and reaches EOF immediately. A bug that only appears on the thing the program is for
-// is the kind worth a comment.)
-//
-// A deadline in the past unblocks a read the *runtime can poll*. That was the plan, and on a real
-// terminal it does not work: os.Stdin on a tty is a blocking descriptor that Go does not register
-// with the netpoller, and SetReadDeadline answers "file type does not support deadline". So the
-// deadline is attempted, and when it is refused we do not sit through a grace period waiting for
-// something that cannot happen - we leave immediately and leave the goroutine where it is.
-//
-// Leaving it is safe here and not elsewhere, which is worth being precise about. On the way out of
-// the program it dies with us. On a reattach after a daemon upgrade it is a real gap: a second
-// pump starts on the same descriptor while the first is still in read(2), so the first keystroke
-// after a reattach can be swallowed by the goroutine that is no longer connected to anything. That
-// is recorded in docs/REPLACING_GEZELLIJ.md rather than papered over, because fixing it properly
-// means one input pump for the whole AttachLoop, which is a different change.
-func releaseInput(in *os.File, inputDone <-chan error) {
-	if err := in.SetReadDeadline(time.Now()); err != nil {
-		// Not pollable: nothing will interrupt the read, so waiting only adds latency to every
-		// exit and detach.
-		return
-	}
-	select {
-	case <-inputDone:
-	case <-time.After(inputReleaseGrace):
-	}
-	_ = in.SetReadDeadline(time.Time{})
-}
-
-// pumpInput copies keystrokes to the daemon until the detach key or end of input.
-func (c *Client) pumpInput(in *os.File, detached chan struct{}) error {
-	buf := make([]byte, 4096)
-	for {
-		n, err := in.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			if i := indexByte(chunk, DetachKey); i >= 0 {
-				// Send whatever came before the detach key, then stop. Dropping it would
-				// silently eat the user's last keystrokes.
-				if i > 0 {
-					_ = c.Writer().WriteFrame(ipc.KindData, chunk[:i])
-				}
-				close(detached)
-				return nil
-			}
-			if werr := c.Writer().WriteFrame(ipc.KindData, chunk); werr != nil {
-				return werr
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrDeadlineExceeded) {
-				// Deadline exceeded is releaseInput telling us to stop, not a failure.
-				return nil
-			}
-			return err
 		}
 	}
 }
@@ -291,15 +482,6 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 func (c *Client) sendResize(cols, rows int) error {
 	req := ipc.Request{Op: ipc.OpResize, Payload: mustJSON(ipc.ResizeRequest{Cols: cols, Rows: rows})}
 	return c.Writer().WriteJSON(ipc.KindRequest, req)
-}
-
-func indexByte(b []byte, c byte) int {
-	for i, x := range b {
-		if x == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // jsonUnmarshal and mustJSON keep the pumps readable; encoding failures on these tiny structs
