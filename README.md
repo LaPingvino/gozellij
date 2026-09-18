@@ -203,12 +203,20 @@ the design rules.
 ## Build and test
 
 ```sh
-go build ./...
-go test ./...
-go test -race ./...
+make build        # bin/gozellij and bin/gozellijd, version stamped from git
+make test         # go test ./...
+make race         # go test -race ./...
+make acceptance   # scripts/acceptance.sh: every promise, on this machine, now
+make check        # fmt, vet, test, race, acceptance - what to run before pushing
 ```
 
-Both suites are expected to pass. See [packaging/](packaging/) for the systemd user unit.
+All of them are expected to pass. `make acceptance` is the slow one and the one that matters
+most: it drives real ptys, a real daemon under `env -i` and a real tmux screen, and it re-checks
+each promise in [docs/REPLACING_GEZELLIJ.md](docs/REPLACING_GEZELLIJ.md) rather than taking the
+document's word for it. Several of the last bugs found were invisible to the unit tests, because
+they were about what the terminal ends up showing.
+
+See [packaging/](packaging/) for the systemd user unit.
 
 ## Name
 

@@ -13,7 +13,7 @@ rather than a measurement from the moment the attach client was restructured. So
 now re-checkable on demand:
 
 ```sh
-./scripts/acceptance.sh
+make acceptance     # or: ./scripts/acceptance.sh
 ```
 
 It builds the binaries, runs its own daemon in a throwaway directory under `env -i`, drives a real
@@ -96,10 +96,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   comparing pids.
 - **Output that outlives the daemon.** `gozellij logs <name>` reads
   `$XDG_STATE_HOME/gozellij/logs/<name>.log`, appended as the service runs and rotated at 16 MiB
-  with one generation kept; `gozellij logs -f` follows the live buffer. **Verified:** a service
-  printed a unique string, the daemon was `kill -9`'d, a new daemon was started, and `gozellij
-  logs` still had the string. Each daemon writes a line into the file when it opens it, so two
-  runs of the same service do not read as one.
+  with one generation kept; `gozellij logs -f` follows the live buffer, and takes several services
+  at once with a name on every line. **Verified:** a service printed a unique string, the daemon
+  was `kill -9`'d, a new daemon was started, and `gozellij logs` still had the string. Each daemon
+  writes a line into the file when it opens it, so two runs of the same service do not read as one.
+  **Verified** separately for following two services at once: each line carried its own service's
+  name and no line carried the other's, one service alone stayed byte-identical and unprefixed, and
+  several names without `-f` were refused rather than run together. All three were shown to fail
+  when the behaviour was deliberately broken.
 - **Typing `gozellij` puts you in a shell.** No arguments means the `shell` service: reattached if
   it is running, defined fresh from *your* terminal if it is not. **Verified** on a real pty with
   the daemon started under `env -i`: `TERM`, `LANG` and `$HOME` are the client's, `exit` returns you

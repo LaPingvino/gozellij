@@ -2,6 +2,7 @@
 /gozellij
 /gozellijd
 /dist/
+/bin/
 
 # test artifacts
 *.test
