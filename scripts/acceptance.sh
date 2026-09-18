@@ -262,6 +262,45 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     fi
 }
 
+# ---------------------------------------------------- one command, several services
+{
+    for n in multi_a multi_b multi_c; do
+        "$gz" add "$n" -start -- sleep 60 >/dev/null 2>&1
+    done
+    sleep 1
+    "$gz" stop multi_a multi_b multi_c >/dev/null 2>&1
+    stopped=0
+    for n in multi_a multi_b multi_c; do
+        "$gz" status "$n" 2>/dev/null | grep -q 'state: *stopped' && stopped=$((stopped+1))
+    done
+    if [ "$stopped" -eq 3 ]; then
+        ok "one stop command stops every service named"
+    else
+        bad "stop of three services stopped $stopped of them"
+    fi
+
+    # The middle name does not exist. The two real ones must still be started, and the command must
+    # still fail - stopping at the typo would leave the third one alone while exiting non-zero,
+    # which reads as nothing having happened.
+    partial=$("$gz" start multi_a nosuch_service multi_c 2>&1); partial_rc=$?
+    started=0
+    for n in multi_a multi_c; do
+        "$gz" status "$n" 2>/dev/null | grep -q 'state: *running' && started=$((started+1))
+    done
+    if [ "$started" -eq 2 ] && [ "$partial_rc" -ne 0 ] && printf '%s' "$partial" | grep -q '1 of 3'; then
+        ok "a bad name among good ones is reported without abandoning the rest"
+    else
+        bad "start of three with one typo: $started started, rc=$partial_rc"
+    fi
+
+    removed=$("$gz" rm multi_a multi_b multi_c 2>&1)
+    if [ "$(printf '%s' "$removed" | grep -c '^removed multi_')" -eq 3 ] && ! "$gz" ls 2>/dev/null | grep -q multi_; then
+        ok "one rm command forgets every service named"
+    else
+        bad "rm of three services left some behind: $(printf '%s' "$removed" | head -2)"
+    fi
+}
+
 # ------------------------------------------------------- following several services at once
 {
     "$gz" add follow_a -start -- sh -c 'i=0; while [ $i -lt 20 ]; do echo AAA-$i; i=$((i+1)); sleep 0.3; done' >/dev/null 2>&1
@@ -270,7 +309,7 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     both=$(timeout 3 "$gz" logs -f follow_a follow_b 2>&1)
     one=$(timeout 2 "$gz" logs -f follow_a 2>&1)
     refused=$("$gz" logs follow_a follow_b 2>&1); refused_rc=$?
-    "$gz" rm follow_a follow_b >/dev/null 2>&1
+    "$gz" rm follow_a follow_b >/dev/null || bad "could not clean up the followed services"
 
     # Both services, and every line of each carrying its own name. Checking only that both names
     # appear would pass if the prefixes were attached to the wrong lines, which is the way this
