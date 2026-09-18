@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -88,5 +89,50 @@ func TestPrefixWriterConcurrentLinesStayWhole(t *testing.T) {
 		if len(l) != len("a | 0123456789") {
 			t.Fatalf("torn line %q", l)
 		}
+	}
+}
+
+// eachService must keep going past a failure. Stopping at the first one would leave the services
+// after it untouched while the command exits non-zero, which reads as "nothing happened" and is
+// not what happened.
+func TestEachServiceKeepsGoingPastAFailure(t *testing.T) {
+	var seen []string
+	err := eachService([]string{"a", "b", "c"}, func(name string) error {
+		seen = append(seen, name)
+		if name == "b" {
+			return errors.New("no such service")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("a failure was not reported")
+	}
+	if got, want := strings.Join(seen, ","), "a,b,c"; got != want {
+		t.Fatalf("visited %q, want %q", got, want)
+	}
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Fatalf("error does not say how many failed: %v", err)
+	}
+}
+
+// A single name must return the operation's own error untouched. Wrapping it in "1 of 1 services
+// failed" would change what every existing one-name invocation prints.
+func TestEachServiceSingleNameReturnsTheErrorItself(t *testing.T) {
+	want := errors.New("service.stop: no such service: nosuch")
+	got := eachService([]string{"nosuch"}, func(string) error { return want })
+	if got != want {
+		t.Fatalf("got %v, want the original error", got)
+	}
+}
+
+// All of them succeeding is not an error, and all of them failing must still be counted rather
+// than reported as the last one.
+func TestEachServiceCounts(t *testing.T) {
+	if err := eachService([]string{"a", "b"}, func(string) error { return nil }); err != nil {
+		t.Fatalf("two successes reported an error: %v", err)
+	}
+	err := eachService([]string{"a", "b"}, func(string) error { return errors.New("boom") })
+	if err == nil || !strings.Contains(err.Error(), "2 of 2") {
+		t.Fatalf("got %v, want a count of 2 of 2", err)
 	}
 }

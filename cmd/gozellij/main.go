@@ -37,15 +37,15 @@ func usage() {
 Usage:
   gozellij                             land in your shell (starts one if there is none)
   gozellij ls                          list services
-  gozellij status <name>               show one service
+  gozellij status <name>...            show one service, or several
   gozellij add <name> -- <cmd> [args]  define a service
-  gozellij start|stop|restart <name>   change its state
+  gozellij start|stop|restart <name>.. change the state of one or several
   gozellij attach <name>               attach your terminal to it
   gozellij logs <name>                 print its recent output and exit
   gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij shell [-name <name>]        the same, with a different service name
-  gozellij rm <name> [-keep-logs]      stop it, forget it, and delete its log
+  gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
   gozellij stats                       print the status line once and exit
@@ -327,8 +327,8 @@ func cmdStatus(args []string) error {
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("status needs exactly one service name")
+	if fs.NArg() == 0 {
+		return errors.New("status needs at least one service name")
 	}
 	c, err := connect(*sock)
 	if err != nil {
@@ -336,12 +336,14 @@ func cmdStatus(args []string) error {
 	}
 	defer c.Close()
 
-	s, err := c.Status(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	printStatus(s)
-	return nil
+	return eachService(fs.Args(), func(name string) error {
+		s, err := c.Status(name)
+		if err != nil {
+			return err
+		}
+		printStatus(s)
+		return nil
+	})
 }
 
 // viewerWord says how many terminals are watching, and "-" for none.
@@ -497,8 +499,8 @@ func cmdLifecycle(op string, args []string) error {
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("%s needs exactly one service name", op)
+	if fs.NArg() == 0 {
+		return fmt.Errorf("%s needs at least one service name", op)
 	}
 	c, err := connect(*sock)
 	if err != nil {
@@ -506,8 +508,16 @@ func cmdLifecycle(op string, args []string) error {
 	}
 	defer c.Close()
 
-	name := fs.Arg(0)
-	var s ipc.StatusReply
+	return eachService(fs.Args(), func(name string) error {
+		return oneLifecycle(c, op, name)
+	})
+}
+
+func oneLifecycle(c *daemon.Client, op, name string) error {
+	var (
+		s   ipc.StatusReply
+		err error
+	)
 	switch op {
 	case "start":
 		s, err = c.Start(name)
@@ -892,8 +902,8 @@ func cmdRemove(args []string) error {
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("rm needs exactly one service name")
+	if fs.NArg() == 0 {
+		return errors.New("rm needs at least one service name")
 	}
 	c, err := connect(*sock)
 	if err != nil {
@@ -901,17 +911,45 @@ func cmdRemove(args []string) error {
 	}
 	defer c.Close()
 
-	name := fs.Arg(0)
-	logs, err := c.Remove(name, *keepLogs)
-	if err != nil {
-		return err
+	return eachService(fs.Args(), func(name string) error {
+		logs, err := c.Remove(name, *keepLogs)
+		if err != nil {
+			return err
+		}
+		// Confirm in words, and name the files. A command that removes something and prints
+		// nothing leaves you wondering whether it did anything at all - and a log that was
+		// deleted without being mentioned is worse, because for a shell that file was the whole
+		// transcript.
+		fmt.Printf("removed %s\n", name)
+		for _, l := range logs {
+			fmt.Printf("removed its log %s\n", l)
+		}
+		return nil
+	})
+}
+
+// eachService applies an operation to every named service, and keeps going when one of them fails.
+//
+// Stopping at the first failure is wrong here for the same reason `rm a b c` in a shell does not
+// stop: the names are independent, and a typo in the second one should not silently leave the
+// third running. Every failure is reported as it happens, so the output stays in step with what
+// was actually done, and the exit status says how many.
+//
+// With a single name the error is returned unchanged, so `stop nosuch` still prints exactly what
+// it printed before rather than a summary wrapped around it.
+func eachService(names []string, do func(string) error) error {
+	if len(names) == 1 {
+		return do(names[0])
 	}
-	// Confirm in words, and name the files. A command that removes something and prints nothing
-	// leaves you wondering whether it did anything at all - and a log that was deleted without
-	// being mentioned is worse, because for a shell that file was the whole transcript.
-	fmt.Printf("removed %s\n", name)
-	for _, l := range logs {
-		fmt.Printf("removed its log %s\n", l)
+	failed := 0
+	for _, name := range names {
+		if err := do(name); err != nil {
+			fmt.Fprintf(os.Stderr, "gozellij: %s: %v\n", name, err)
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d services failed", failed, len(names))
 	}
 	return nil
 }
