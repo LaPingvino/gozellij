@@ -132,6 +132,17 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name> [-keep-logs]` | stop it, forget it, and delete its log |
 
+## Does it still do what it says?
+
+```sh
+./scripts/acceptance.sh
+```
+
+Fourteen checks, on a real pty, against a throwaway daemon: an interactive shell, the environment
+it gets, detaching without stopping, switching services, an upgrade that keeps every pid *with a
+client attached across it*, logs outliving the daemon, enabled services returning, and a stop that
+takes a service's children with it. Exits non-zero if any promise has stopped holding.
+
 ## Why start again, in Go
 
 `gozellij` follows [gezellij](https://github.com/LaPingvino/gezellij), a Zellij fork that is in

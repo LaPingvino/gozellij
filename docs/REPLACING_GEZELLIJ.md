@@ -7,6 +7,20 @@ multiplexer on a VPS — and use this instead. That question decides what counts
 Everything below marked **verified** was run, on this machine, and the transcript is in the session
 that added the line. Nothing is marked verified because it looks like it should work.
 
+That was still not enough. A line verified once is a claim about the past, and this program has been
+rewritten underneath several of them — "an attached client reattaches by itself" was an argument
+rather than a measurement from the moment the attach client was restructured. So the promises are
+now re-checkable on demand:
+
+```sh
+./scripts/acceptance.sh
+```
+
+It builds the binaries, runs its own daemon in a throwaway directory under `env -i`, drives a real
+pty, and reports PASS or FAIL for each promise below, exiting non-zero if any of them has stopped
+being true. It is the only thing here that can tell you whether this document is still accurate
+today, as against on the day each line was written.
+
 ## What already works
 
 - **An interactive shell.** `gozellij add shell -restart always -start -- bash -i`, then

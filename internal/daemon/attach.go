@@ -56,6 +56,14 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 		}
 	}
 
+	// Counted from here: after the lookup, so an attach refused for an unknown service is not a
+	// viewer, and *before* the subscription, so that a viewer is counted for the whole time one
+	// can exist. Counting after would leave a window in which a handler holds a subscription
+	// nobody is counted for, and "no viewers" would not mean "nothing attached" - which it has
+	// to, because that is the only signal anything else has for when the attaches are done.
+	leaving := s.watching(req.Service)
+	defer leaving()
+
 	// Snapshot and subscription are taken together, so nothing written in between is lost. See
 	// the note on OutputBuffer.Attach.
 	snapshot, sub, err := out.Attach(AttachQueueBytes)
@@ -63,23 +71,16 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 		return err
 	}
 
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
-
-	// Counted from here, where the subscription exists, to the end of this function. Counting
-	// from the request instead would report a viewer for an attach that was refused.
-	leaving := s.watching(req.Service)
-	defer leaving()
-
-	// Belt and braces, and both are needed. Detach is idempotent, so this defer covers the early
-	// returns below - a client that hangs up between the request and the reply left a subscriber
-	// on the buffer for the life of the daemon, each one getting a private copy of every byte the
-	// service wrote. The explicit Detach further down still has to be where it is, for the
-	// ordering reason described there.
+	// Detach is idempotent, so this defer covers the early returns below - a client that hangs
+	// up between the request and the reply left a subscriber on the buffer for the life of the
+	// daemon, each one getting a private copy of every byte the service wrote. The explicit
+	// Detach further down still has to be where it is, for the ordering reason described there.
 	//
 	// Registered after the viewer count so that it runs before it: while a viewer is counted its
-	// subscription exists, which makes "no viewers" mean what it says rather than "no viewers,
-	// and some of their subscriptions are still being cleaned up".
+	// subscription exists, and once the count is zero none do.
 	defer sub.Detach()
+
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
 
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
