@@ -62,6 +62,10 @@ type Process struct {
 	// rather than nearly complete.
 	cgroup *Cgroup
 
+	// reaped is set the instant wait() returns, which is when the pid stops being ours. It is
+	// separate from exited, which is published later, after the output has been drained.
+	reaped bool
+
 	// done is closed once the child has exited and its output has been drained.
 	done chan struct{}
 	// drained is closed by the reader goroutine when it stops.
@@ -173,7 +177,9 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 		// clone3 is what places a child in a cgroup, and a seccomp policy that forbids it fails
 		// here and nowhere else. Try once more without, and put the child in the cgroup after
 		// the fact - a smaller guarantee, and much better than refusing to run the service.
-		logf("service %s: starting it in a cgroup failed (%v); retrying without", s.Name, err)
+		// The error may or may not be about the cgroup - a missing working directory fails here
+		// too - so do not assert a cause we do not know. Say what was tried and what happened.
+		logf("service %s: could not start it in a cgroup (%v); trying again without one", s.Name, err)
 		cmd = exec.Command(path, s.Args...)
 		cmd.Dir = s.Dir
 		cmd.Env = append(os.Environ(), s.Env...)
@@ -250,6 +256,14 @@ func (p *Process) reap() {
 	} else {
 		exit = waitAdopted(p.pid)
 	}
+
+	// Record the reap immediately. Between here and the exit being published below there is up
+	// to DrainGrace+DrainAbandon of waiting, and for all of it the pid has already been freed by
+	// the kernel and may have been handed to somebody else - so anything that signals by pid has
+	// to know the child is gone before the waiting starts, not after.
+	p.mu.Lock()
+	p.reaped = true
+	p.mu.Unlock()
 
 	// The child is gone, but bytes it wrote may still be in flight. Give the reader a moment,
 	// then close the pty - and then stop waiting for it, because closing is not guaranteed to
@@ -458,6 +472,14 @@ func (p *Process) SignalGroup(sig syscall.Signal) error {
 	if p.pid <= 0 {
 		return ErrProcessGone
 	}
+	p.mu.Lock()
+	reaped := p.reaped
+	p.mu.Unlock()
+	if reaped {
+		// The pid has been returned to the kernel and may belong to somebody else by now.
+		// Signalling "its" process group could reach an unrelated one.
+		return ErrProcessGone
+	}
 	pgid, err := syscall.Getpgid(p.pid)
 	if err != nil {
 		if errors.Is(err, syscall.ESRCH) {
@@ -509,6 +531,13 @@ func (p *Process) Stop() Exit {
 		return p.Wait()
 	}
 
+	// One deadline for the whole stop, not one per participant. The grace period belongs to the
+	// *service*, and a second version of this gave it entirely to the leader: it waited for the
+	// leader to be reaped and then killed the cgroup at once, so a child still flushing when its
+	// parent exited was SIGKILLed thirteen milliseconds into a five second grace. That is worse
+	// than the process-group version it replaced, which at least left the children alone.
+	deadline := time.Now().Add(StopGrace)
+
 	// SIGTERM twice over: to the process group, which is everything that stayed in it, and
 	// individually to anything in the cgroup that left the group. cgroup v2 has no "signal this
 	// cgroup" - only cgroup.kill, which is SIGKILL - so a graceful stop for a process that
@@ -518,16 +547,37 @@ func (p *Process) Stop() Exit {
 
 	select {
 	case <-p.done:
-	case <-time.After(StopGrace):
+	case <-time.After(time.Until(deadline)):
 		p.stopSignal(syscall.SIGKILL)
 	}
 
-	// Always, and this is the line the first version got wrong. It killed the cgroup only after
-	// the grace period expired - so a service whose main process exited promptly returned here
-	// early and never swept at all, and the setsid'd child this whole mechanism exists for
-	// survived every well-behaved stop. Measured: it looked like cgroups were not working.
+	// The leader is gone; the rest of the service may not be. Give it what is left of the grace
+	// period to finish on its own before the cgroup is killed.
+	p.waitCgroupEmpty(deadline)
+
+	// Then always sweep, and this is the line the first version got wrong: it killed the cgroup
+	// only after the grace period expired, so a service whose main process exited promptly
+	// returned early and never swept at all, and the setsid'd child this whole mechanism exists
+	// for survived every well-behaved stop.
 	p.sweepCgroup()
 	return p.Wait()
+}
+
+// waitCgroupEmpty waits until nothing is left in the cgroup, or until the deadline.
+func (p *Process) waitCgroupEmpty(deadline time.Time) {
+	if p.cgroup == nil {
+		return
+	}
+	for {
+		pids, err := p.cgroup.Pids()
+		if err != nil || len(pids) == 0 {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // signalCgroup sends a signal to every process in the cgroup, individually.
@@ -541,12 +591,32 @@ func (p *Process) signalCgroup(sig syscall.Signal) {
 		return
 	}
 	for _, pid := range pids {
-		if pid == p.pid {
-			continue // already signalled, through its process group
+		// Skip anything the process-group signal already reached. Sending a second SIGTERM a
+		// hundred microseconds after the first is harmless to a shell, whose handler has not
+		// run yet so the signals coalesce - but a runtime with asynchronous handlers (Go, Rust)
+		// gets both, and "a second SIGTERM means stop arguing and quit" is a common pattern.
+		if pgid, err := syscall.Getpgid(pid); err == nil && pgid == p.pid {
+			continue
 		}
 		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			p.logf("signalling %d in the cgroup: %v", pid, err)
 		}
+	}
+}
+
+// removeCgroup deletes the cgroup directory, retrying while the kernel finishes reaping.
+func (p *Process) removeCgroup() error {
+	const within = 2 * time.Second
+	deadline := time.Now().Add(within)
+	for {
+		err := p.cgroup.Remove()
+		if err == nil {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -571,10 +641,15 @@ func (p *Process) Cgroup() *Cgroup { return p.cgroup }
 func (p *Process) Close() {
 	p.closePTY()
 	if p.cgroup != nil {
-		// Only succeeds once the cgroup is empty, which is the point: a directory that will
-		// not go away is a service that did not entirely stop, and leaving it is better than
-		// pretending. Each run gets a fresh name, so a leftover blocks nothing.
-		if err := p.cgroup.Remove(); err != nil {
+		// A cgroup directory can only be removed once it is empty, and cgroup.kill is
+		// asynchronous: a task that has been SIGKILLed is still listed until it finishes
+		// exiting, so an immediate rmdir gets EBUSY. Retrying briefly is the difference between
+		// a clean sweep and one dead directory per stop for the life of the daemon - measured
+		// at five out of five stops before this loop existed.
+		//
+		// If it still will not go, say so once. Each run gets a fresh name, so a leftover
+		// blocks nothing, and a directory that outlives its service is worth a line.
+		if err := p.removeCgroup(); err != nil {
 			p.logf("could not remove the cgroup: %v", err)
 		}
 	}

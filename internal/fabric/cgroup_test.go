@@ -2,7 +2,9 @@ package fabric
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -225,5 +227,88 @@ func waitForCgroupPids(t *testing.T, g *Cgroup, want int) []int {
 			t.Fatalf("cgroup holds %v, wanted at least %d processes", pids, want)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The grace period belongs to the service, not to its leader.
+//
+// A previous version waited for the leader to be reaped and then killed the cgroup immediately, so
+// a child still shutting down when its parent exited was SIGKILLed a few milliseconds into a five
+// second grace. That is worse than the process-group version it replaced, which left children
+// alone entirely.
+func TestChildrenGetTheGracePeriodTooNotJustTheLeader(t *testing.T) {
+	cg := requireCgroups(t)
+
+	dir := t.TempDir()
+	done := filepath.Join(dir, "child-finished")
+	child := filepath.Join(dir, "child.sh")
+	// Catches SIGTERM, takes a moment over it, and records that it got to finish. Its output
+	// goes nowhere near the pty, so nothing about the drain keeps it alive: the only thing being
+	// measured is how long the stop lets it have.
+	script := "#!/bin/sh\ntrap 'sleep 0.5; : > " + done + "; exit 0' TERM\nwhile :; do sleep 0.05; done\n"
+	if err := os.WriteFile(child, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := NewSupervisor(Service{
+		Name: "graceful", Command: "sh",
+		Args:    []string{"-c", "setsid " + child + " </dev/null >/dev/null 2>&1 &\necho STARTED\nexec sleep 600"},
+		Restart: RestartNo,
+	}, StartOptions{Cgroups: cg})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForOutput(t, s, "STARTED")
+
+	p := s.Current()
+	if p == nil || p.Cgroup() == nil {
+		t.Fatal("no process or no cgroup")
+	}
+	waitForCgroupPids(t, p.Cgroup(), 2)
+
+	t0 := time.Now()
+	s.Stop()
+	elapsed := time.Since(t0)
+
+	if _, err := os.Stat(done); err != nil {
+		t.Errorf("after %v the child had not finished shutting down: %v", elapsed, err)
+	}
+	// And the stop waited for it rather than for the whole grace period: once the service is
+	// empty there is nothing left to wait for.
+	if elapsed >= StopGrace {
+		t.Errorf("stop took %v, the entire grace period; it should end when the service does", elapsed)
+	}
+}
+
+// cgroup.kill is asynchronous, so a task that has been killed is still listed until it finishes
+// exiting and an immediate rmdir gets EBUSY. Without a retry that left one dead directory per stop
+// for the life of the daemon.
+func TestTheCgroupDirectoryIsRemovedAfterASweep(t *testing.T) {
+	cg := requireCgroups(t)
+
+	for round := 0; round < 3; round++ {
+		s := NewSupervisor(Service{
+			Name: "tree", Command: "sh",
+			Args: []string{"-c", `setsid sleep 600 </dev/null >/dev/null 2>&1 &
+setsid sleep 600 </dev/null >/dev/null 2>&1 &
+echo STARTED; exec sleep 600`},
+			Restart: RestartNo,
+		}, StartOptions{Cgroups: cg})
+		if err := s.Start(context.Background()); err != nil {
+			t.Fatalf("round %d: Start: %v", round, err)
+		}
+		waitForOutput(t, s, "STARTED")
+
+		p := s.Current()
+		dir := p.Cgroup().Dir()
+		waitForCgroupPids(t, p.Cgroup(), 3)
+
+		s.Stop()
+		// The supervisor closes the process, which is what removes the directory.
+		s.Wait()
+
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("round %d: %s survived the stop (Stat = %v)", round, dir, err)
+		}
 	}
 }

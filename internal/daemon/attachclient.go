@@ -89,7 +89,15 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			if first {
 				return err
 			}
-			return fmt.Errorf("lost the daemon and could not get back: %w", err)
+			// Not the first connection, so the daemon existed a moment ago and may be being
+			// replaced right now. Give it the same window the reattach path gives it, rather
+			// than giving up on a refusal that lasts milliseconds - which is what a Ctrl-] n
+			// pressed during an upgrade used to hit.
+			back, werr := waitForDaemonClient(socket, ReattachWindow)
+			if werr != nil {
+				return fmt.Errorf("lost the daemon and could not get back: %w", err)
+			}
+			c = back
 		}
 
 		outcome, err := c.runSession(service, input, in, out, replay && first)
@@ -413,6 +421,18 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 			}
 
 		case want := <-cmds:
+			// Whatever was typed before the command goes first. The reader flushes those bytes
+			// and then sends the command, on two channels - and a select over two ready
+			// channels picks at random, so without this the last thing typed at one service
+			// could arrive at the next one instead.
+			for draining := true; draining; {
+				select {
+				case chunk := <-data:
+					_ = c.Writer().WriteFrame(ipc.KindData, chunk)
+				default:
+					draining = false
+				}
+			}
 			// Closing is what ends the output pump: it is blocked on a read from the daemon,
 			// which has no reason to say anything just because the user pressed a key.
 			c.Close()
@@ -472,7 +492,13 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 				}
 			}
 		case ipc.KindResponse:
-			// An in-stream answer (to a resize, say). Nothing to display.
+			// An in-stream answer, to a resize. Successes are not worth a line; a refusal is,
+			// because a resize the daemon rejected leaves a full-screen program drawing at the
+			// wrong size and nothing else would ever mention it.
+			var r ipc.Response
+			if jerr := jsonUnmarshal(payload, &r); jerr == nil && !r.OK {
+				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", r.Error)
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "\r\n[gozellij: unexpected %s frame]\r\n", kind)
 		}
