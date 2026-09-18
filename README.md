@@ -76,7 +76,7 @@ clock  running  1027290  9s      -         sh
 $ gozellij logs clock -n 40      # what it printed, from disk; survives the daemon dying
 $ gozellij logs -f clock         # follow it live; Ctrl-C stops watching, not the service
 $ gozellij attach clock          # watch it live; Ctrl-] d detaches, it keeps running
-                                 # Ctrl-] n / Ctrl-] p switch services without leaving the terminal
+                                 # Ctrl-] n / p switch services; Ctrl-] l lists them and picks one
 ```
 
 Now upgrade the daemon under it:
@@ -127,7 +127,7 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij start\|stop\|restart <name>` | change its state; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
 | `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
-| `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] ?` lists the keys |
+| `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] l` picks one from a list, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name> [-keep-logs]` | stop it, forget it, and delete its log |

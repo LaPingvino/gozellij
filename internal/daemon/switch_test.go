@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -189,5 +191,95 @@ func TestSwitchingFromAServiceThatHasGoneLandsSomewhere(t *testing.T) {
 	}
 	if got != "alpha" {
 		t.Errorf("landed on %q, want alpha", got)
+	}
+}
+
+// pickerDaemon starts a daemon with three services, named so that sorted order is known.
+func pickerDaemon(t *testing.T) string {
+	t.Helper()
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+	for _, name := range []string{"gamma", "alpha", "beta"} {
+		if _, err := c.Add(name, ipc.AddRequest{Command: "sleep", Args: []string{"300"}}); err != nil {
+			t.Fatalf("Add %s: %v", name, err)
+		}
+	}
+	return sock
+}
+
+func TestPickingAServiceByNumber(t *testing.T) {
+	sock := pickerDaemon(t)
+	// Sorted: 1 alpha, 2 beta, 3 gamma. One-based, because nobody counts tabs from zero.
+	input, done := feedTerminal(t, "2")
+	defer done()
+
+	got, err := pickService(sock, "alpha", input, io.Discard)
+	if err != nil {
+		t.Fatalf("pickService: %v", err)
+	}
+	if got != "beta" {
+		t.Errorf("picked %q, want beta", got)
+	}
+}
+
+func TestPickingTheLastServiceWorks(t *testing.T) {
+	// An off-by-one here would be invisible for the middle entries and wrong at the end.
+	sock := pickerDaemon(t)
+	input, done := feedTerminal(t, "3")
+	defer done()
+
+	got, err := pickService(sock, "alpha", input, io.Discard)
+	if err != nil {
+		t.Fatalf("pickService: %v", err)
+	}
+	if got != "gamma" {
+		t.Errorf("picked %q, want gamma", got)
+	}
+}
+
+func TestPickingSomethingThatIsNotAServiceStaysPut(t *testing.T) {
+	sock := pickerDaemon(t)
+	for _, keys := range []string{"x", "0", "9", "\n"} {
+		t.Run(keys, func(t *testing.T) {
+			input, done := feedTerminal(t, keys)
+			defer done()
+
+			got, err := pickService(sock, "beta", input, io.Discard)
+			if err != nil {
+				t.Fatalf("pickService: %v", err)
+			}
+			if got != "beta" {
+				t.Errorf("%q moved us to %q; anything that is not a listed number must stay put", keys, got)
+			}
+		})
+	}
+}
+
+func TestPickingWithThePrefixKeyStaysPut(t *testing.T) {
+	// Ctrl-] something, mid-list: changing your mind, not a command aimed at a session that no
+	// longer exists.
+	sock := pickerDaemon(t)
+	input, done := feedTerminal(t, "\x1dn")
+	defer done()
+
+	got, err := pickService(sock, "beta", input, io.Discard)
+	if err != nil {
+		t.Fatalf("pickService: %v", err)
+	}
+	if got != "beta" {
+		t.Errorf("picked %q, want to stay on beta", got)
+	}
+}
+
+func TestPickingWithNoDaemonSaysSo(t *testing.T) {
+	input, done := feedTerminal(t, "1")
+	defer done()
+
+	_, err := pickService(filepath.Join(t.TempDir(), "nothing.sock"), "beta", input, io.Discard)
+	if err == nil {
+		t.Fatal("pickService succeeded with no daemon")
+	}
+	if !strings.Contains(err.Error(), "list") {
+		t.Errorf("error does not say what failed: %v", err)
 	}
 }

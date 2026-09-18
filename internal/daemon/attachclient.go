@@ -45,11 +45,19 @@ const (
 	// terminal - tabs, without a terminal emulator anywhere in the picture.
 	outcomeNext
 	outcomePrev
+	// outcomeList means the user asked to see what there is and pick one.
+	outcomeList
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous service · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · ? this · Ctrl-] sends a literal Ctrl-]"
+
+// pickTimeout is how long the list waits for a choice before giving up and going back.
+//
+// Long enough to read a list of services, short enough that a key pressed by accident does not
+// leave the terminal apparently frozen with no explanation.
+const pickTimeout = 30 * time.Second
 
 // ReattachWindow is how long an attached client keeps trying to get back in after the stream ends
 // unexpectedly.
@@ -130,8 +138,30 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 				continue
 			}
 			service = next
-			fmt.Fprint(out, "\x1b[H\x1b[2J")
-			fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
+			showService(out, service)
+			first, replay = true, true
+			continue
+
+		case outcomeList:
+			// Cycling with n/p is fine for two services and tedious for six. The list is
+			// printed over whatever was on screen and the next keystroke chooses; the
+			// connection is already closed, so that keystroke cannot reach a service by
+			// mistake.
+			picked, perr := pickService(socket, service, input, out)
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", perr)
+				first, replay = false, false
+				continue
+			}
+			if picked == service {
+				// Cancelled, or chose where they already were. Repaint so the list is not
+				// left sitting on top of the service's screen.
+				showService(out, service)
+				first, replay = true, true
+				continue
+			}
+			service = picked
+			showService(out, service)
 			first, replay = true, true
 			continue
 		}
@@ -157,27 +187,89 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 	}
 }
 
-// neighbourService is the service before or after this one, wrapping around.
+// showService clears the terminal and says where you now are.
 //
-// The list is fetched on a fresh connection because the attached one has been given over to the
-// stream. Sorted by name, which is arbitrary but stable - and a switcher whose order changes
-// between presses would be useless.
-func neighbourService(socket, current string, forward bool) (string, error) {
+// The clear matters: what is on screen belongs to the service you just left, and replaying the new
+// one on top of it would interleave two screens into something that looks like corruption.
+func showService(out io.Writer, service string) {
+	fmt.Fprint(out, "\x1b[H\x1b[2J")
+	fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
+}
+
+// pickService shows the services and returns the one chosen, or the current one if the user
+// changes their mind.
+func pickService(socket, current string, input *terminalInput, out io.Writer) (string, error) {
+	names, err := serviceNames(socket)
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "", errors.New("there are no services")
+	}
+
+	fmt.Fprint(out, "\x1b[H\x1b[2J")
+	fmt.Fprint(os.Stderr, "[gozellij] pick a service:\r\n")
+	for i, n := range names {
+		marker := "  "
+		if n == current {
+			marker = "* "
+		}
+		// One-based, because the keys are 1..9 and nobody counts tabs from zero.
+		fmt.Fprintf(os.Stderr, "  %s%d %s\r\n", marker, i+1, n)
+	}
+	fmt.Fprint(os.Stderr, "  (any other key to stay where you are)\r\n")
+
+	// The reader is still running, so the choice arrives as ordinary input - which is exactly
+	// why there is one reader for the whole session rather than one per attach.
+	select {
+	case chunk := <-input.data:
+		if len(chunk) == 0 {
+			return current, nil
+		}
+		i := int(chunk[0]) - '1'
+		if i < 0 || i >= len(names) {
+			return current, nil
+		}
+		return names[i], nil
+	case <-input.cmds:
+		// Ctrl-] something, mid-list. Treat it as changing their mind rather than acting on a
+		// command aimed at a session that no longer exists.
+		return current, nil
+	case <-time.After(pickTimeout):
+		return current, nil
+	}
+}
+
+// serviceNames lists the services, sorted, on a fresh connection.
+func serviceNames(socket string) ([]string, error) {
 	c, err := Dial(socket)
 	if err != nil {
-		return "", fmt.Errorf("cannot list services: %w", err)
+		return nil, fmt.Errorf("cannot list services: %w", err)
 	}
 	defer c.Close()
 
 	list, err := c.List()
 	if err != nil {
-		return "", fmt.Errorf("cannot list services: %w", err)
+		return nil, fmt.Errorf("cannot list services: %w", err)
 	}
 	names := make([]string, 0, len(list.Services))
 	for _, svc := range list.Services {
 		names = append(names, svc.Service)
 	}
 	sort.Strings(names)
+	return names, nil
+}
+
+// neighbourService is the service before or after this one, wrapping around.
+//
+// The list is fetched on a fresh connection because the attached one has been given over to the
+// stream. Sorted by name, which is arbitrary but stable - and a switcher whose order changes
+// between presses would be useless.
+func neighbourService(socket, current string, forward bool) (string, error) {
+	names, err := serviceNames(socket)
+	if err != nil {
+		return "", err
+	}
 
 	if len(names) == 0 {
 		return "", errors.New("there are no services to switch to")
@@ -332,6 +424,10 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case 'p', 'P':
 					if !command(outcomePrev) {
+						return
+					}
+				case 'l', 'L', 'w', 'W':
+					if !command(outcomeList) {
 						return
 					}
 				case '?', 'h':

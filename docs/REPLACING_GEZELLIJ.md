@@ -18,9 +18,10 @@ that added the line. Nothing is marked verified because it looks like it should 
   `top` output). They have to: the attach is a byte pipe and your terminal does the emulating.
 - **Detach without stopping.** `Ctrl-] d`, and the service keeps running. **Verified.**
 - **Tabs: several services in one terminal.** `Ctrl-] n` and `Ctrl-] p` move to the next and
-  previous service without leaving the terminal. **Verified** on a real pty: switching repaints,
-  wraps round, and keystrokes typed after two switches arrived at the right service and only at
-  that one.
+  previous service without leaving the terminal, and `Ctrl-] l` lists them and picks one by number.
+  **Verified** on a real pty: switching repaints, wraps round, keystrokes typed after two switches
+  arrived at the right service and only at that one, and the list marks where you are, selects by
+  number and leaves you where you were on any other key.
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.

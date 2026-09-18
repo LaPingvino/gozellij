@@ -64,6 +64,7 @@ buffer - which holds a few hundred KiB and dies with the daemon.
 While attached, Ctrl-] is gozellij's own key:
   Ctrl-] d         detach; the service keeps running
   Ctrl-] n / p     next / previous service, in this same terminal
+  Ctrl-] l         list the services and pick one by number
   Ctrl-] ?         show these keys
   Ctrl-] Ctrl-]    send a literal Ctrl-] to the service
 
