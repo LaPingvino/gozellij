@@ -102,6 +102,25 @@ policy with backoff, cgroup freeze/thaw, per-service ULA addresses, in-place upg
 
 Shippable, useful, and it carries no VTE risk.
 
+*Phase 1 is now built, and it found its own edge.* The byte pipe holds for everything that is
+about processes — logs, tree-kill, restart, upgrade, attach, tabs — and 28 promises in
+`scripts/acceptance.sh` re-check that on demand. It stops being enough the moment something wants
+to draw on the terminal *alongside* the service. The byobu-style status line is that something,
+and it took eight adversarial passes finding eight bugs, four of them in the drawing itself. Two
+of its defects are not bugs and cannot be fixed from where it sits:
+
+- **One cursor-save slot.** Drawing on a row the cursor is not on means DECSC, move, draw, DECRC.
+  A VT100 has one save slot, and the service is using it too: a tick landing between a program's
+  own save and restore overwrites the position it was going to come back to.
+- **One scrolling region.** The last row is reserved with DECSTBM, and a full-screen program sets
+  its own region and resets it on exit. The line is re-asserted every tick, so it comes back — but
+  in between, `vim` owns the row.
+
+Both are the same sentence: a byte pipe borrows terminal state it does not own. A multiplexer that
+owns the grid keeps its own copy of the screen and never touches the real terminal's cursor state
+at all. That is the measured case for Phase 2 — not an argument about what might go wrong, but a
+list of what did.
+
 **Phase 2 — the oracle.** Before any emulator work: a `vt.Terminal` interface, a differential test
 harness, and the conformance corpus. Drive identical byte streams into two implementations, diff
 grid + cursor + attributes, and treat every disagreement as an auto-generated bug report. Replay
