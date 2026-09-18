@@ -42,7 +42,7 @@ Usage:
   gozellij logs -f <name>              follow its output until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij shell [-name <name>]        the same, with a different service name
-  gozellij rm <name>                   remove it
+  gozellij rm <name> [-keep-logs]      stop it, forget it, and delete its log
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
 
@@ -161,9 +161,9 @@ func captureShellEnv() []string {
 //
 // The rule, which is worth stating because it decides what happens to a customised service: if the
 // shell is running, you are reattached to it, environment and all, exactly as you left it. If it is
-// not running, it is defined again from the terminal you are typing in now - because a shell that
-// is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how you
-// end up with a vim that draws garbage. Keep a shell you have customised under another name and
+// not running, its definition is updated from the terminal you are typing in now - because a shell
+// that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
+// you end up with a vim that draws garbage. Keep a shell you have customised under another name and
 // attach to it by name.
 func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
@@ -189,49 +189,37 @@ func cmdShell(args []string) error {
 		return err
 	}
 
-	running, known, err := shellState(c, *name)
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	home, _ := os.UserHomeDir()
+	env := captureShellEnv()
+	// Say where you are, the way tmux sets $TMUX and zellij sets $ZELLIJ.
+	//
+	// This is not decoration. A login shell runs your profile, and profiles start multiplexers:
+	// the first time this was run by hand it dropped straight into gezellij, because ~/.profile
+	// autostarts it and nothing said "you are already in one". Anything that autostarts a
+	// session should guard on this variable.
+	env = append(env, "GOZELLIJ="+*name)
+
+	// One call, deliberately. Asking whether the shell exists and then creating it is a race
+	// two terminals lose together: both find it defined and not running, both redefine it, and
+	// one of them deletes the other's freshly created service. Measured with three at once, and
+	// the loser's attach failed with "no such service". The daemon decides instead.
+	_, err = c.Ensure(*name, ipc.AddRequest{
+		Command: shell,
+		// A login shell: under systemd the daemon's environment is nearly empty, so the shell
+		// has to build its own rather than inherit one that was never set up.
+		Args:    []string{"-l"},
+		Dir:     home,
+		Env:     env,
+		Restart: "no",
+	})
+	c.Close()
 	if err != nil {
-		c.Close()
 		return err
 	}
-
-	if !running {
-		if known {
-			// Defined but not running: replace the definition, so the shell you are about to
-			// get belongs to the terminal you are in.
-			if err := c.Remove(*name); err != nil {
-				c.Close()
-				return fmt.Errorf("replacing the old %s definition: %w", *name, err)
-			}
-		}
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-		home, _ := os.UserHomeDir()
-		env := captureShellEnv()
-		// Say where you are, the way tmux sets $TMUX and zellij sets $ZELLIJ.
-		//
-		// This is not decoration. A login shell runs your profile, and profiles start
-		// multiplexers: the first time this was run by hand it dropped straight into gezellij,
-		// because ~/.profile autostarts it and nothing said "you are already in one". Anything
-		// that autostarts a session should guard on this variable.
-		env = append(env, "GOZELLIJ="+*name)
-		if _, err := c.Add(*name, ipc.AddRequest{
-			Command: shell,
-			// A login shell: under systemd the daemon's environment is nearly empty, so the
-			// shell has to build its own rather than inherit one that was never set up.
-			Args:    []string{"-l"},
-			Dir:     home,
-			Env:     env,
-			Restart: "no",
-			Start:   true,
-		}); err != nil {
-			c.Close()
-			return err
-		}
-	}
-	c.Close()
 
 	return daemon.AttachLoop(path, *name, os.Stdin, os.Stdout, true)
 }
@@ -704,6 +692,7 @@ func displayVersion(v string) string {
 func cmdRemove(args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	sock := socketFlag(fs)
+	keepLogs := fs.Bool("keep-logs", false, "leave the service's log file on disk")
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
@@ -717,12 +706,17 @@ func cmdRemove(args []string) error {
 	defer c.Close()
 
 	name := fs.Arg(0)
-	if err := c.Remove(name); err != nil {
+	logs, err := c.Remove(name, *keepLogs)
+	if err != nil {
 		return err
 	}
-	// Confirm in words. A command that removes something and prints nothing leaves you
-	// wondering whether it did anything at all.
+	// Confirm in words, and name the files. A command that removes something and prints nothing
+	// leaves you wondering whether it did anything at all - and a log that was deleted without
+	// being mentioned is worse, because for a shell that file was the whole transcript.
 	fmt.Printf("removed %s\n", name)
+	for _, l := range logs {
+		fmt.Printf("removed its log %s\n", l)
+	}
 	return nil
 }
 

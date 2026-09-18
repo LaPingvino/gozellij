@@ -140,6 +140,12 @@ func (c *Client) Add(name string, req ipc.AddRequest) (ipc.StatusReply, error) {
 	return c.callStatus(ipc.OpServiceAdd, name, req)
 }
 
+// Ensure makes a service exist and run, leaving a running one untouched. Safe to call from two
+// terminals at the same moment, which Add and Remove from the client were not.
+func (c *Client) Ensure(name string, req ipc.AddRequest) (ipc.StatusReply, error) {
+	return c.callStatus(ipc.OpServiceEnsure, name, req)
+}
+
 // Start, Stop and Restart do what they say and return the resulting status.
 func (c *Client) Start(name string) (ipc.StatusReply, error) {
 	return c.callStatus(ipc.OpServiceStart, name, nil)
@@ -270,10 +276,21 @@ func (c *Client) Info() (map[string]string, error) {
 	return out, nil
 }
 
-// Remove deletes a service.
-func (c *Client) Remove(name string) error {
-	_, err := c.Call(ipc.OpServiceRemove, name, nil)
-	return err
+// Remove deletes a service and, unless keepLogs, its log. It returns the log files it deleted.
+func (c *Client) Remove(name string, keepLogs bool) ([]string, error) {
+	resp, err := c.Call(ipc.OpServiceRemove, name, ipc.RemoveRequest{KeepLogs: keepLogs})
+	if err != nil {
+		return nil, err
+	}
+	var out ipc.RemoveReply
+	if len(resp.Payload) > 0 {
+		if derr := resp.Decode(&out); derr != nil {
+			// The service is gone either way; not being able to say which files went with it
+			// is worth reporting but not worth failing over.
+			return nil, nil
+		}
+	}
+	return out.Logs, nil
 }
 
 func (c *Client) callStatus(op ipc.Op, name string, payload any) (ipc.StatusReply, error) {

@@ -137,7 +137,7 @@ func TestAddListStartStopRemove(t *testing.T) {
 		t.Error("a stopped service is still marked enabled")
 	}
 
-	if err := c.Remove("web"); err != nil {
+	if _, err := c.Remove("web", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if list, err = c.List(); err != nil {

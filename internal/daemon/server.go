@@ -284,6 +284,9 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 	case ipc.OpServiceAdd:
 		return s.add(req)
 
+	case ipc.OpServiceEnsure:
+		return s.ensure(req)
+
 	case ipc.OpServiceList:
 		return s.list(req)
 
@@ -313,10 +316,7 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 		return s.statusAfter(req)
 
 	case ipc.OpServiceRemove:
-		if err := s.fab.Remove(req.Service); err != nil {
-			return ipc.Err(req.ID, err)
-		}
-		return ipc.OKResponse(req.ID, nil)
+		return s.remove(req)
 
 	case ipc.OpAttach:
 		// Handled before dispatch, in handle(). Reaching here would mean the routing changed
@@ -386,6 +386,54 @@ func decodeLogs(req ipc.Request) (ipc.LogsRequest, error) {
 func wantsFollow(req ipc.Request) bool {
 	lr, err := decodeLogs(req)
 	return err == nil && lr.Follow
+}
+
+// ensure makes a service exist and run. See Fabric.Ensure for why it is one operation.
+func (s *Server) ensure(req ipc.Request) ipc.Response {
+	var add ipc.AddRequest
+	if len(req.Payload) > 0 {
+		if err := json.Unmarshal(req.Payload, &add); err != nil {
+			return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+		}
+	}
+	policy, err := fabric.ParseRestartPolicy(add.Restart)
+	if err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	svc := fabric.Service{
+		Name:    req.Service,
+		Command: add.Command,
+		Args:    add.Args,
+		Dir:     add.Dir,
+		Env:     add.Env,
+		Restart: policy,
+		NoLog:   add.NoLog,
+	}
+	if err := s.fab.Ensure(svc); err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	return s.statusAfter(req)
+}
+
+// remove deletes a service and, unless asked otherwise, its log.
+func (s *Server) remove(req ipc.Request) ipc.Response {
+	var rr ipc.RemoveRequest
+	if len(req.Payload) > 0 {
+		if err := json.Unmarshal(req.Payload, &rr); err != nil {
+			return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+		}
+	}
+
+	// Ask before, not after: once the files are gone there is nothing left to name.
+	var logs []string
+	if !rr.KeepLogs {
+		logs = s.fab.LogFiles(req.Service)
+	}
+
+	if err := s.fab.Remove(req.Service, rr.KeepLogs); err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	return ipc.OKResponse(req.ID, ipc.RemoveReply{Logs: logs})
 }
 
 // logs returns what a service printed, from disk where there is a file for it.

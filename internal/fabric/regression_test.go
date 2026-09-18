@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -202,7 +203,7 @@ func TestAServiceWithLoggingOffIsNeverAnsweredFromAFile(t *testing.T) {
 	out.Write([]byte("FIRST-SERVICE-SECRET\n"))
 	waitForFile(t, LogPath(logs, "x"), "FIRST-SERVICE-SECRET")
 
-	if err := f.Remove("x"); err != nil {
+	if err := f.Remove("x", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if err := f.Add(Service{Name: "x", Command: "true", NoLog: true}, false); err != nil {
@@ -373,5 +374,208 @@ func TestSignalGroupRefusesAProcessItDoesNotLead(t *testing.T) {
 		if !errors.Is(err, ErrNotGroupLeader) {
 			t.Errorf("SignalGroup = %v, want ErrNotGroupLeader for a process that leads no group", err)
 		}
+	}
+}
+
+// Removing a service removes its log, because for a shell that file is the complete transcript of
+// everything typed at it. Leaving it behind is a surprise nobody asked for.
+func TestRemoveDeletesTheServicesLog(t *testing.T) {
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "services"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	logs := t.TempDir()
+	f := NewFabric(reg, StartOptions{LogDir: logs})
+	t.Cleanup(f.Shutdown)
+
+	if err := f.Add(Service{Name: "shell", Command: "true"}, false); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	out, err := f.Output("shell")
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	out.Write([]byte("cat ~/.ssh/id_ed25519\n"))
+	path := LogPath(logs, "shell")
+	waitForFile(t, path, "id_ed25519")
+
+	if files := f.LogFiles("shell"); len(files) == 0 {
+		t.Error("LogFiles reported nothing, so `rm` could not tell the user what it is deleting")
+	}
+	if err := f.Remove("shell", false); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("Stat = %v; the transcript outlived the service", err)
+	}
+}
+
+// ...unless you say otherwise, which is what a redefinition wants: bare `gozellij` replaces a
+// shell definition that is not running, and its history should carry across.
+func TestRemoveKeepsTheLogWhenAsked(t *testing.T) {
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "services"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	logs := t.TempDir()
+	f := NewFabric(reg, StartOptions{LogDir: logs})
+	t.Cleanup(f.Shutdown)
+
+	if err := f.Add(Service{Name: "shell", Command: "true"}, false); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	out, _ := f.Output("shell")
+	out.Write([]byte("KEEP-ME\n"))
+	path := LogPath(logs, "shell")
+	waitForFile(t, path, "KEEP-ME")
+
+	if err := f.Remove("shell", true); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the log was deleted although -keep-logs was asked for: %v", err)
+	}
+	if !strings.Contains(string(data), "KEEP-ME") {
+		t.Errorf("log = %q, want the history kept", data)
+	}
+}
+
+// Removing a service that was never adopted must still clean up after it - otherwise a definition
+// too broken to load is also a definition whose log can never be removed.
+func TestRemoveOfAnUnloadableServiceStillDeletesItsLog(t *testing.T) {
+	dir := t.TempDir()
+	reg, err := NewRegistry(filepath.Join(dir, "services"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	logs := t.TempDir()
+	f := NewFabric(reg, StartOptions{LogDir: logs})
+	t.Cleanup(f.Shutdown)
+
+	// On disk but never adopted, so the fabric has no supervisor for it.
+	if err := reg.Add(Service{Name: "orphaned", Command: "true"}); err != nil {
+		t.Fatalf("reg.Add: %v", err)
+	}
+	path := LogPath(logs, "orphaned")
+	if err := os.WriteFile(path, []byte("old output\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := f.Remove("orphaned", false); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("Stat = %v; the log of an unloadable service cannot be removed", err)
+	}
+}
+
+// Two terminals running bare `gozellij` at the same moment must not be able to delete each other's
+// work. From the client this was check-then-act: both saw the shell defined and not running, both
+// removed it, and one removed the *other's* freshly created service, whose attach then failed with
+// "no such service". Measured with three at once before it was one operation.
+func TestEnsureIsSafeFromSeveralTerminalsAtOnce(t *testing.T) {
+	f, _ := newTestFabric(t)
+
+	svc := Service{
+		Name: "shell", Command: "sh", Args: []string{"-c", "sleep 30"}, Restart: RestartNo,
+	}
+
+	const racers = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := f.Ensure(svc); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("Ensure failed while several terminals raced: %v", err)
+	}
+
+	if _, err := f.Status("shell"); err != nil {
+		t.Fatalf("the service does not exist after %d racers ensured it: %v", racers, err)
+	}
+	st := waitFabric(t, f, "shell", 15*time.Second, "running", func(st Status) bool {
+		return st.State == StateRunning
+	})
+
+	// And exactly one of them: a racer that redefined a service another had just started would
+	// leave the first process running with nothing pointing at it.
+	if st.TotalStarts != 1 {
+		t.Errorf("TotalStarts = %d, want 1: more than one shell was spawned", st.TotalStarts)
+	}
+}
+
+// A shell somebody is already using is theirs: ensuring it again must not restart it underneath
+// them.
+func TestEnsureLeavesARunningServiceAlone(t *testing.T) {
+	f, _ := newTestFabric(t)
+
+	svc := Service{Name: "shell", Command: "sh", Args: []string{"-c", "sleep 30"}, Restart: RestartNo}
+	if err := f.Ensure(svc); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	first := waitFabric(t, f, "shell", 15*time.Second, "running", func(st Status) bool {
+		return st.State == StateRunning
+	})
+
+	// A second terminal, with a different environment, arriving while it runs.
+	svc.Env = []string{"TERM=vt100"}
+	if err := f.Ensure(svc); err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+
+	st, err := f.Status("shell")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Pid != first.Pid {
+		t.Errorf("pid changed from %d to %d: ensuring a running service restarted it", first.Pid, st.Pid)
+	}
+}
+
+// A shell that is not running is redefined from the terminal in front of you, so that TERM and the
+// locale belong to this session rather than to one three logins ago.
+func TestEnsureUpdatesTheDefinitionOfAStoppedService(t *testing.T) {
+	f, _ := newTestFabric(t)
+
+	svc := Service{Name: "shell", Command: "sh", Args: []string{"-c", "sleep 30"}, Restart: RestartNo}
+	svc.Env = []string{"TERM=ancient"}
+	if err := f.Ensure(svc); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitFabric(t, f, "shell", 15*time.Second, "running", func(st Status) bool {
+		return st.State == StateRunning
+	})
+	if err := f.Stop("shell"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	svc.Env = []string{"TERM=xterm-256color"}
+	if err := f.Ensure(svc); err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+
+	def, err := f.Definition("shell")
+	if err != nil {
+		t.Fatalf("Definition: %v", err)
+	}
+	if len(def.Env) == 0 || !strings.Contains(def.Env[0], "xterm-256color") {
+		t.Errorf("env = %v, want the terminal that ensured it most recently", def.Env)
+	}
+	// And it exists throughout: never removed, so nothing else can trip over a gap.
+	if st, serr := f.Status("shell"); serr != nil {
+		t.Errorf("the service went missing during the update: %v", st)
 	}
 }

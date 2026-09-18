@@ -105,7 +105,8 @@ does *not* survive.
 
 The consequence is worth stating plainly rather than discovering: for an interactive shell, that
 file holds everything you typed at it and everything it answered — including whatever you `cat`.
-`gozellij rm` does not delete it, so removing the service does not remove the record.
+`gozellij rm` deletes it along with the service and says which file went; `gozellij rm -keep-logs`
+keeps it.
 The files and their directory are 0600/0700, and `gozellij add <name> -log off -- ...` turns the
 file off for one service, which then keeps the in-memory ring and nothing else. `gozellijd -logs
 off` turns it off for everything.
@@ -129,7 +130,7 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
-| `gozellij rm <name>` | stop it and forget it |
+| `gozellij rm <name> [-keep-logs]` | stop it, forget it, and delete its log |
 
 ## Why start again, in Go
 

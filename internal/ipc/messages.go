@@ -24,6 +24,10 @@ const (
 	OpAttach Op = "attach"
 	// OpResize tells the daemon the attached client's terminal size.
 	OpResize Op = "resize"
+	// OpServiceEnsure makes a service exist and run, defining or updating it as needed, without
+	// ever making it briefly not exist. It is one operation because two clients doing it at the
+	// same moment must not be able to delete each other's work.
+	OpServiceEnsure Op = "service.ensure"
 	// OpServiceLogs returns the retained output of a service without attaching to it.
 	OpServiceLogs Op = "service.logs"
 	// OpUpgrade asks the daemon to replace its own binary in place, keeping every process.
@@ -163,6 +167,20 @@ type StatusReply struct {
 	Command     string    `json:"command,omitempty"`
 	// LogError is why this service's output is not reaching disk, empty when it is.
 	LogError string `json:"log_error,omitempty"`
+}
+
+// RemoveRequest is the payload of OpServiceRemove.
+type RemoveRequest struct {
+	// KeepLogs asks for the service's log file to be left on disk. By default it goes with the
+	// service: for a shell that file is the whole transcript of the session, and removing the
+	// service while silently keeping the transcript is a surprise nobody asked for.
+	KeepLogs bool `json:"keep_logs,omitempty"`
+}
+
+// RemoveReply says what was removed, so the client can tell the user what is now gone.
+type RemoveReply struct {
+	// Logs are the log files that were deleted, if any.
+	Logs []string `json:"logs,omitempty"`
 }
 
 // LogsRequest is the payload of OpServiceLogs.

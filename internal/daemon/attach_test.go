@@ -529,7 +529,7 @@ func TestRemovingAServiceReleasesItsAttachedClients(t *testing.T) {
 	go func() { done <- attacher.Attach("doomed", in, io.Discard, true) }()
 	time.Sleep(300 * time.Millisecond)
 
-	if err := fab.Remove("doomed"); err != nil {
+	if err := fab.Remove("doomed", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 

@@ -67,6 +67,14 @@ type Status struct {
 	HasExited bool
 	// NextRestart is when the next attempt is due, valid in StateBackingOff.
 	NextRestart time.Time
+	// Started is true once the supervision loop has been launched, which is not the same as the
+	// service running: there is a moment between the two in which the state is still Stopped.
+	//
+	// Anything that asks "should I start this?" has to consult this and not the state. Asking
+	// the state instead meant that two clients starting a service at the same instant both saw
+	// "stopped", both replaced the supervisor, and both spawned - one of them orphaned, running,
+	// and invisible to everything that looks the service up by name.
+	Started bool
 	// Ended is true once the supervision loop has finished, which is the exact question
 	// "is anything more going to happen to this service?" - and therefore the question an
 	// attached client is really asking.
@@ -90,6 +98,11 @@ type Status struct {
 
 // Running reports whether there is a live process.
 func (s Status) Running() bool { return s.State == StateRunning }
+
+// Live reports whether this supervisor is looking after the service right now - started, and not
+// yet finished. It covers the gap between Start returning and the first process appearing, which
+// Running does not.
+func (s Status) Live() bool { return s.Started && !s.Ended }
 
 // Supervisor keeps one service running according to its restart policy.
 type Supervisor struct {
@@ -246,6 +259,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.done = make(chan struct{})
 	done := s.done
 	s.mu.Unlock()
+
+	// Published before the loop is launched, so that nobody can look at this supervisor in the
+	// gap and conclude it needs starting.
+	s.setStatus(func(st *Status) { st.Started = true })
 
 	go s.run(loopCtx, done)
 	return nil

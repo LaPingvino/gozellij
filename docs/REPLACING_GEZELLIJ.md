@@ -119,14 +119,9 @@ grid has to reimplement those and then be worse at them.
 
 ## Known gaps, written down rather than papered over
 
-- **`gozellij rm` does not delete the service's log.** For a shell that file is the full transcript
-  of everything you typed and everything it answered, so removing the service does not remove the
-  record; delete `$XDG_STATE_HOME/gozellij/logs/<name>.log` yourself. A later service of the same
-  name appends to it, with a line marking where each daemon started writing — and a service added
-  with `-log off` is never answered from it.
-- **Two terminals running bare `gozellij` at the same moment** can race over defining the shell:
-  one of them gets an error and succeeds on a second try. It is loud rather than silent, so it is
-  recorded here rather than fixed.
+- Nothing outstanding here at the moment. The gaps that used to be listed — a swallowed keystroke
+  after a reattach, `rm` leaving a service's transcript on disk, and two terminals racing over the
+  shell definition — are fixed rather than documented.
 
 ## What is deliberately not on this list
 

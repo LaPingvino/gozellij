@@ -223,7 +223,7 @@ func TestRemoveStopsAndDeletes(t *testing.T) {
 		return st.State == StateRunning
 	})
 
-	if err := f.Remove("doomed"); err != nil {
+	if err := f.Remove("doomed", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := f.Status("doomed"); !errors.Is(err, ErrNoSuchService) {
@@ -241,7 +241,7 @@ func TestRemoveWorksForADefinitionWithNoSupervisor(t *testing.T) {
 	if err := r.Add(Service{Name: "orphan", Command: "sleep"}); err != nil {
 		t.Fatalf("registry Add: %v", err)
 	}
-	if err := f.Remove("orphan"); err != nil {
+	if err := f.Remove("orphan", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := r.Get("orphan"); !errors.Is(err, ErrNoSuchService) {

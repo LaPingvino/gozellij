@@ -22,6 +22,10 @@ type Fabric struct {
 	mu   sync.Mutex
 	sups map[string]*Supervisor
 
+	// ensureMu serialises Ensure, which is a read-modify-write across the registry and the
+	// supervisors and cannot be made safe by locking either one.
+	ensureMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	closed bool
@@ -198,6 +202,64 @@ func (f *Fabric) Add(svc Service, start bool) error {
 	return nil
 }
 
+// Ensure makes a service exist and run, without ever making it briefly not exist.
+//
+// This is what bare `gozellij` needs, and doing it from the client was a race with teeth. Two
+// terminals starting at the same moment both saw a shell that was defined and not running, both
+// removed it, and both added it - so one of them removed the *other's* freshly created service and
+// the other's attach failed with "no such service: shell". Measured, with three at once.
+//
+// The rules, in the order they are checked:
+//
+//   - not defined: define it and start it;
+//   - defined and running: leave it entirely alone. Someone is using it, and it is theirs;
+//   - defined and not running: update the definition in place and start it. In place, not
+//     remove-and-add, so there is never a moment when the service does not exist for somebody
+//     else to trip over.
+func (f *Fabric) Ensure(svc Service) error {
+	if err := svc.Validate(); err != nil {
+		return err
+	}
+
+	f.ensureMu.Lock()
+	defer f.ensureMu.Unlock()
+
+	existing, err := f.reg.Get(svc.Name)
+	if err != nil {
+		if errors.Is(err, ErrNoSuchService) {
+			return f.Add(svc, true)
+		}
+		return err
+	}
+
+	// Live, not Running: a service someone started a moment ago has no process yet, and
+	// redefining it from under them would spawn a second one.
+	if st, serr := f.Status(svc.Name); serr == nil && st.Live() {
+		return nil
+	}
+
+	// Keep what belongs to the service's history rather than to this invocation.
+	svc.CreatedAt = existing.CreatedAt
+	svc.Enabled = true
+	if err := f.reg.Put(svc); err != nil {
+		return fmt.Errorf("updating %s: %w", svc.Name, err)
+	}
+
+	// A supervisor that has already finished will not run again, and Start replaces it - reading
+	// the definition we just wrote, which is how the new environment reaches the new process.
+	if _, err := f.supervisor(svc.Name); err != nil {
+		if errors.Is(err, ErrNoSuchService) {
+			// On disk but never adopted, which happens after a definition is repaired by hand.
+			if aerr := f.adopt(svc); aerr != nil {
+				return aerr
+			}
+		} else {
+			return err
+		}
+	}
+	return f.Start(svc.Name)
+}
+
 // supervisor looks one up.
 func (f *Fabric) supervisor(name string) (*Supervisor, error) {
 	f.mu.Lock()
@@ -227,7 +289,12 @@ func (f *Fabric) Start(name string) error {
 		return err
 	}
 
-	if st := s.Status(); st.State == StateStopped || st.State == StateFailed || st.State == StateExited {
+	// Replace only a supervisor that is not looking after the service any more. Asking the state
+	// instead - stopped, failed, exited - could not tell "never started" from "started a
+	// microsecond ago and not spawned yet", so two Starts in quick succession replaced a live
+	// supervisor and spawned a second process beside the first, which then had nothing pointing
+	// at it.
+	if st := s.Status(); !st.Live() {
 		s = f.replaceSupervisor(name, s)
 	}
 
@@ -342,15 +409,26 @@ func (f *Fabric) setEnabled(name string, enabled bool) error {
 	return nil
 }
 
-// Remove stops a service and deletes its definition.
-func (f *Fabric) Remove(name string) error {
+// Remove stops a service and deletes its definition, and by default its log.
+//
+// The log goes because of what a log is here. For a shell it is the complete transcript of
+// everything you typed and everything it answered, and "remove this service" leaving that on disk
+// is a surprise of exactly the kind this project is meant not to spring on people. keepLogs is for
+// the times you are removing a definition to redefine it and want the history to continue.
+func (f *Fabric) Remove(name string, keepLogs bool) error {
 	s, err := f.supervisor(name)
 	if err != nil {
 		// Still try to remove a definition with no supervisor, so a fabric that failed to
 		// adopt a broken service can still be cleaned up. Otherwise a service file that
 		// cannot be loaded also cannot be deleted, which is a trap.
 		if errors.Is(err, ErrNoSuchService) {
-			return f.reg.Remove(name)
+			if rerr := f.reg.Remove(name); rerr != nil {
+				return rerr
+			}
+			if !keepLogs {
+				return f.removeLogs(name)
+			}
+			return nil
 		}
 		return err
 	}
@@ -366,7 +444,51 @@ func (f *Fabric) Remove(name string) error {
 	delete(f.sups, name)
 	f.mu.Unlock()
 
-	return f.reg.Remove(name)
+	if err := f.reg.Remove(name); err != nil {
+		return err
+	}
+	if keepLogs {
+		return nil
+	}
+	return f.removeLogs(name)
+}
+
+// removeLogs deletes a service's log and its rotated generation.
+//
+// Only after the buffer has been closed, which stops the writer: deleting a file a process still
+// holds open removes the name and not the bytes, and the next rotation would recreate it.
+func (f *Fabric) removeLogs(name string) error {
+	if f.opts.LogDir == "" {
+		return nil
+	}
+	path := LogPath(f.opts.LogDir, name)
+	var errs []error
+	for _, p := range []string{path, path + ".1"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		// Worth reporting: the service is gone and its transcript is not, which is the state
+		// somebody would want to know about rather than discover.
+		return fmt.Errorf("removed the service but not its log: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
+// LogFiles are the log files a service has on disk, for telling the user what is about to go.
+func (f *Fabric) LogFiles(name string) []string {
+	if f.opts.LogDir == "" {
+		return nil
+	}
+	var found []string
+	path := LogPath(f.opts.LogDir, name)
+	for _, p := range []string{path, path + ".1"} {
+		if _, err := os.Stat(p); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
 }
 
 // Status returns one service's status.
