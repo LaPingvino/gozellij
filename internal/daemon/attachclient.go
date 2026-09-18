@@ -114,55 +114,74 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			return err
 		}
 
-		switch outcome {
-		case outcomeDetached:
-			restore()
-			fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
-			return nil
-		case outcomeFinished:
-			restore()
-			return nil
+		// A label, because one thing the user can do while the service list is up is give
+		// another command - and that command has to be acted on here rather than swallowed.
+	dispatch:
+		for {
+			switch outcome {
+			case outcomeDetached:
+				restore()
+				fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
+				return nil
 
-		case outcomeNext, outcomePrev:
-			// Tabs, the cheap way. Switching which service this terminal is showing needs no
-			// terminal emulator at all: the attach is a byte pipe, so replaying the new
-			// service's output repaints the screen because the escape sequences that drew it
-			// are in the bytes. A multiplexer that owns a grid has to render this; here the
-			// terminal does, exactly as it does on a first attach.
-			next, nerr := neighbourService(socket, service, outcome == outcomeNext)
-			if nerr != nil {
-				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", nerr)
-				// Staying put beats dropping the user at a shell prompt because a list
-				// lookup failed.
-				first, replay = false, false
-				continue
-			}
-			service = next
-			showService(out, service)
-			first, replay = true, true
-			continue
+			case outcomeFinished:
+				restore()
+				return nil
 
-		case outcomeList:
-			// Cycling with n/p is fine for two services and tedious for six. The list is
-			// printed over whatever was on screen and the next keystroke chooses; the
-			// connection is already closed, so that keystroke cannot reach a service by
-			// mistake.
-			picked, perr := pickService(socket, service, input, out)
-			if perr != nil {
-				fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", perr)
-				first, replay = false, false
-				continue
-			}
-			if picked == service {
-				// Cancelled, or chose where they already were. Repaint so the list is not
-				// left sitting on top of the service's screen.
+			case outcomeNext, outcomePrev:
+				// Tabs, the cheap way. Switching which service this terminal is showing needs no
+				// terminal emulator at all: the attach is a byte pipe, so replaying the new
+				// service's output repaints the screen because the escape sequences that drew it
+				// are in the bytes. A multiplexer that owns a grid has to render this; here the
+				// terminal does, exactly as it does on a first attach.
+				next, nerr := neighbourService(socket, service, outcome == outcomeNext)
+				if nerr != nil {
+					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", nerr)
+					// Staying put beats dropping the user at a shell prompt because a list
+					// lookup failed.
+					first, replay = false, false
+					break dispatch
+				}
+				service = next
 				showService(out, service)
 				first, replay = true, true
-				continue
+				break dispatch
+
+			case outcomeList:
+				// Cycling with n/p is fine for two services and tedious for six. The list is
+				// printed over whatever was on screen and the next keystroke chooses; the
+				// connection is already closed, so that keystroke cannot reach a service by
+				// mistake.
+				picked, instead, perr := pickService(socket, service, input, out)
+				if perr != nil {
+					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", perr)
+					first, replay = false, false
+					break dispatch
+				}
+				if instead != nil {
+					// A command arrived while the list was up. Act on it rather than
+					// throwing it away: someone who types Ctrl-] d over a list they have
+					// changed their mind about means to detach, and having to press it
+					// twice is the program telling them it was not listening.
+					outcome = *instead
+					showService(out, service)
+					continue dispatch
+				}
+				if picked == service {
+					// Cancelled, or chose where they already were. Repaint so the list is
+					// not left sitting on top of the service's screen.
+					showService(out, service)
+					first, replay = true, true
+					break dispatch
+				}
+				service = picked
+				showService(out, service)
+				first, replay = true, true
+				break dispatch
 			}
-			service = picked
-			showService(out, service)
-			first, replay = true, true
+			break dispatch
+		}
+		if outcome != outcomeDisconnected {
 			continue
 		}
 
@@ -198,13 +217,13 @@ func showService(out io.Writer, service string) {
 
 // pickService shows the services and returns the one chosen, or the current one if the user
 // changes their mind.
-func pickService(socket, current string, input *terminalInput, out io.Writer) (string, error) {
+func pickService(socket, current string, input *terminalInput, out io.Writer) (string, *attachOutcome, error) {
 	names, err := serviceNames(socket)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(names) == 0 {
-		return "", errors.New("there are no services")
+		return "", nil, errors.New("there are no services")
 	}
 
 	fmt.Fprint(out, "\x1b[H\x1b[2J")
@@ -214,8 +233,7 @@ func pickService(socket, current string, input *terminalInput, out io.Writer) (s
 		if n == current {
 			marker = "* "
 		}
-		// One-based, because the keys are 1..9 and nobody counts tabs from zero.
-		fmt.Fprintf(os.Stderr, "  %s%d %s\r\n", marker, i+1, n)
+		fmt.Fprintf(os.Stderr, "  %s%s %s\r\n", marker, string(pickKey(i)), n)
 	}
 	fmt.Fprint(os.Stderr, "  (any other key to stay where you are)\r\n")
 
@@ -224,19 +242,47 @@ func pickService(socket, current string, input *terminalInput, out io.Writer) (s
 	select {
 	case chunk := <-input.data:
 		if len(chunk) == 0 {
-			return current, nil
+			return current, nil, nil
 		}
-		i := int(chunk[0]) - '1'
+		i := pickIndex(chunk[0])
 		if i < 0 || i >= len(names) {
-			return current, nil
+			return current, nil, nil
 		}
-		return names[i], nil
-	case <-input.cmds:
-		// Ctrl-] something, mid-list. Treat it as changing their mind rather than acting on a
-		// command aimed at a session that no longer exists.
-		return current, nil
+		return names[i], nil, nil
+	case want := <-input.cmds:
+		// Ctrl-] something, mid-list. Hand it back rather than swallowing it.
+		return current, &want, nil
 	case <-time.After(pickTimeout):
-		return current, nil
+		return current, nil, nil
+	}
+}
+
+// pickKey is the key that selects the nth service, and pickIndex is its inverse.
+//
+// Digits first, then letters. One keystroke per choice on purpose: reading a number would mean
+// waiting for Enter, and with "10" typed at a nine-service list the 1 selects a service and the 0
+// is then typed at the shell you have just landed in - a keystroke arriving somewhere nobody sent
+// it. Thirty-five entries is more services than anyone is switching between by eye.
+func pickKey(i int) byte {
+	if i < 9 {
+		return byte('1' + i)
+	}
+	if i < 9+26 {
+		return byte('a' + i - 9)
+	}
+	return '.'
+}
+
+func pickIndex(b byte) int {
+	switch {
+	case b >= '1' && b <= '9':
+		return int(b - '1')
+	case b >= 'a' && b <= 'z':
+		return int(b-'a') + 9
+	case b >= 'A' && b <= 'Z':
+		return int(b-'A') + 9
+	default:
+		return -1
 	}
 }
 

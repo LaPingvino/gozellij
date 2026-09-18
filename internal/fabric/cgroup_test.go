@@ -304,11 +304,21 @@ echo STARTED; exec sleep 600`},
 		waitForCgroupPids(t, p.Cgroup(), 3)
 
 		s.Stop()
-		// The supervisor closes the process, which is what removes the directory.
 		s.Wait()
 
-		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("round %d: %s survived the stop (Stat = %v)", round, dir, err)
+		// The removal is deliberately off the exit path - a directory that will not empty must
+		// not delay a service being reported as finished - so poll for it rather than assuming
+		// it has already happened.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("round %d: %s survived the stop", round, dir)
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 }

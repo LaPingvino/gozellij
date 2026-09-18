@@ -22,9 +22,20 @@ type Fabric struct {
 	mu   sync.Mutex
 	sups map[string]*Supervisor
 
-	// ensureMu serialises Ensure, which is a read-modify-write across the registry and the
-	// supervisors and cannot be made safe by locking either one.
-	ensureMu sync.Mutex
+	// lifecycle holds one lock per service, taken by every operation that decides what should be
+	// running and then acts on that decision.
+	//
+	// f.mu is not enough and never could be: it guards the map for the length of a lookup, while
+	// the dangerous part is the gap between reading a service's state and changing it. Two
+	// callers both read "not running", both install a fresh supervisor, and both spawn - one of
+	// them orphaned, running, and invisible to ls, stop and rm. The widest version of that gap
+	// was Restart, which installs a not-yet-started supervisor and then spends up to the whole
+	// grace period stopping the old one; anything asking "does this need starting?" during those
+	// five seconds was told yes.
+	//
+	// Per service rather than one lock for the fabric, because stopping one service must not
+	// block starting another for five seconds.
+	lifecycle map[string]*sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -39,11 +50,12 @@ func NewFabric(reg *Registry, opts StartOptions) *Fabric {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fabric{
-		reg:    reg,
-		opts:   opts,
-		sups:   make(map[string]*Supervisor),
-		ctx:    ctx,
-		cancel: cancel,
+		reg:       reg,
+		opts:      opts,
+		sups:      make(map[string]*Supervisor),
+		lifecycle: make(map[string]*sync.Mutex),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
@@ -189,6 +201,13 @@ func (f *Fabric) Handovers() []Handover {
 // The definition is written to disk first. If we started it and then failed to persist it, a
 // reboot would silently lose a service the user believes exists.
 func (f *Fabric) Add(svc Service, start bool) error {
+	l := f.lock(svc.Name)
+	l.Lock()
+	defer l.Unlock()
+	return f.addLocked(svc, start)
+}
+
+func (f *Fabric) addLocked(svc Service, start bool) error {
 	svc.Enabled = start
 	if err := f.reg.Add(svc); err != nil {
 		return err
@@ -197,7 +216,7 @@ func (f *Fabric) Add(svc Service, start bool) error {
 		return err
 	}
 	if start {
-		return f.Start(svc.Name)
+		return f.startLocked(svc.Name)
 	}
 	return nil
 }
@@ -221,13 +240,14 @@ func (f *Fabric) Ensure(svc Service) error {
 		return err
 	}
 
-	f.ensureMu.Lock()
-	defer f.ensureMu.Unlock()
+	l := f.lock(svc.Name)
+	l.Lock()
+	defer l.Unlock()
 
 	existing, err := f.reg.Get(svc.Name)
 	if err != nil {
 		if errors.Is(err, ErrNoSuchService) {
-			return f.Add(svc, true)
+			return f.addLocked(svc, true)
 		}
 		return err
 	}
@@ -257,7 +277,24 @@ func (f *Fabric) Ensure(svc Service) error {
 			return err
 		}
 	}
-	return f.Start(svc.Name)
+	return f.startLocked(svc.Name)
+}
+
+// lock returns the lifecycle lock for one service, creating it on first use.
+//
+// Locks are never removed, even when the service is. There is one small mutex per service name
+// this fabric has ever handled, which is nothing, and removing them would reintroduce the race
+// they exist to prevent: a caller waiting on the lock for a service being removed would otherwise
+// find its lock deleted and take a fresh one.
+func (f *Fabric) lock(name string) *sync.Mutex {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	l, ok := f.lifecycle[name]
+	if !ok {
+		l = &sync.Mutex{}
+		f.lifecycle[name] = l
+	}
+	return l
 }
 
 // supervisor looks one up.
@@ -281,6 +318,13 @@ func (f *Fabric) supervisor(name string) (*Supervisor, error) {
 // one. Without this, `gozellij stop web` followed by `gozellij start web` wrote enabled: true,
 // started nothing, and exited 0: the first command pair anybody types, silently doing nothing.
 func (f *Fabric) Start(name string) error {
+	l := f.lock(name)
+	l.Lock()
+	defer l.Unlock()
+	return f.startLocked(name)
+}
+
+func (f *Fabric) startLocked(name string) error {
 	s, err := f.supervisor(name)
 	if err != nil {
 		return err
@@ -346,6 +390,10 @@ func (f *Fabric) replaceSupervisor(name string, old *Supervisor) *Supervisor {
 // A service you stopped on purpose must not come back by itself after a reboot; that is the
 // behaviour that makes people stop trusting a supervisor and start using `kill` instead.
 func (f *Fabric) Stop(name string) error {
+	l := f.lock(name)
+	l.Lock()
+	defer l.Unlock()
+
 	s, err := f.supervisor(name)
 	if err != nil {
 		return err
@@ -369,6 +417,10 @@ func (f *Fabric) Stop(name string) error {
 // With the successor already in place, a watcher woken during the stop reads a supervisor that has
 // not run yet, which is not finished, which is the truth.
 func (f *Fabric) Restart(name string) error {
+	l := f.lock(name)
+	l.Lock()
+	defer l.Unlock()
+
 	old, err := f.supervisor(name)
 	if err != nil {
 		return err
@@ -416,6 +468,10 @@ func (f *Fabric) setEnabled(name string, enabled bool) error {
 // is a surprise of exactly the kind this project is meant not to spring on people. keepLogs is for
 // the times you are removing a definition to redefine it and want the history to continue.
 func (f *Fabric) Remove(name string, keepLogs bool) error {
+	l := f.lock(name)
+	l.Lock()
+	defer l.Unlock()
+
 	s, err := f.supervisor(name)
 	if err != nil {
 		// Still try to remove a definition with no supervisor, so a fabric that failed to

@@ -604,12 +604,12 @@ func (p *Process) signalCgroup(sig syscall.Signal) {
 	}
 }
 
-// removeCgroup deletes the cgroup directory, retrying while the kernel finishes reaping.
-func (p *Process) removeCgroup() error {
+// removeCgroupWithRetry deletes the cgroup directory, retrying while the kernel finishes reaping.
+func removeCgroupWithRetry(g *Cgroup) error {
 	const within = 2 * time.Second
 	deadline := time.Now().Add(within)
 	for {
-		err := p.cgroup.Remove()
+		err := g.Remove()
 		if err == nil {
 			return nil
 		}
@@ -649,9 +649,17 @@ func (p *Process) Close() {
 		//
 		// If it still will not go, say so once. Each run gets a fresh name, so a leftover
 		// blocks nothing, and a directory that outlives its service is worth a line.
-		if err := p.removeCgroup(); err != nil {
-			p.logf("could not remove the cgroup: %v", err)
-		}
+		// In the background, because Close is on the path that publishes a service's exit and
+		// this can take seconds. A service that exits leaving a detached child behind has a
+		// cgroup that will never empty - deliberately, since nobody asked for that child to be
+		// killed - and waiting two seconds for an rmdir that cannot succeed made `exit` in a
+		// shell with a nohup'd job take two seconds to come back.
+		go func(g *Cgroup, name string) {
+			if err := removeCgroupWithRetry(g); err != nil {
+				logf("%s: could not remove the cgroup, so something it started is still "+
+					"running: %v", name, err)
+			}
+		}(p.cgroup, p.Service.Name)
 	}
 	if p.ownsOutput {
 		p.Output.Close()

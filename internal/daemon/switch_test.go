@@ -213,7 +213,7 @@ func TestPickingAServiceByNumber(t *testing.T) {
 	input, done := feedTerminal(t, "2")
 	defer done()
 
-	got, err := pickService(sock, "alpha", input, io.Discard)
+	got, _, err := pickService(sock, "alpha", input, io.Discard)
 	if err != nil {
 		t.Fatalf("pickService: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestPickingTheLastServiceWorks(t *testing.T) {
 	input, done := feedTerminal(t, "3")
 	defer done()
 
-	got, err := pickService(sock, "alpha", input, io.Discard)
+	got, _, err := pickService(sock, "alpha", input, io.Discard)
 	if err != nil {
 		t.Fatalf("pickService: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestPickingSomethingThatIsNotAServiceStaysPut(t *testing.T) {
 			input, done := feedTerminal(t, keys)
 			defer done()
 
-			got, err := pickService(sock, "beta", input, io.Discard)
+			got, _, err := pickService(sock, "beta", input, io.Discard)
 			if err != nil {
 				t.Fatalf("pickService: %v", err)
 			}
@@ -255,19 +255,40 @@ func TestPickingSomethingThatIsNotAServiceStaysPut(t *testing.T) {
 	}
 }
 
-func TestPickingWithThePrefixKeyStaysPut(t *testing.T) {
-	// Ctrl-] something, mid-list: changing your mind, not a command aimed at a session that no
-	// longer exists.
+func TestACommandDuringTheListIsHandedBackNotSwallowed(t *testing.T) {
+	// Someone who types Ctrl-] d over a list they have changed their mind about means to
+	// detach. Having to press it twice is the program telling them it was not listening.
 	sock := pickerDaemon(t)
-	input, done := feedTerminal(t, "\x1dn")
+	input, done := feedTerminal(t, "\x1dd")
 	defer done()
 
-	got, err := pickService(sock, "beta", input, io.Discard)
+	got, instead, err := pickService(sock, "beta", input, io.Discard)
 	if err != nil {
 		t.Fatalf("pickService: %v", err)
 	}
 	if got != "beta" {
 		t.Errorf("picked %q, want to stay on beta", got)
+	}
+	if instead == nil || *instead != outcomeDetached {
+		t.Errorf("the detach was swallowed (instead = %v)", instead)
+	}
+}
+
+func TestPickingBeyondNineUsesLetters(t *testing.T) {
+	// Reading a number would mean waiting for Enter, and "10" typed at a nine-service list picks
+	// service 1 and then types the 0 at whatever you just landed in.
+	for i, want := range map[int]byte{0: '1', 8: '9', 9: 'a', 34: 'z'} {
+		if got := pickKey(i); got != want {
+			t.Errorf("pickKey(%d) = %q, want %q", i, got, want)
+		}
+		if back := pickIndex(want); back != i {
+			t.Errorf("pickIndex(%q) = %d, want %d", want, back, i)
+		}
+	}
+	for _, b := range []byte{'0', ' ', '\n', '.', 0x1d} {
+		if i := pickIndex(b); i >= 0 {
+			t.Errorf("pickIndex(%q) = %d, want no selection", b, i)
+		}
 	}
 }
 
@@ -275,7 +296,7 @@ func TestPickingWithNoDaemonSaysSo(t *testing.T) {
 	input, done := feedTerminal(t, "1")
 	defer done()
 
-	_, err := pickService(filepath.Join(t.TempDir(), "nothing.sock"), "beta", input, io.Discard)
+	_, _, err := pickService(filepath.Join(t.TempDir(), "nothing.sock"), "beta", input, io.Discard)
 	if err == nil {
 		t.Fatal("pickService succeeded with no daemon")
 	}

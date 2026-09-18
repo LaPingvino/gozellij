@@ -205,17 +205,32 @@ func (o *OutputBuffer) Attach(queueBytes int) ([]byte, *Subscriber, error) {
 	return snap, s, nil
 }
 
-// Close stops the buffer and closes every subscriber's channel.
+// Close stops the buffer, closes every subscriber's channel, and waits for the disk writer to
+// finish with the file.
+//
+// Waiting is the part that matters. Closing the channels only tells the writer to stop; it is a
+// separate goroutine with up to several megabytes still queued and the log file still open. A
+// caller that closed the buffer and then deleted the log - which is exactly what `gozellij rm`
+// does - had the file recreated underneath it, because the writer rotated, found nothing to
+// rename, and opened a new one with O_CREATE. So `rm` reported deleting a shell's transcript while
+// the last of that transcript was being written back to disk.
 func (o *OutputBuffer) Close() {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return
 	}
 	o.closed = true
 	for id, s := range o.subs {
 		s.closeCh()
 		delete(o.subs, id)
+	}
+	sink := o.sink
+	o.mu.Unlock()
+
+	// Outside the lock: the sink's own shutdown detaches its subscriber, which takes this lock.
+	if sink != nil {
+		sink.Close()
 	}
 }
 

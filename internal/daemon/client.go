@@ -285,9 +285,10 @@ func (c *Client) Remove(name string, keepLogs bool) ([]string, error) {
 	var out ipc.RemoveReply
 	if len(resp.Payload) > 0 {
 		if derr := resp.Decode(&out); derr != nil {
-			// The service is gone either way; not being able to say which files went with it
-			// is worth reporting but not worth failing over.
-			return nil, nil
+			// The service is gone either way, so this is not a failure - but saying nothing
+			// would leave the caller reporting a removal with no mention of the log, which is
+			// indistinguishable from there having been no log.
+			return nil, fmt.Errorf("removed %s, but could not read what else went with it: %w", name, derr)
 		}
 	}
 	return out.Logs, nil

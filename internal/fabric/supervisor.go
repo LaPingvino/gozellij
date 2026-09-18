@@ -282,12 +282,25 @@ func (s *Supervisor) Stop() {
 		return
 	}
 	cancel()
+
 	// Nudge the child now rather than waiting for the loop to notice; the loop's own Stop is
-	// idempotent.
+	// idempotent. But wait for *both*: the loop ends when the leader is reaped, while stopping
+	// the service also means giving what it started the rest of the grace period to finish. If
+	// the loop wins the race - which it does whenever the leader dies before its children - then
+	// waiting only for the loop returns while the children are still being asked to stop, and
+	// `gozellij stop` reports done before the service is.
+	stopped := make(chan struct{})
 	if cur != nil {
-		go cur.Stop()
+		go func() {
+			defer close(stopped)
+			cur.Stop()
+		}()
+	} else {
+		close(stopped)
 	}
+
 	<-done
+	<-stopped
 }
 
 // Wait blocks until the supervision loop has finished.
