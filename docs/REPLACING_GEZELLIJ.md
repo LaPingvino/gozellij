@@ -66,9 +66,14 @@ grid has to reimplement those and then be worse at them.
    Also worth knowing: a login shell runs your profile, and profiles start multiplexers. The first
    by-hand run dropped straight into gezellij. `GOZELLIJ` is now set in the shell's environment, the
    way tmux sets `$TMUX`, so an autostart can guard on it.
-4. **Nothing checks that the promise holds on this box.** "Through logouts" depends on
-   `loginctl enable-linger`, documented in `packaging/README.md` and enforced by nothing. A
-   `gozellij doctor` closes that and several like it.
+4. ~~**Nothing checks that the promise holds on this box.**~~ Done — `gozellij doctor` asks the
+   host the questions `packaging/README.md` answers: socket path length, daemon reachable, the
+   `gozellijd` on PATH versus the one running, state directory and its mode, `loginctl` linger,
+   the systemd user unit, whether the running shell's `TERM` matches the terminal you are in, and
+   any service whose output is not reaching disk. It exits non-zero only for things that are
+   broken now, so a warning does not break a script that calls it. **Verified** against a scratch
+   fabric in each state, and on this machine — where it correctly reports that **linger is off**,
+   so nothing here currently survives a logout.
 5. **A service that daemonises cannot be fully stopped.** Ordinary children die with the pty's
    SIGHUP; one that calls `setsid` survives. **Verified.** Needs a process-group or cgroup kill.
 6. **No session concept.** gezellij has named sessions you attach to; here there are services, and

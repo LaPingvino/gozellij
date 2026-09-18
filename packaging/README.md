@@ -20,6 +20,13 @@ To keep it running after you log out:
 sudo loginctl enable-linger $USER
 ```
 
+Then check it took, along with everything else on this page that this program depends on but does
+not control:
+
+```sh
+gozellij doctor
+```
+
 ### Upgrading
 
 ```sh

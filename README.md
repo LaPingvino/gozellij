@@ -124,6 +124,7 @@ terminal does the emulating. See [the plan](#plan).
 | `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
 | `gozellij attach <name>` | connect your terminal; `Ctrl-]` detaches without stopping anything |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
+| `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name>` | stop it and forget it |
 
 ## Why start again, in Go

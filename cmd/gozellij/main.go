@@ -44,6 +44,7 @@ Usage:
   gozellij shell [-name <name>]        the same, with a different service name
   gozellij rm <name>                   remove it
   gozellij ping                        check the daemon is alive
+  gozellij doctor                      check the promises that depend on the host
 
 Flags for add:
   -restart no|on-failure|always   what to do when it exits (default no)
@@ -107,6 +108,8 @@ func run(args []string) error {
 		return cmdUpgrade(rest)
 	case "ping":
 		return cmdPing(rest)
+	case "doctor":
+		return cmdDoctor(rest)
 	default:
 		usage()
 		// Name it. "Unknown command" without saying which is a small unkindness that adds up.
