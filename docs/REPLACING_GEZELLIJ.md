@@ -108,6 +108,11 @@ grid has to reimplement those and then be worse at them.
    a *session scope*, which is root-owned and cannot be subdivided at all, so the cgroup path does
    not exist there and the process group is the fallback.
 
+   A later pass found the grace was not reliable — two Stops run concurrently and the second
+   swept the cgroup at once, so a child given half a second got sixteen milliseconds. Fixed and
+   now verified twelve runs out of twelve; the earlier "verified" here rested on one lucky run,
+   which is worth recording because it is the failure this document exists to prevent.
+
    Going after the orphan turned up something worse. A grandchild holding the pty slave open wedged
    the reader that `reap` waits for — and closing an `os.File` does not interrupt a read already in
    flight on a descriptor the runtime cannot poll — so `Process.Wait` never returned and
