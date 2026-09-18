@@ -74,6 +74,16 @@ func (c *Client) Writer() *ipc.Writer { return c.w }
 // replacing it with something generic is how a precise complaint from the far end turns into "the
 // operation failed".
 func (c *Client) Call(op ipc.Op, service string, payload any) (ipc.Response, error) {
+	return c.callWithin(CallTimeout, op, service, payload)
+}
+
+// callWithin is Call with a deadline the caller chooses.
+//
+// It exists because a caller that set its own deadline on the connection and then used Call had it
+// silently replaced: Call sets CallTimeout unconditionally, so a "bounded" query was bounded at
+// thirty seconds rather than the one and a half the caller asked for and believed it had. A
+// timeout that is quietly overridden is worse than no timeout, because it is written down.
+func (c *Client) callWithin(within time.Duration, op ipc.Op, service string, payload any) (ipc.Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -86,7 +96,7 @@ func (c *Client) Call(op ipc.Op, service string, payload any) (ipc.Response, err
 		req.Payload = b
 	}
 
-	if err := c.conn.SetDeadline(time.Now().Add(CallTimeout)); err != nil {
+	if err := c.conn.SetDeadline(time.Now().Add(within)); err != nil {
 		return ipc.Response{}, fmt.Errorf("setting deadline: %w", err)
 	}
 	defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
@@ -120,6 +130,22 @@ func (c *Client) Ping() error {
 // List returns every service the daemon knows about.
 func (c *Client) List() (ipc.ListReply, error) {
 	resp, err := c.Call(ipc.OpServiceList, "", nil)
+	if err != nil {
+		return ipc.ListReply{}, err
+	}
+	var out ipc.ListReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.ListReply{}, fmt.Errorf("decoding the service list: %w", err)
+	}
+	return out, nil
+}
+
+// ListWithin returns every service, giving up after within.
+//
+// For the status line, which is a bystander: it runs on a goroutine that detaching waits for, and
+// a daemon that has stopped answering must not turn letting go of a terminal into a wait.
+func (c *Client) ListWithin(within time.Duration) (ipc.ListReply, error) {
+	resp, err := c.callWithin(within, ipc.OpServiceList, "", nil)
 	if err != nil {
 		return ipc.ListReply{}, err
 	}

@@ -263,13 +263,14 @@ func StatusContext(socket, service string) status.Context {
 
 	// A short deadline, not the ordinary thirty second one. This runs on the painter's goroutine
 	// and Close waits for that goroutine, so a daemon that has stopped answering would turn
-	// detaching into a forty second wait. A status line is a bystander: if it cannot get an
-	// answer promptly it should draw what it has and try again on the next tick.
-	if err := c.Conn().SetDeadline(time.Now().Add(statusQueryTimeout)); err != nil {
-		return ctx
-	}
-
-	list, err := c.List()
+	// detaching into a wait. A status line is a bystander: if it cannot get an answer promptly it
+	// should draw what it has and try again on the next tick.
+	//
+	// Through ListWithin rather than by setting a deadline and then calling List: Call replaces
+	// the connection's deadline with its own, so the first version of this was bounded at thirty
+	// seconds while saying one and a half in a comment and in a commit message. Measured at
+	// 30.11s against a socket that accepted and never answered.
+	list, err := c.ListWithin(statusQueryTimeout)
 	if err != nil {
 		return ctx
 	}

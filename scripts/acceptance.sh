@@ -340,19 +340,32 @@ else
     tmux -L "$tmuxSock" send-keys "$gz shell; echo BACK-IN-THE-OUTER-SHELL; sleep 60" Enter
     sleep 3
 
-    # 1. Typing works at all. A smoke check, and labelled as one: it is the only check here that
-    #    has NOT been shown to fail when the behaviour it describes is broken. Two sabotages that
-    #    reproduce the original hang - removing the cursor placement, and telling the service it
-    #    owns the reserved row - both left this green, because DECSTBM homes the cursor by itself
-    #    and rescued the screen each tick. It would catch a gross breakage (nothing drawn at all)
-    #    and should not be read as a guard against the hang. The two checks below it are the ones
-    #    with teeth: each was verified by breaking the fix and watching this script go red.
+    # 1. Typing works, and the output lands *inside* the region.
+    #
+    #    Verified by sabotage: remove the reserve() call before the first paint and this goes red
+    #    four runs out of four - the cursor is restored below the bottom margin, where a line feed
+    #    does not scroll, and the screen stops moving. The `head -23` matters: without it the check
+    #    happened to pass or fail depending on whether the next tick had wiped row 24 yet, which
+    #    made it a guard that worked only while the sleep here equalled the refresh interval.
     tmux -L "$tmuxSock" send-keys 'echo SCREEN-$((6*7))-OK' Enter
     sleep 2
-    if pane | grep -q 'SCREEN-42-OK'; then
-        ok "typing in an attached shell produces output on the screen"
+    if pane | head -n 23 | grep -q 'SCREEN-42-OK'; then
+        ok "typing in an attached shell produces output inside the region"
     else
-        bad "nothing appeared on the screen after typing - the terminal is wedged"
+        bad "nothing appeared inside the region after typing - the terminal is wedged"
+    fi
+
+    # 1b. The cursor is where the shell left it, near the bottom of the full screen it attached to.
+    #
+    #     Without this, an attach that homed the cursor passed all six of these: the replayed
+    #     prompt printed over the top three rows of what was already on screen, everything else
+    #     looked right, and nothing said a word. It is the same failure check 6 guards on detach,
+    #     which was unguarded on attach.
+    cy=$(ask '#{cursor_y}')
+    if [ "$cy" -ge 19 ] && [ "$cy" -le 22 ]; then
+        ok "attaching leaves the cursor where the shell had it, not at the top of the screen"
+    else
+        bad "after attaching the cursor is on row $cy of 0-23; the screen was drawn over from the top"
     fi
 
     # 2. The status line is on the last row, and the service has the rest.

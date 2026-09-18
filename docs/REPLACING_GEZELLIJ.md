@@ -59,10 +59,15 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   the shell scrolls normally, and detaching leaves the region released and the cursor where it
   was. `where=title` avoids the question entirely because nothing can draw over a title bar.
 
-  One limit remains and cannot be fixed from outside a grid: there is a single cursor-save slot in
-  a VT100, and the status line has to borrow it to draw on a row the cursor is not on. A program
-  using `DECSC`/`DECRC` across a span of its own can have its saved position overwritten by a tick
-  landing in the middle. A multiplexer that owns the grid keeps its own copy of the screen and
+  Two limits remain, and neither can be fixed from outside a grid. There is a single cursor-save
+  slot in a VT100, and the status line has to borrow it to draw on a row the cursor is not on: a
+  program using `DECSC`/`DECRC` across a span of its own can have its saved position overwritten
+  by a tick landing in the middle — **verified**, deterministically, with a three-second span
+  against a two-second tick. And the scrolling region is equally single: the line re-asserts its
+  own on every repaint, because a full-screen program that exits resets it, so a program that
+  *holds* a region of its own — anything keeping a progress row at the bottom — has it replaced
+  within a tick. **Verified** by reading the pane back: an application region of rows 1–10 became
+  1–23 and its output escaped into the rows below. A multiplexer that owns the grid keeps its own copy of the screen and
   never touches the terminal's cursor state; this one is a byte pipe, and that is the price. It is
   the clearest concrete argument this project has for building the emulator — and DESIGN.md is
   explicit that the oracle comes first when that day arrives. Doing it properly at the bottom
