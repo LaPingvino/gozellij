@@ -239,21 +239,23 @@ func waitForCgroupPids(t *testing.T, g *Cgroup, want int) []int {
 func TestChildrenGetTheGracePeriodTooNotJustTheLeader(t *testing.T) {
 	cg := requireCgroups(t)
 
-	dir := t.TempDir()
-	done := filepath.Join(dir, "child-finished")
-	child := filepath.Join(dir, "child.sh")
-	// Catches SIGTERM, takes a moment over it, and records that it got to finish. Its output
-	// goes nowhere near the pty, so nothing about the drain keeps it alive: the only thing being
-	// measured is how long the stop lets it have.
-	script := "#!/bin/sh\ntrap 'sleep 0.5; : > " + done + "; exit 0' TERM\nwhile :; do sleep 0.05; done\n"
-	if err := os.WriteFile(child, []byte(script), 0o700); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	done := filepath.Join(t.TempDir(), "child-finished")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("finding the test binary: %v", err)
 	}
 
+	// The child is this test binary re-executed in slow-child mode: it catches SIGTERM, takes
+	// half a second, and records that it finished. A shell script cannot play that part
+	// reliably - its trap waits for whatever command is running and re-entry differs between
+	// shells - and a test that failed one run in three was measuring that, not this.
+	//
+	// It calls setsid, so it is in neither the leader's process group nor its session: a cgroup
+	// is the only thing that still reaches it, which is the point.
 	s := NewSupervisor(Service{
 		Name: "graceful", Command: "sh",
-		Args:    []string{"-c", "setsid " + child + " </dev/null >/dev/null 2>&1 &\necho STARTED\nexec sleep 600"},
-		Restart: RestartNo,
+		Args: []string{"-c", "setsid " + self + " </dev/null >/dev/null 2>&1 &\necho STARTED\nexec sleep 600"},
+		Env:  []string{"GOZELLIJ_TEST_SLOW_CHILD=" + done},
 	}, StartOptions{Cgroups: cg})
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -265,6 +267,20 @@ func TestChildrenGetTheGracePeriodTooNotJustTheLeader(t *testing.T) {
 		t.Fatal("no process or no cgroup")
 	}
 	waitForCgroupPids(t, p.Cgroup(), 2)
+
+	// Wait for the child to be ready to catch a signal, not merely to exist. A SIGTERM that
+	// arrives before it installs its handler kills it outright, and the test would then be
+	// measuring Go's start-up time.
+	ready := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(done + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(ready) {
+			t.Fatal("the child never became ready to catch a signal")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	t0 := time.Now()
 	s.Stop()

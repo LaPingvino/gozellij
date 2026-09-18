@@ -66,6 +66,9 @@ type Process struct {
 	// separate from exited, which is published later, after the output has been drained.
 	reaped bool
 
+	// stopMu serialises Stop. See the note there.
+	stopMu sync.Mutex
+
 	// done is closed once the child has exited and its output has been drained.
 	done chan struct{}
 	// drained is closed by the reader goroutine when it stops.
@@ -524,9 +527,26 @@ func (p *Process) stopSignal(sig syscall.Signal) {
 // normal case for a few programs - but the caller can tell the difference, because a killed
 // process reports its signal.
 func (p *Process) Stop() Exit {
+	// One stop at a time. Two callers run this concurrently as a matter of course - the
+	// supervisor nudges the process while its own loop also stops it on cancellation - and
+	// without this they interleave in a way that defeats the whole grace period: the second
+	// caller finds the leader already reaped, takes the early path below, and sweeps the cgroup
+	// at once, killing children the first caller was in the middle of waiting for. Measured: a
+	// child given half a second to shut down got sixteen milliseconds.
+	//
+	// It also means a service is never sent two SIGTERMs microseconds apart by two goroutines,
+	// which for a runtime that treats the second as "stop arguing and quit" is the difference
+	// between a clean shutdown and a forced one.
+	p.stopMu.Lock()
+	defer p.stopMu.Unlock()
+
 	if _, done := p.Exited(); done {
-		// Still sweep. The process being gone says nothing about what it left behind, and this
-		// is the path taken by a service that exited on its own just as it was being stopped.
+		// The leader is gone, but what it started may not be. Ask, wait, and only then sweep -
+		// the same courtesy the main path gives, because "the process you named has already
+		// exited" is not a reason to kill its children without warning.
+		deadline := time.Now().Add(StopGrace)
+		p.signalCgroup(syscall.SIGTERM)
+		p.waitCgroupEmpty(deadline)
 		p.sweepCgroup()
 		return p.Wait()
 	}

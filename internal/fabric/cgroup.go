@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 // Cgroups are how a service is stopped completely rather than mostly.
@@ -39,7 +41,14 @@ const cgroupMount = "/sys/fs/cgroup"
 // it, so a service that is being restarted would try to create one that its predecessor still
 // occupies - and the obvious repair, killing whatever is in the way, could kill a process adopted
 // from a previous daemon. A fresh name has neither problem.
+//
+// Seeded from the clock rather than starting at zero, because an upgrade replaces the daemon's
+// image while keeping its pid: a counter that restarted would hand out names the previous image
+// had already used, and any directory it left behind - one holding a detached child, say - would
+// make the new image's Create fail and quietly downgrade that service to a process-group kill.
 var cgroupSeq atomic.Uint64
+
+func init() { cgroupSeq.Store(uint64(time.Now().UnixNano())) }
 
 // DetectCgroups works out whether this process can create cgroups, by trying.
 //
@@ -180,8 +189,13 @@ func (g *Cgroup) Kill() error {
 		return errors.New("no cgroup")
 	}
 	if err := os.WriteFile(filepath.Join(g.dir, "cgroup.kill"), []byte("1"), 0o644); err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENODEV) {
 			// Already gone: there is nothing left to kill, which is the outcome asked for.
+			//
+			// ENODEV as well as ENOENT, because cgroupfs answers that way for a directory
+			// removed after the file was opened - which happens whenever two Stops race and
+			// one removes the cgroup while the other is still sweeping. The daemon log said
+			// "cgroup kill failed" for a kill that had nothing left to do.
 			return nil
 		}
 		return fmt.Errorf("killing %s: %w", g.dir, err)

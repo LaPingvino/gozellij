@@ -115,10 +115,14 @@ func TestByteWordIsReadableAtAGlance(t *testing.T) {
 		0:                "-",
 		-1:               "-",
 		512:              "512B",
-		2048:             "2K",
+		2048:             "2.0K",
 		1024 * 1024:      "1.0M",
 		17 * 1024 * 1024: "17.0M",
 		3 << 30:          "3.0G",
+		// Just under a boundary: promoting on the raw bytes printed "1024K", a unit that does
+		// not exist.
+		1024*1024 - 1: "1.0M",
+		1<<30 - 1:     "1.0G",
 	}
 	for n, want := range cases {
 		if got := byteWord(n); got != want {

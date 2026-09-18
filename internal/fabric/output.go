@@ -229,8 +229,11 @@ func (o *OutputBuffer) Close() {
 	o.mu.Unlock()
 
 	// Outside the lock: the sink's own shutdown detaches its subscriber, which takes this lock.
-	if sink != nil {
-		sink.Close()
+	// The wait is bounded, and a writer that did not stop is said out loud rather than waited on
+	// for ever - `gozellij rm` waits for this while holding a lock.
+	if sink != nil && !sink.Close() {
+		logf("the log writer for %s did not stop within %s; it may still be holding the file",
+			sink.Path(), CloseWait)
 	}
 }
 

@@ -70,6 +70,17 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	leaving := s.watching(req.Service)
 	defer leaving()
 
+	// Belt and braces, and both are needed. Detach is idempotent, so this defer covers the early
+	// returns below - a client that hangs up between the request and the reply left a subscriber
+	// on the buffer for the life of the daemon, each one getting a private copy of every byte the
+	// service wrote. The explicit Detach further down still has to be where it is, for the
+	// ordering reason described there.
+	//
+	// Registered after the viewer count so that it runs before it: while a viewer is counted its
+	// subscription exists, which makes "no viewers" mean what it says rather than "no viewers,
+	// and some of their subscriptions are still being cleaned up".
+	defer sub.Detach()
+
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {

@@ -350,18 +350,22 @@ func viewerWord(s ipc.StatusReply) string {
 // byteWord is a size a person can read at a glance. Exact bytes matter to nobody looking at a
 // list of services; whether a log is 40 MB matters to everybody on a small disk.
 func byteWord(n int64) string {
-	switch {
-	case n <= 0:
+	if n <= 0 {
 		return "-"
-	case n < 1024:
-		return fmt.Sprintf("%dB", n)
-	case n < 1024*1024:
-		return fmt.Sprintf("%.0fK", float64(n)/1024)
-	case n < 1024*1024*1024:
-		return fmt.Sprintf("%.1fM", float64(n)/(1024*1024))
-	default:
-		return fmt.Sprintf("%.1fG", float64(n)/(1024*1024*1024))
 	}
+	if n < 1024 {
+		return fmt.Sprintf("%dB", n)
+	}
+	// Promote on the *rounded* value, not the raw one. Comparing the raw bytes against the unit
+	// boundary printed 1048575 as "1024K", which is a unit this program does not have.
+	v := float64(n) / 1024
+	for _, unit := range []string{"K", "M", "G"} {
+		if v < 1023.95 {
+			return fmt.Sprintf("%.1f%s", v, unit)
+		}
+		v /= 1024
+	}
+	return fmt.Sprintf("%.1fT", v)
 }
 
 func printStatus(s ipc.StatusReply) {

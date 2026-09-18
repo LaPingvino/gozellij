@@ -519,6 +519,12 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 
 	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
 
+	// A terminal tailing a service is watching it. The column is called VIEWERS and the question
+	// it answers is "is anyone looking at this?" - and someone running `logs -f` in another
+	// window is, whatever the name of the command they used.
+	leaving := s.watching(req.Service)
+	defer leaving()
+
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {
 		sub.Detach()
 		return err

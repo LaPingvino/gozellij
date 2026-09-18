@@ -158,8 +158,20 @@ func (l *LogSink) Err() string {
 	return strings.Join(parts, "; ")
 }
 
+// CloseWait is how long Close waits for the writer to put the file down.
+//
+// Bounded, because the writer can be stuck in write(2) on a mount that has gone away - the exact
+// situation this whole design keeps off the pty drain - and `gozellij rm` waits for this while
+// holding the service's lifecycle lock. Waiting for ever there would turn a hung disk into a hung
+// command holding a lock nothing else can take.
+const CloseWait = 5 * time.Second
+
 // Close stops writing and waits for the file to be closed.
-func (l *LogSink) Close() {
+//
+// It reports whether the writer actually finished. A caller that is about to delete the file needs
+// to know: if the writer is still going, anything left in its queue can be written after the
+// deletion, and rotation's O_CREATE would put the file back.
+func (l *LogSink) Close() bool {
 	l.closeOnce.Do(func() {
 		l.mu.Lock()
 		l.closing = true
@@ -167,7 +179,12 @@ func (l *LogSink) Close() {
 		l.mu.Unlock()
 		sub.Detach()
 	})
-	<-l.done
+	select {
+	case <-l.done:
+		return true
+	case <-time.After(CloseWait):
+		return false
+	}
 }
 
 // run drains the subscription into the file until the buffer closes or Close is called.

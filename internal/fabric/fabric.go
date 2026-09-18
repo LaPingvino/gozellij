@@ -537,6 +537,14 @@ func (f *Fabric) LogFiles(name string) []string {
 	if f.opts.LogDir == "" {
 		return nil
 	}
+	// A service with logging off owns no file, whatever is lying on disk under its name.
+	// Removing a service leaves its log behind, so `rm x` then `add x -log off` would otherwise
+	// have `status` and `ls` report the *previous* service's file as this one's - the same
+	// mislabelling Logs already refuses to do.
+	if def, err := f.reg.Get(name); err == nil && def.NoLog {
+		return nil
+	}
+
 	var found []string
 	path := LogPath(f.opts.LogDir, name)
 	for _, p := range []string{path, path + ".1"} {

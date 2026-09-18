@@ -3,6 +3,7 @@ package fabric
 import (
 	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -392,7 +393,38 @@ func lastN(b []byte, n int) string {
 }
 
 func TestMain(m *testing.M) {
+	// Re-exec as a well-behaved child when asked. A test that needs a process which catches
+	// SIGTERM, takes a measurable moment over it and then records that it finished cannot use a
+	// shell for it: a shell defers a trap until the command it is running returns, may or may
+	// not re-enter the handler, and differs between dash and bash. Chasing a test that failed
+	// one run in three led here, and the flakiness was the shell's, not the fabric's.
+	if done := os.Getenv("GOZELLIJ_TEST_SLOW_CHILD"); done != "" {
+		slowChild(done)
+		return
+	}
+
 	// Keep the tests honest about inheriting the developer's environment.
 	os.Unsetenv("GOZELLIJ_TEST_MARKER")
 	os.Exit(m.Run())
+}
+
+// slowChild waits for SIGTERM, spends half a second shutting down, and records that it got to
+// finish. It is the thing a graceful stop is supposed to protect.
+//
+// It announces itself ready *after* installing the handler, and the test waits for that. Without
+// it the test is a race it loses about half the time: a signal that arrives before Notify runs
+// takes the default action and kills the process outright, so the test would be measuring how
+// fast a Go runtime starts rather than whether the stop was graceful.
+func slowChild(done string) {
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
+
+	if err := os.WriteFile(done+".ready", []byte("ready"), 0o600); err != nil {
+		os.Exit(1)
+	}
+
+	<-term
+	time.Sleep(500 * time.Millisecond)
+	_ = os.WriteFile(done, []byte("finished"), 0o600)
+	os.Exit(0)
 }
