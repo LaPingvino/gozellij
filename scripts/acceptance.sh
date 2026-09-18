@@ -38,10 +38,14 @@ say()  { printf '%s\n' "$*"; }
 ok()   { pass=$((pass + 1)); printf '  PASS  %s\n' "$*"; }
 bad()  { fail=$((fail + 1)); printf '  FAIL  %s\n' "$*"; }
 
+# tmuxSock is a private tmux server, so nothing here can touch a session you are using.
+tmuxSock="gozellij-acceptance-$$"
+
 cleanup() {
     # By recorded pid, never by pattern: a pattern matches this script's own command line, which
     # is how you kill your own shell. (Learned the hard way; see the note in the loop rules.)
     [ -n "$daemon_pid" ] && kill "$daemon_pid" 2>/dev/null
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
     sleep 0.3
     if [ "$keep" = 1 ]; then
         say "working directory kept at $work"
@@ -302,6 +306,100 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     mode=$("$gz" doctor 2>/dev/null | awk '/stopping services/{$1=""; $2=""; print}' | sed 's/^ *//')
     say "        (tree-kill mode: $mode)"
 }
+
+# ------------------------------------------------------------------ what the screen actually does
+#
+# Everything above drives a pty through `script`, and `script` allocates a pty with NO SIZE when
+# its own stdin is a pipe - which it is here. A terminal of unknown size is one the status line
+# refuses to draw on, so none of these checks can see it at all. Three screen bugs shipped through
+# that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
+# drew over vim's command line every two seconds.
+#
+# So this section drives a real terminal of a known size and reads the screen back. tmux is the
+# tool to hand; a private server, so it cannot touch a session you are using.
+if ! command -v tmux >/dev/null 2>&1; then
+    say "  SKIP  the screen checks need tmux, which is not installed"
+else
+    pane() { tmux -L "$tmuxSock" capture-pane -p; }
+    ask()  { tmux -L "$tmuxSock" display -p "$1"; }
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e SHELL=/bin/sh -e TERM=xterm-256color \
+        "sh -c 'PS1=\"outer\\$ \"; export PS1; exec /bin/sh -i'"
+    sleep 1
+
+    # Fill the screen before attaching, so the cursor is on the LAST ROW when the status line
+    # reserves its region. That is not an edge case - it is what a shell you have been using looks
+    # like - and it is the condition under which the terminal appeared to hang: the cursor ends up
+    # below the new bottom margin, where a line feed does not scroll. Starting from a blank screen
+    # hides the bug completely, which this check did until it was sabotaged and passed anyway.
+    tmux -L "$tmuxSock" send-keys 'seq 40' Enter
+    sleep 1
+    tmux -L "$tmuxSock" send-keys "$gz shell; echo BACK-IN-THE-OUTER-SHELL; sleep 60" Enter
+    sleep 3
+
+    # 1. Typing works at all. A smoke check, and labelled as one: it is the only check here that
+    #    has NOT been shown to fail when the behaviour it describes is broken. Two sabotages that
+    #    reproduce the original hang - removing the cursor placement, and telling the service it
+    #    owns the reserved row - both left this green, because DECSTBM homes the cursor by itself
+    #    and rescued the screen each tick. It would catch a gross breakage (nothing drawn at all)
+    #    and should not be read as a guard against the hang. The two checks below it are the ones
+    #    with teeth: each was verified by breaking the fix and watching this script go red.
+    tmux -L "$tmuxSock" send-keys 'echo SCREEN-$((6*7))-OK' Enter
+    sleep 2
+    if pane | grep -q 'SCREEN-42-OK'; then
+        ok "typing in an attached shell produces output on the screen"
+    else
+        bad "nothing appeared on the screen after typing - the terminal is wedged"
+    fi
+
+    # 2. The status line is on the last row, and the service has the rest.
+    if pane | tail -1 | grep -q 'up '; then
+        ok "the status line is on the last row"
+    else
+        bad "no status line on the last row: $(pane | tail -1)"
+    fi
+    region=$(ask '#{scroll_region_upper}-#{scroll_region_lower}')
+    if [ "$region" = "0-22" ]; then
+        ok "the bottom row is reserved (scrolling region $region of 0-23)"
+    else
+        bad "the scrolling region is $region, want 0-22 with the last row reserved"
+    fi
+
+    # 3. A full-screen program keeps its own last row. Verified by sabotage: tell the service it
+    #    has all n rows again and this check fails.
+    tmux -L "$tmuxSock" send-keys 'less /etc/services' Enter
+    sleep 3
+    if pane | tail -2 | head -1 | grep -q '/etc/services'; then
+        ok "a full-screen program keeps its own bottom row"
+    else
+        bad "the status line drew over the full-screen program's bottom row: $(pane | tail -2 | head -1)"
+    fi
+    tmux -L "$tmuxSock" send-keys 'q'
+    sleep 1
+
+    # 4. Detaching gives the terminal back: region released, cursor where it was rather than homed.
+    #    Verified by sabotage: move the region reset back outside the save-and-restore pair and the
+    #    last check here fails with the prompt printing at row 1.
+    tmux -L "$tmuxSock" send-keys C-] d
+    sleep 2
+    region=$(ask '#{scroll_region_upper}-#{scroll_region_lower}')
+    if [ "$region" = "0-23" ]; then
+        ok "detaching releases the reserved row"
+    else
+        bad "the scrolling region is still $region after detaching"
+    fi
+    where=$(pane | grep -n 'BACK-IN-THE-OUTER-SHELL' | head -1 | cut -d: -f1)
+    if [ -n "$where" ] && [ "$where" -gt 3 ]; then
+        ok "detaching leaves the cursor where it was, not at the top of the screen"
+    else
+        bad "after detaching the next prompt printed at row ${where:-?}, over what was already there"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+fi
 
 say
 if [ "$fail" -eq 0 ]; then

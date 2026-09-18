@@ -20,6 +20,10 @@ It builds the binaries, runs its own daemon in a throwaway directory under `env 
 pty, and reports PASS or FAIL for each promise below, exiting non-zero if any of them has stopped
 being true.
 
+It drives a real terminal through tmux for the screen checks, because the rest of it uses `script`,
+whose pty has no size when its own stdin is a pipe — and a terminal of unknown size is one the
+status line refuses to draw on. Three screen bugs shipped straight through that blind spot.
+
 Three of its checks originally passed for the wrong reason — including the one promise that had
 never been measured at all. Each check is now shown to *fail* when the behaviour it names is
 deliberately broken, which is the only thing that makes a passing check worth anything. What the

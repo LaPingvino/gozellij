@@ -161,7 +161,7 @@ where nothing can draw over it; `where=off` draws nothing.
 ./scripts/acceptance.sh
 ```
 
-Fourteen checks, on a real pty, against a throwaway daemon: an interactive shell, the environment
+Twenty-one checks, on a real pty, against a throwaway daemon: an interactive shell, the environment
 it gets, detaching without stopping, switching services, an upgrade that keeps every pid *with a
 client attached across it*, logs outliving the daemon, enabled services returning, and a stop that
 takes a service's children with it. Exits non-zero if any promise has stopped holding.
