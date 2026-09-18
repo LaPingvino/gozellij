@@ -18,8 +18,14 @@ now re-checkable on demand:
 
 It builds the binaries, runs its own daemon in a throwaway directory under `env -i`, drives a real
 pty, and reports PASS or FAIL for each promise below, exiting non-zero if any of them has stopped
-being true. It is the only thing here that can tell you whether this document is still accurate
-today, as against on the day each line was written.
+being true.
+
+Three of its checks originally passed for the wrong reason — including the one promise that had
+never been measured at all. Each check is now shown to *fail* when the behaviour it names is
+deliberately broken, which is the only thing that makes a passing check worth anything. What the
+script does **not** cover is listed here so it is not mistaken for a complete account: resize and
+SIGWINCH, escape-sequence passthrough for full-screen programs, `Ctrl-] p` and `Ctrl-] l`, and the
+shell's `LANG`/`HOME`. Those remain verified-by-hand only.
 
 ## What already works
 

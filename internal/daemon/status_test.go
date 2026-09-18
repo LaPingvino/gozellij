@@ -172,16 +172,25 @@ func TestAClientThatHangsUpDuringTheHandshakeLeavesNoSubscriber(t *testing.T) {
 		a.Close()
 	}
 
-	// Wait for every handler to unwind: the viewer count is released by defer, so it going to
-	// zero says the attach functions have returned.
-	waitFor(t, func() bool {
-		st, err := c.Status("quiet")
-		return err == nil && st.Viewers == 0
-	})
-	time.Sleep(200 * time.Millisecond)
-
-	if n := out.Subscribers(); n != base {
-		t.Errorf("%d subscriber(s) left on the buffer after every attach ended (baseline %d): "+
-			"a failed handshake in attach() returns without sub.Detach()", n-base, base)
+	// Wait for the subscriber count to come back to the baseline, rather than for the viewer
+	// count to be zero. Zero viewers is true before any handler has started as well as after
+	// they have all finished, so the original wait was satisfied instantly and the check then
+	// read a number while two hundred handlers were still in flight - 13 of them under -race.
+	//
+	// A leak does not settle, so a bounded wait distinguishes the two: the point is whether the
+	// count returns, not how fast.
+	deadline := time.Now().Add(10 * time.Second)
+	var n int
+	for {
+		n = out.Subscribers()
+		if n == base {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Errorf("%d subscriber(s) left on the buffer after every attach ended (baseline %d): "+
+		"a failed handshake in attach() returns without sub.Detach()", n-base, base)
 }

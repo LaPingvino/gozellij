@@ -545,7 +545,12 @@ func (p *Process) Stop() Exit {
 		// the same courtesy the main path gives, because "the process you named has already
 		// exited" is not a reason to kill its children without warning.
 		deadline := time.Now().Add(StopGrace)
-		p.signalCgroup(syscall.SIGTERM)
+		// Everything, with no skipping: on this path the process group was never signalled,
+		// because the leader has already been reaped and signalling a freed pid's group is not
+		// safe. Skipping the leader's group here meant children that stayed in it got no
+		// SIGTERM at all - they sat out the whole grace period and were then SIGKILLed, which
+		// is the opposite of what this path was added to do.
+		p.signalCgroup(syscall.SIGTERM, false)
 		p.waitCgroupEmpty(deadline)
 		p.sweepCgroup()
 		return p.Wait()
@@ -563,7 +568,7 @@ func (p *Process) Stop() Exit {
 	// cgroup" - only cgroup.kill, which is SIGKILL - so a graceful stop for a process that
 	// called setsid has to be addressed to it by pid.
 	p.stopSignal(syscall.SIGTERM)
-	p.signalCgroup(syscall.SIGTERM)
+	p.signalCgroup(syscall.SIGTERM, true)
 
 	select {
 	case <-p.done:
@@ -601,7 +606,13 @@ func (p *Process) waitCgroupEmpty(deadline time.Time) {
 }
 
 // signalCgroup sends a signal to every process in the cgroup, individually.
-func (p *Process) signalCgroup(sig syscall.Signal) {
+//
+// groupSignalled says whether the leader's process group has already been sent this signal. When
+// it has, members of that group are skipped: a second SIGTERM a hundred microseconds after the
+// first is harmless to a shell, whose handler has not run yet so the signals coalesce, but a
+// runtime with asynchronous handlers gets both and "a second SIGTERM means stop arguing and quit"
+// is a common pattern. When it has not, skipping them means never signalling them.
+func (p *Process) signalCgroup(sig syscall.Signal, groupSignalled bool) {
 	if p.cgroup == nil {
 		return
 	}
@@ -611,12 +622,10 @@ func (p *Process) signalCgroup(sig syscall.Signal) {
 		return
 	}
 	for _, pid := range pids {
-		// Skip anything the process-group signal already reached. Sending a second SIGTERM a
-		// hundred microseconds after the first is harmless to a shell, whose handler has not
-		// run yet so the signals coalesce - but a runtime with asynchronous handlers (Go, Rust)
-		// gets both, and "a second SIGTERM means stop arguing and quit" is a common pattern.
-		if pgid, err := syscall.Getpgid(pid); err == nil && pgid == p.pid {
-			continue
+		if groupSignalled {
+			if pgid, err := syscall.Getpgid(pid); err == nil && pgid == p.pid {
+				continue
+			}
 		}
 		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			p.logf("signalling %d in the cgroup: %v", pid, err)

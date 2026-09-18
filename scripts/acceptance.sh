@@ -89,6 +89,13 @@ stop_daemon() {
     daemon_pid=""
 }
 
+# kill_daemon_hard is what the document actually claims to survive: no chance to tidy up.
+kill_daemon_hard() {
+    [ -n "$daemon_pid" ] && kill -9 "$daemon_pid" 2>/dev/null
+    wait "$daemon_pid" 2>/dev/null
+    daemon_pid=""
+}
+
 # in_terminal <keys-script> <command...> - runs a command on a real pty, feeding it keys over time.
 #
 # The keys come from a shell fragment rather than a file, because *when* a key arrives is half of
@@ -132,12 +139,14 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     sleep 1
     logged=$("$gz" logs envprobe 2>/dev/null)
     "$gz" rm envprobe >/dev/null 2>&1
-    # A service added by hand inherits the daemon's environment, which under env -i has no TERM.
-    # The *shell* is the one that captures yours; that is checked below.
-    if printf '%s' "$logged" | grep -q 'TERM='; then
-        ok "a service's environment is visible in its log"
+    # Labelled for what it actually proves. A service added by hand inherits the *daemon's*
+    # environment, which under env -i has no TERM at all - so this says `logs` returns what the
+    # service printed, and nothing about any environment promise. The shell's own environment is
+    # the one that matters and is checked below.
+    if printf '%s' "$logged" | grep -q 'GOZELLIJ='; then
+        ok "logs returns what a service printed"
     else
-        bad "could not read a service's environment back"
+        bad "could not read a service's output back from logs"
     fi
 }
 
@@ -192,7 +201,11 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     # attached when the daemon replaces itself, so the detach key comes well afterwards.
     ( sleep 3; "$gz" upgrade >"$work/upgrade.out" 2>&1 ) &
     upgrader=$!
-    out=$(in_terminal 'sleep 8; printf "\035d"; sleep 1' "$gz attach shell")
+    # After the reattach, type at the service and check the answer comes back. The arithmetic is
+    # deliberate: `script` echoes keystrokes onto the pty, so a marker typed literally would be
+    # matched from the echo whether or not the far end ever saw it. The shell computes 6*7, and
+    # only the shell can produce the string that looks for.
+    out=$(in_terminal 'sleep 8; printf "echo AFTER-\$((6*7))-MARKER\n"; sleep 3; printf "\035d"; sleep 1' "$gz attach shell")
     wait "$upgrader" 2>/dev/null
 
     sleep 1
@@ -207,10 +220,17 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     else
         bad "the upgrade did not report the new version: $(cat "$work/upgrade.out" 2>/dev/null | tr '\n' ' ')"
     fi
-    if printf '%s' "$out" | grep -q 'reattach'; then
-        ok "an attached client notices the upgrade and reattaches by itself"
+    # "reattached;" and not "reattaching...": the latter is printed on any disconnect, before any
+    # attempt has been made, so matching it passed even when the client then gave up entirely.
+    if printf '%s' "$out" | grep -q 'reattached;'; then
+        ok "an attached client notices the upgrade and comes back by itself"
     else
-        bad "the attached client said nothing about reattaching"
+        bad "the attached client never reported reattaching"
+    fi
+    if printf '%s' "$out" | grep -q 'AFTER-42-MARKER'; then
+        ok "and the terminal still works afterwards: typing reaches the service and the reply comes back"
+    else
+        bad "after the upgrade the reattached terminal did not carry a keystroke to the service"
     fi
     # The daemon we started was replaced in place, so the pid is the same but our shell job is not
     # its parent any more; keep the pid for cleanup.
@@ -218,13 +238,21 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 
 # ----------------------------------------------------------------- logs outlive the daemon
 {
-    "$gz" add pineapple -start -- sh -c 'echo PINEAPPLE-42; sleep 30' >/dev/null 2>&1
+    marker="PINEAPPLE-$$-$RANDOM"
+    "$gz" add pineapple -start -- sh -c "echo $marker; sleep 30" >/dev/null 2>&1
     sleep 1
-    stop_daemon
+    # Stop it first, which also marks it disabled. Otherwise the fresh daemon starts it again and
+    # it prints the marker a second time - so the check passed even with the log file deleted,
+    # which is precisely the thing it claims to be testing.
+    "$gz" stop pineapple >/dev/null 2>&1
+    if ! "$gz" logs pineapple 2>/dev/null | grep -q "$marker"; then
+        bad "the marker was not in the log before the daemon was killed (the check would be vacuous)"
+    fi
+    kill_daemon_hard
     sleep 0.5
     start_daemon || exit 1
-    if "$gz" logs pineapple 2>/dev/null | grep -q 'PINEAPPLE-42'; then
-        ok "logs survive the daemon being killed outright"
+    if "$gz" logs pineapple 2>/dev/null | grep -q "$marker"; then
+        ok "logs survive kill -9 of the daemon, for a service that is not restarted"
     else
         bad "the log did not survive the daemon"
     fi
@@ -233,7 +261,9 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # --------------------------------------------------------------- enabled services come back
 {
     # The daemon was just restarted above; anything marked enabled should be running again.
-    running=$("$gz" status pineapple 2>/dev/null | awk '/^state/{print $2}')
+    # tabtarget was left enabled and running, so it is the one to ask about - pineapple was
+    # deliberately stopped, and asking about it would have been a check that cannot fail.
+    running=$("$gz" status tabtarget 2>/dev/null | awk '/^state/{print $2}')
     if [ "$running" = "running" ] || [ "$running" = "exited" ]; then
         ok "enabled services are started again by a fresh daemon (reboot-equivalent)"
     else
@@ -243,17 +273,31 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 
 # ------------------------------------------------------------------------------- tree-kill
 {
-    "$gz" add stubborn -start -- sh -c 'trap "" HUP; (trap "" HUP; exec sleep 4242) & echo STUBBORN-UP; wait' >/dev/null 2>&1
-    sleep 1
-    "$gz" stop stubborn >/dev/null 2>&1
-    sleep 1
-    if ps -eo args | grep -q '^sleep 4242$'; then
-        bad "a child that ignores SIGHUP outlived its service"
-        # Clean it up by pid, having read the list.
-        child=$(ps -eo pid,args | awk '$2=="sleep" && $3=="4242" {print $1; exit}')
-        [ -n "$child" ] && kill "$child" 2>/dev/null
+    # A sleep length unique to this run, so an unrelated process on the host cannot be mistaken
+    # for our child - in either direction.
+    naptime=$(( 40000 + (RANDOM % 9000) ))
+    "$gz" add stubborn -start -- sh -c "trap '' HUP; (trap '' HUP; exec sleep $naptime) & echo STUBBORN-UP; wait" >/dev/null 2>&1
+
+    # Wait for the child to exist, and fail if it never does. Without this the check passed
+    # whenever the service failed to start at all: no child, nothing left behind, "PASS".
+    child=""
+    for _ in $(seq 50); do
+        child=$(ps -eo pid,args | awk -v n="$naptime" '$2=="sleep" && $3==n {print $1; exit}')
+        [ -n "$child" ] && break
+        sleep 0.1
+    done
+    if [ -z "$child" ]; then
+        bad "the service's child never started, so there was nothing to test"
     else
-        ok "stop takes the service's children with it"
+        "$gz" stop stubborn >/dev/null 2>&1
+        sleep 1
+        still=$(ps -eo pid,args | awk -v n="$naptime" '$2=="sleep" && $3==n {print $1; exit}')
+        if [ -n "$still" ]; then
+            bad "a child that ignores SIGHUP outlived its service (pid $still)"
+            kill "$still" 2>/dev/null
+        else
+            ok "stop takes the service's children with it"
+        fi
     fi
     mode=$("$gz" doctor 2>/dev/null | awk '/stopping services/{$1=""; $2=""; print}' | sed 's/^ *//')
     say "        (tree-kill mode: $mode)"
