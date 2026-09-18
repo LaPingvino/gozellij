@@ -120,7 +120,7 @@ terminal does the emulating. See [the plan](#plan).
 | `gozellij` | land in your shell — reattached if it is running, fresh if not |
 | `gozellij ls` | what exists and what it is doing |
 | `gozellij status <name>` | one service in detail, including why it will not start |
-| `gozellij start\|stop\|restart <name>` | change its state; `stop` means it stays stopped across a reboot |
+| `gozellij start\|stop\|restart <name>` | change its state; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
 | `gozellij logs -f <name>` | follow the live output; `Ctrl-C` stops watching, not the service |
 | `gozellij attach <name>` | connect your terminal; `Ctrl-]` detaches without stopping anything |

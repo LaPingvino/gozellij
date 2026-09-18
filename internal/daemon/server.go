@@ -263,7 +263,17 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 		s.mu.Lock()
 		v := s.version
 		s.mu.Unlock()
-		return ipc.OKResponse(req.ID, map[string]string{"pong": "gozellij", "version": v})
+		// Ping carries how the daemon stops things, because only the daemon knows. A client
+		// that ran the same detection on itself would be answering about its own cgroup,
+		// which has nothing to do with the one the services are in.
+		info := map[string]string{"pong": "gozellij", "version": v, "tree_kill": "process group"}
+		if cg := s.fab.Cgroups(); cg.Available() {
+			info["tree_kill"] = "cgroup"
+			info["cgroup"] = cg.Root()
+		} else {
+			info["tree_kill_why"] = cg.Why()
+		}
+		return ipc.OKResponse(req.ID, info)
 
 	case ipc.OpServiceLogs:
 		return s.logs(req)

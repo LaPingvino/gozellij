@@ -58,6 +58,10 @@ type Process struct {
 	started    time.Time
 	ownsOutput bool
 
+	// cgroup is this run's cgroup, nil when there is none. It is what makes Stop complete
+	// rather than nearly complete.
+	cgroup *Cgroup
+
 	// done is closed once the child has exited and its output has been drained.
 	done chan struct{}
 	// drained is closed by the reader goroutine when it stops.
@@ -97,6 +101,10 @@ type StartOptions struct {
 	// so that whoever is watching the *service* keeps being told about it. Like Output, the
 	// lender still owns it.
 	Watchers *StatusWatchers
+	// Cgroups, when available, puts each process in its own cgroup so that stopping a service
+	// stops everything it started - including a child that called setsid, which is the one case
+	// a process-group kill cannot reach. Nil means process groups only.
+	Cgroups *Cgroups
 }
 
 const (
@@ -126,6 +134,32 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 	cmd.Env = append(os.Environ(), s.Env...)
 	cmd.Env = append(cmd.Env, opts.ExtraEnv...)
 
+	// Put the child in its own cgroup, at fork rather than afterwards: a process that forks
+	// before we get round to writing its pid leaves grandchildren outside, and those are exactly
+	// the ones a cgroup exists to catch.
+	//
+	// The pty setup fills in the rest of SysProcAttr (setsid, the controlling terminal) on top
+	// of whatever is here, so setting these first is safe.
+	var group *Cgroup
+	var groupDir *os.File
+	if opts.Cgroups.Available() {
+		g, gerr := opts.Cgroups.Create(s.Name)
+		if gerr != nil {
+			// Not fatal. A service that runs and can only be mostly stopped beats a service
+			// that does not run - but it must not be a silent downgrade, so it is logged.
+			logf("service %s: %v; falling back to a process-group kill", s.Name, gerr)
+		} else {
+			d, derr := g.Open()
+			if derr != nil {
+				logf("service %s: %v; falling back to a process-group kill", s.Name, derr)
+				g.Remove()
+			} else {
+				group, groupDir = g, d
+				cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(d.Fd())}
+			}
+		}
+	}
+
 	cols, rows := opts.Cols, opts.Rows
 	if cols <= 0 {
 		cols = defaultCols
@@ -135,7 +169,31 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 	}
 
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if err != nil && group != nil {
+		// clone3 is what places a child in a cgroup, and a seccomp policy that forbids it fails
+		// here and nowhere else. Try once more without, and put the child in the cgroup after
+		// the fact - a smaller guarantee, and much better than refusing to run the service.
+		logf("service %s: starting it in a cgroup failed (%v); retrying without", s.Name, err)
+		cmd = exec.Command(path, s.Args...)
+		cmd.Dir = s.Dir
+		cmd.Env = append(os.Environ(), s.Env...)
+		cmd.Env = append(cmd.Env, opts.ExtraEnv...)
+		f, err = pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+		if err == nil {
+			if aerr := group.Add(cmd.Process.Pid); aerr != nil {
+				logf("service %s: %v; falling back to a process-group kill", s.Name, aerr)
+				group.Remove()
+				group = nil
+			}
+		}
+	}
+	if groupDir != nil {
+		groupDir.Close()
+	}
 	if err != nil {
+		if group != nil {
+			group.Remove()
+		}
 		return nil, fmt.Errorf("service %s: starting %s: %w", s.Name, path, err)
 	}
 
@@ -149,6 +207,7 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 	p := &Process{
 		Service:    s,
 		Output:     out,
+		cgroup:     group,
 		ownsOutput: ownsOutput,
 		cmd:        cmd,
 		pid:        cmd.Process.Pid,
@@ -444,20 +503,66 @@ func (p *Process) stopSignal(sig syscall.Signal) {
 // process reports its signal.
 func (p *Process) Stop() Exit {
 	if _, done := p.Exited(); done {
+		// Still sweep. The process being gone says nothing about what it left behind, and this
+		// is the path taken by a service that exited on its own just as it was being stopped.
+		p.sweepCgroup()
 		return p.Wait()
 	}
 
+	// SIGTERM twice over: to the process group, which is everything that stayed in it, and
+	// individually to anything in the cgroup that left the group. cgroup v2 has no "signal this
+	// cgroup" - only cgroup.kill, which is SIGKILL - so a graceful stop for a process that
+	// called setsid has to be addressed to it by pid.
 	p.stopSignal(syscall.SIGTERM)
+	p.signalCgroup(syscall.SIGTERM)
 
 	select {
 	case <-p.done:
-		return p.Wait()
 	case <-time.After(StopGrace):
+		p.stopSignal(syscall.SIGKILL)
 	}
 
-	p.stopSignal(syscall.SIGKILL)
+	// Always, and this is the line the first version got wrong. It killed the cgroup only after
+	// the grace period expired - so a service whose main process exited promptly returned here
+	// early and never swept at all, and the setsid'd child this whole mechanism exists for
+	// survived every well-behaved stop. Measured: it looked like cgroups were not working.
+	p.sweepCgroup()
 	return p.Wait()
 }
+
+// signalCgroup sends a signal to every process in the cgroup, individually.
+func (p *Process) signalCgroup(sig syscall.Signal) {
+	if p.cgroup == nil {
+		return
+	}
+	pids, err := p.cgroup.Pids()
+	if err != nil {
+		p.logf("could not list the cgroup: %v", err)
+		return
+	}
+	for _, pid := range pids {
+		if pid == p.pid {
+			continue // already signalled, through its process group
+		}
+		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			p.logf("signalling %d in the cgroup: %v", pid, err)
+		}
+	}
+}
+
+// sweepCgroup kills whatever is left in the cgroup. It is a no-op when there is no cgroup, and
+// when the cgroup is already empty.
+func (p *Process) sweepCgroup() {
+	if p.cgroup == nil {
+		return
+	}
+	if err := p.cgroup.Kill(); err != nil {
+		p.logf("cgroup kill failed: %v", err)
+	}
+}
+
+// Cgroup is this process's cgroup, nil when it has none.
+func (p *Process) Cgroup() *Cgroup { return p.cgroup }
 
 // Close releases the process's resources. It does not stop the child; use Stop for that.
 //
@@ -465,6 +570,14 @@ func (p *Process) Stop() Exit {
 // closing it here would cut off every viewer the moment one process restarted.
 func (p *Process) Close() {
 	p.closePTY()
+	if p.cgroup != nil {
+		// Only succeeds once the cgroup is empty, which is the point: a directory that will
+		// not go away is a service that did not entirely stop, and leaving it is better than
+		// pretending. Each run gets a fresh name, so a leftover blocks nothing.
+		if err := p.cgroup.Remove(); err != nil {
+			p.logf("could not remove the cgroup: %v", err)
+		}
+	}
 	if p.ownsOutput {
 		p.Output.Close()
 	}
@@ -474,7 +587,13 @@ func (p *Process) Close() {
 // goes to stderr rather than nowhere: a swallowed diagnostic is how the last project lost an
 // afternoon.
 func (p *Process) logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "gozellij: %s: "+format+"\n", append([]any{p.Service.Name}, args...)...)
+	logf("%s: "+format, append([]any{p.Service.Name}, args...)...)
+}
+
+// logf is the same, for the places that have no Process yet - notably Start, which has to report
+// a cgroup it could not create before there is anything to hang the message on.
+func logf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "gozellij: "+format+"\n", args...)
 }
 
 // interface checks

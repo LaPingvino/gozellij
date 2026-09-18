@@ -76,7 +76,18 @@ func run(socket, state, logs string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	fab := fabric.NewFabric(reg, fabric.StartOptions{LogDir: logs})
+	// Detected once, at startup: it depends on how this daemon was started, which does not
+	// change while it runs. `gozellij doctor` reports which mode is in force, because a
+	// tree-kill that is silently only a process-group kill is the worst of both.
+	cgroups := fabric.DetectCgroups()
+	if cgroups.Available() {
+		log.Info("services will be stopped by cgroup", "cgroup", cgroups.Root())
+	} else {
+		log.Info("services will be stopped by process group; a child that calls setsid will survive",
+			"why", cgroups.Why())
+	}
+
+	fab := fabric.NewFabric(reg, fabric.StartOptions{LogDir: logs, Cgroups: cgroups})
 
 	// Did a predecessor hand its processes over? If so we are the *same process* it was - the
 	// exec kept the pid - and the ptys it opened are still open on the descriptors it names.

@@ -249,15 +249,25 @@ func (c *Client) Upgrade() (ipc.UpgradeReply, error) {
 
 // PingVersion returns the daemon's version string.
 func (c *Client) PingVersion() (string, error) {
-	resp, err := c.Call(ipc.OpPing, "", nil)
+	info, err := c.Info()
 	if err != nil {
 		return "", err
 	}
+	return info["version"], nil
+}
+
+// Info returns what the daemon says about itself: its version, and how completely it can stop a
+// service. Only the daemon can answer the second one, since it depends on how it was started.
+func (c *Client) Info() (map[string]string, error) {
+	resp, err := c.Call(ipc.OpPing, "", nil)
+	if err != nil {
+		return nil, err
+	}
 	var out map[string]string
 	if err := resp.Decode(&out); err != nil {
-		return "", err
+		return nil, err
 	}
-	return out["version"], nil
+	return out, nil
 }
 
 // Remove deletes a service.

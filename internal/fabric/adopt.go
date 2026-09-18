@@ -53,9 +53,24 @@ func Adopt(s Service, pid int, ptyFD int, started time.Time, opts StartOptions) 
 		started = time.Now()
 	}
 
+	// Find the cgroup the process is already in, rather than making a new one it is not in.
+	// Without this an upgraded daemon keeps every process and quietly loses the ability to stop
+	// them completely - the promise would still be printed in the docs and no longer be true.
+	var group *Cgroup
+	if opts.Cgroups.Available() {
+		g, gerr := opts.Cgroups.Adopt(pid)
+		if gerr != nil {
+			logf("%s: could not reclaim the cgroup of process %d (%v); "+
+				"stopping it will fall back to a process-group kill", s.Name, pid, gerr)
+		} else {
+			group = g
+		}
+	}
+
 	p := &Process{
 		Service:    s,
 		Output:     out,
+		cgroup:     group,
 		ownsOutput: ownsOutput,
 		cmd:        nil, // adopted: see the note on Process.cmd
 		pid:        pid,

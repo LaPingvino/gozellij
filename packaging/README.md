@@ -20,6 +20,11 @@ To keep it running after you log out:
 sudo loginctl enable-linger $USER
 ```
 
+`Delegate=yes` in the unit is not decoration: it gives the daemon a cgroup it may subdivide, which
+is what lets `gozellij stop` stop *everything* a service started, including a child that called
+`setsid` to get away. A daemon started by hand from a login shell lands in a root-owned session
+scope instead, and falls back to killing the process group — which that child escapes.
+
 Then check it took, along with everything else on this page that this program depends on but does
 not control:
 

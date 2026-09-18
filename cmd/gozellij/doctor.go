@@ -85,6 +85,7 @@ func cmdDoctor(args []string) error {
 	}
 	checks = append(checks, checkDaemon(c, dialErr, path))
 	checks = append(checks, checkVersions(c, dialErr)...)
+	checks = append(checks, checkTreeKill(c, dialErr))
 	checks = append(checks, checkStateDir())
 	checks = append(checks, checkLinger())
 	checks = append(checks, checkUnit())
@@ -230,6 +231,45 @@ func gozellijdVersion() (version, path string, err error) {
 		return "", path, errors.New("it printed nothing")
 	}
 	return fields[len(fields)-1], path, nil
+}
+
+// checkTreeKill says whether `gozellij stop` stops everything or only nearly everything.
+//
+// The difference is invisible until the day it matters, and it is decided by how the daemon was
+// started rather than by anything in the program - so it is exactly the kind of thing this command
+// exists to surface.
+func checkTreeKill(c *daemon.Client, dialErr error) check {
+	if dialErr != nil {
+		return check{name: "stopping services", level: levelNote, detail: "cannot ask without a daemon"}
+	}
+	info, err := c.Info()
+	if err != nil {
+		return check{name: "stopping services", level: levelWarn, detail: "could not ask: " + err.Error()}
+	}
+	switch info["tree_kill"] {
+	case "cgroup":
+		return check{
+			name:   "stopping services",
+			level:  levelOK,
+			detail: "by cgroup (" + info["cgroup"] + "), so nothing a service starts can escape",
+		}
+	case "process group":
+		return check{
+			name:  "stopping services",
+			level: levelWarn,
+			detail: "by process group only, so a child that calls setsid survives `stop`: " +
+				info["tree_kill_why"],
+			fix: "run the daemon from the systemd user unit, which sets Delegate=yes:\n" +
+				"systemctl --user enable --now gozellijd",
+		}
+	default:
+		// A daemon older than this client. Say which, rather than reporting nothing.
+		return check{
+			name:   "stopping services",
+			level:  levelNote,
+			detail: "this daemon does not say; it is probably older than this client",
+		}
+	}
 }
 
 func checkStateDir() check {

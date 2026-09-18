@@ -470,6 +470,9 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 	return LogTail{Data: data, Truncated: truncated, Err: logErr}, nil
 }
 
+// Cgroups reports how completely this fabric can stop a service.
+func (f *Fabric) Cgroups() *Cgroups { return f.opts.Cgroups }
+
 // Watch returns a channel that fires when a service's status changes, and a function to stop
 // watching. See Supervisor.Watch.
 func (f *Fabric) Watch(name string) (<-chan struct{}, func(), error) {
