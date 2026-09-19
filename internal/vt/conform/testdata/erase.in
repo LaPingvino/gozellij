@@ -1,0 +1,13 @@
+# size 20x5
+# Erasing and shifting, which nothing else in the corpus covers: an emulator can ignore all of
+# these and still draw vim correctly enough to pass.
+#
+# Row 1: erase to end of line from the middle.    Row 2: erase to start of line.
+# Row 3: delete two characters, pulling the rest left.
+# Row 4: insert two blanks, pushing the rest right.
+# Row 5: erase three characters in place, without moving anything.
+\e[H0123456789\e[1;6H\e[K
+\e[2;1H0123456789\e[2;6H\e[1K
+\e[3;1H0123456789\e[3;3H\e[2P
+\e[4;1H0123456789\e[4;3H\e[2@
+\e[5;1H0123456789\e[5;3H\e[3X

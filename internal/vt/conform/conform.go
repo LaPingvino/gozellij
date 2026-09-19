@@ -76,6 +76,12 @@ func ScreenOf(t vt.Terminal) Screen {
 	cols, rows := t.Size()
 	cur := t.Cursor()
 	s := Screen{Cols: cols, Rows: rows, CursorRow: cur.Row, CursorCol: cur.Col}
+	if cur.Pending {
+		// A pending wrap is recorded the way tmux reports it: the column past the last one. The
+		// alternative was to throw the distinction away on the tmux side, which would have made
+		// the one case that tests it untestable.
+		s.CursorCol = cols
+	}
 	for _, row := range t.Snapshot() {
 		cells := make([]string, len(row))
 		var b strings.Builder

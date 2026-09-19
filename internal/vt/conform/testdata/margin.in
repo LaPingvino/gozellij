@@ -1,0 +1,11 @@
+# size 20x5
+# The right margin, three ways an emulator gets it wrong.
+#
+# Row 1: text exactly to the last column, then a cursor move. The screen must not have scrolled -
+#        the cursor waits in the last column rather than wrapping until another character arrives.
+# Row 3: a wide character with one column left. It moves to the next line whole; half of one is
+#        not something a terminal can draw.
+# Row 5: a wide character landing exactly on the last two columns, which must fit.
+\e[H12345678901234567890\e[3;1H
+\e[3;19HA\xe6\x97\xa5B\r\n
+\e[5;17Hab\xe6\x9c\xac

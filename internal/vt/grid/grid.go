@@ -64,7 +64,11 @@ func blankRow(cols int) []vt.Cell {
 
 func (t *Term) Size() (cols, rows int) { return t.cols, t.rows }
 
-func (t *Term) Cursor() vt.Cursor { return t.cur }
+func (t *Term) Cursor() vt.Cursor {
+	cur := t.cur
+	cur.Pending = t.pend
+	return cur
+}
 
 func (t *Term) Cell(row, col int) (vt.Cell, bool) {
 	if row < 0 || row >= t.rows || col < 0 || col >= t.cols {

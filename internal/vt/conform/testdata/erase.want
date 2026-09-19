@@ -1,0 +1,8 @@
+cols 20
+rows 5
+cursor 4 2
+row 01234
+row       6789
+row 01456789
+row 01  23456789
+row 01   56789

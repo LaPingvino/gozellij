@@ -72,6 +72,16 @@ type Cursor struct {
 	Visible  bool
 	// Shape is the DECSCUSR shape (0 = default).
 	Shape int
+	// Pending is the deferred wrap: a character has filled the last column and the cursor is
+	// waiting there, so the *next* character wraps but a cursor movement or an erase does not.
+	//
+	// It is real state, not an implementation detail, which is why it is on the interface. A
+	// program that writes exactly to the right margin and then moves the cursor must not have
+	// scrolled the screen in between, and an emulator that collapses this into "the cursor is in
+	// the last column" scrolls a line early. tmux reports the same state by putting the cursor at
+	// the column past the last one, and the conform harness compares the two - which is how this
+	// field came to exist rather than being guessed at.
+	Pending bool
 }
 
 // Terminal is a terminal emulator: bytes in, a grid out.
