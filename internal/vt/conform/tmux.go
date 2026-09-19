@@ -131,9 +131,14 @@ func waitForWrites(tmux, sock string) error {
 
 // settle waits until the pane has stopped changing.
 //
-// The signal above says the bytes left the writer; this says tmux has read and applied them, which
-// is a separate thing because the signal travels over the tmux socket rather than the pty. A fixed
-// sleep would be either flaky or slow, and this runs once per case in a corpus meant to grow.
+// Honestly: this is a guard whose necessity has not been demonstrated. The race it covers is real
+// in principle - the wait-for signal travels over the tmux socket while the bytes travel over the
+// pty, so nothing orders them - but the corpus was run 60 times with this removed and never
+// disagreed with a recording. It is kept because it costs about sixty milliseconds a case and the
+// alternative is a harness that is wrong rarely, which is the worst frequency to be wrong at.
+//
+// If it ever needs to earn its place properly, the thing to write is a case whose stream ends in a
+// large burst, and to show it failing without this.
 func settle(tm func(...string) (string, error)) error {
 	prev := ""
 	stable := 0
