@@ -10,7 +10,7 @@ PREFIX  ?= $(HOME)/.local
 BIN     ?= $(PREFIX)/bin
 LDFLAGS  = -X main.Version=$(VERSION)
 
-.PHONY: all build test race vet fmt acceptance install clean check
+.PHONY: all build test race vet fmt conform record acceptance install clean check
 
 all: build
 
@@ -36,8 +36,20 @@ fmt:
 acceptance:
 	bash scripts/acceptance.sh
 
+# conform runs the corpus against tmux: every case is driven through a real terminal emulator and
+# compared with the recording checked in beside it. It is separate from `test` because it needs
+# tmux, and it is in `check` because a corpus that is not run is a corpus that is not true.
+#
+# `make record` re-records the recordings from tmux, which is how the corpus grows. It is never
+# run automatically: a harness that records whatever it finds can never fail.
+conform:
+	go test ./internal/vt/conform/ -count=1
+
+record:
+	go test ./internal/vt/conform/ -count=1 -record -v
+
 # check is what to run before pushing.
-check: fmt vet test race acceptance
+check: fmt vet test race conform acceptance
 
 install: build
 	install -Dm755 bin/gozellijd $(BIN)/gozellijd

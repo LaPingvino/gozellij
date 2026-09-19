@@ -1,0 +1,8 @@
+# size 80x24
+# A real editor drawing a real screen: alt screen, a scrolling region, tildes down the left for
+# the rows past the end of the buffer, and a status line vim believes it owns.
+#
+# Captured with `script -qec "stty rows 24 cols 80; vim -u NONE -N -c 'syntax off' file"`, killed
+# rather than quit - a clean quit ends with vim tearing the alt screen down, which would leave
+# almost nothing to compare.
+# include vim.raw

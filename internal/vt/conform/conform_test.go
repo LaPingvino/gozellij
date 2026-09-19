@@ -276,3 +276,21 @@ func TestACorruptedCursorIsCaught(t *testing.T) {
 		t.Fatalf("got %v, want one cursor difference", diffs)
 	}
 }
+
+// A recording must stay a text file even when the screen contains a control byte - a terminal
+// reply that a capture echoed back, for instance. Writing the raw byte would make the file
+// something a pager mangles and a reviewer skims.
+func TestRecordingsEscapeControlBytes(t *testing.T) {
+	want := Screen{Cols: 20, Rows: 1, Lines: []string{"a\x1b[2Rb\\c"}}
+	text := want.String()
+	if strings.ContainsAny(text, "\x1b") {
+		t.Fatalf("a raw escape byte was written to the recording: %q", text)
+	}
+	got, err := ParseScreen(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Lines[0] != want.Lines[0] {
+		t.Fatalf("round trip changed the row: %q -> %q", want.Lines[0], got.Lines[0])
+	}
+}

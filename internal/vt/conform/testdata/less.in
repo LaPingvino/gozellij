@@ -1,0 +1,3 @@
+# size 80x24
+# A pager: alt screen, a screenful of lines, and the prompt it leaves on the last row.
+# include less.raw

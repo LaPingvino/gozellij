@@ -51,11 +51,17 @@ func Record(c Case) (Screen, error) {
 		return string(out), nil
 	}
 
-	// cat, then signal, then sleep, in one shell. The pane must stay alive after the bytes are
-	// drawn, because a pane that exits takes the screen with it and there would be nothing to
-	// capture; the signal in the middle is what says the bytes have all been written.
+	// stty -echo, then cat, then signal, then sleep, in one shell. The pane must stay alive after
+	// the bytes are drawn, because a pane that exits takes the screen with it and there would be
+	// nothing to capture; the signal in the middle is what says the bytes have all been written.
+	//
+	// The -echo is not tidiness. A real program's output contains device queries - vim asks for
+	// the cursor position and the terminal's identity - and tmux answers them on the pty. With
+	// echo on, the pane's own terminal discipline writes those answers back to the screen, and a
+	// recording of vim came out with `^[[2;2R^[[3;1R^[[>84;0;0c` drawn across its first row. The
+	// oracle was recording its own replies as if they were the program's output.
 	if _, err := tm("new-session", "-d", "-x", strconv.Itoa(c.Cols), "-y", strconv.Itoa(c.Rows),
-		"sh", "-c", fmt.Sprintf("cat %s; %s -S %s wait-for -S %s; sleep 300", in, tmux, sock, doneSignal)); err != nil {
+		"sh", "-c", fmt.Sprintf("stty -echo; cat %s; %s -S %s wait-for -S %s; sleep 300", in, tmux, sock, doneSignal)); err != nil {
 		return Screen{}, err
 	}
 	defer tm("kill-server")

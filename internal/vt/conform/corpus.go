@@ -51,6 +51,11 @@ func LoadCase(path string) (Case, error) {
 	if err != nil {
 		return Case{}, fmt.Errorf("%s: %w", path, err)
 	}
+	raw, err := included(text, filepath.Dir(path))
+	if err != nil {
+		return Case{}, fmt.Errorf("%s: %w", path, err)
+	}
+	input = append(input, raw...)
 	name := strings.TrimSuffix(filepath.Base(path), ".in")
 	return Case{Name: name, Cols: cols, Rows: rows, Input: input}, nil
 }
@@ -81,4 +86,32 @@ func size(text string) (cols, rows int, err error) {
 		return cols, rows, nil
 	}
 	return 0, 0, fmt.Errorf("no `# size <cols>x<rows>` line")
+}
+
+// included appends the bytes of any `# include <file>` line.
+//
+// A capture of a real program is thousands of bytes of escape sequences, and escaping those into a
+// .in file would produce something no one can review and a diff no one can read. So the readable
+// header stays in the .in file and the payload sits beside it as raw bytes - which is also exactly
+// what a terminal received, with nothing in between to get wrong.
+func included(text, dir string) ([]byte, error) {
+	var out []byte
+	for _, line := range strings.Split(text, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "# include ")
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(rest)
+		if name == "" || strings.Contains(name, "/") {
+			// A plain name beside the case. A path would make a corpus that only works from
+			// one directory, and "../" would make it a way to read anything.
+			return nil, fmt.Errorf("include takes a file name beside the case, not %q", name)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	return out, nil
 }

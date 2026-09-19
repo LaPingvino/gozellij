@@ -1,0 +1,4 @@
+# size 80x24
+# A directory listing with wide characters and a combining accent in the file names. This is the
+# case that fails first when an emulator measures text in bytes or in runes instead of columns.
+# include cjkls.raw
