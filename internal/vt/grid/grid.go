@@ -42,7 +42,21 @@ type Term struct {
 	alt      [][]vt.Cell
 	altSaved vt.Cursor
 	onAlt    bool
+
+	// history is what has scrolled off the top of the primary screen, oldest first.
+	history []([]vt.Cell)
+	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
+	// scrollback the moment it takes over the terminal, which is the most visible way to be worse
+	// than what it replaced.
+	limit int
 }
+
+// DefaultScrollback is how many scrolled-off lines a terminal keeps.
+//
+// tmux's own default is 2000 and this matches it rather than inventing a number: the corpus is
+// recorded against tmux, and a different limit would make every long case disagree for a reason
+// that is about the setting rather than about the emulator.
+const DefaultScrollback = 2000
 
 // New makes a terminal of the given size with an empty grid.
 func New(cols, rows int) *Term {
@@ -52,7 +66,7 @@ func New(cols, rows int) *Term {
 	if rows < 1 {
 		rows = 1
 	}
-	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1}
+	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1, limit: DefaultScrollback}
 	t.cur.Visible = true
 	t.cells = make([][]vt.Cell, rows)
 	for r := range t.cells {
@@ -246,8 +260,78 @@ func (t *Term) lineFeed() {
 
 func (t *Term) scrollUp(n int) {
 	for i := 0; i < n; i++ {
+		// The row leaving the top becomes the blank row arriving at the bottom, rather than one
+		// being freed and another allocated. A login shell scrolls hundreds of thousands of
+		// times; that is hundreds of thousands of rows of garbage for no reason.
+		//
+		// It is also what makes remember's copy load-bearing rather than decorative: the row it
+		// is handed is about to be blanked and put back on the screen, so keeping the slice
+		// itself would leave the user's scrollback aliasing live cells. A sabotage that stores
+		// the row directly now fails four cases; before this it failed none.
+		recycled := t.cells[t.top]
+		t.remember(recycled)
 		copy(t.cells[t.top:t.bottom], t.cells[t.top+1:t.bottom+1])
-		t.cells[t.bottom] = blankRow(t.cols)
+		blank(recycled)
+		t.cells[t.bottom] = recycled
+	}
+}
+
+// blank clears a row in place.
+func blank(row []vt.Cell) {
+	for i := range row {
+		row[i] = vt.Cell{Content: " ", Width: 1}
+	}
+}
+
+// remember puts a line into the scrollback.
+//
+// One exclusion, and it is the important one: the alternate screen. A program scrolling its own
+// full-screen display must not pour vim's redraws into the user's history, which is why the
+// alternate screen exists at all.
+//
+// Scrolling regions are NOT excluded, and that is the oracle's answer rather than mine. Two cases
+// were written asserting that a region would not feed history - one with the region at the top of
+// the screen, one with two rows still visible above it - and tmux put the lines in history both
+// times. This is a place where terminals genuinely differ; gozellij matches the one it is recorded
+// against and the one its users already have in their fingers. scrollregion and scrollregion-low
+// are those two cases, kept because they are the evidence.
+func (t *Term) remember(line []vt.Cell) {
+	if t.onAlt || t.limit <= 0 {
+		return
+	}
+	kept := make([]vt.Cell, len(line))
+	copy(kept, line)
+	t.history = append(t.history, kept)
+	if len(t.history) > t.limit {
+		// Drop from the front. Copying the slice header forward would keep the whole backing
+		// array alive for as long as the pane exists, which for a long-running login shell is
+		// the difference between a bounded scrollback and a leak wearing its costume.
+		drop := len(t.history) - t.limit
+		t.history = append(t.history[:0], t.history[drop:]...)
+	}
+}
+
+// Scrollback is what has scrolled off the top, oldest first.
+//
+// A copy: the caller is a renderer or a test, and handing out the live slices would let either of
+// them edit a user's history by accident.
+func (t *Term) Scrollback() [][]vt.Cell {
+	out := make([][]vt.Cell, len(t.history))
+	for i, line := range t.history {
+		out[i] = make([]vt.Cell, len(line))
+		copy(out[i], line)
+	}
+	return out
+}
+
+// SetScrollback changes how many lines are kept, dropping the oldest if that is fewer.
+func (t *Term) SetScrollback(n int) {
+	if n < 0 {
+		n = 0
+	}
+	t.limit = n
+	if len(t.history) > n {
+		t.history = append(t.history[:0], t.history[len(t.history)-n:]...)
 	}
 }
 

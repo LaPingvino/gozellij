@@ -1,0 +1,6 @@
+# size 20x5
+# More lines than the screen holds. The eight that scroll off the top are the user's scrollback,
+# and an emulator that draws the last four correctly while losing them is worse than the terminal
+# it replaced.
+\e[H\e[2J
+line-1\r\nline-2\r\nline-3\r\nline-4\r\nline-5\r\nline-6\r\nline-7\r\nline-8\r\nline-9\r\nline-10\r\nline-11\r\nline-12

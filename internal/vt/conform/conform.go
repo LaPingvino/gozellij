@@ -52,8 +52,12 @@ type Case struct {
 type Screen struct {
 	Cols, Rows int
 	Lines      []string
-	CursorRow  int
-	CursorCol  int
+	// History is what has scrolled off the top, oldest first. A multiplexer that owns the grid
+	// owns this too: it is the user's scrollback, and losing it is the most visible way to be
+	// worse than the terminal you replaced.
+	History   []string
+	CursorRow int
+	CursorCol int
 
 	// cells is the grid laid out by column, when the screen came from an emulator rather than
 	// from a recording: cells[row][col] is what is drawn in that column, and a wide character's
@@ -65,6 +69,8 @@ type Screen struct {
 	// hand over text, so the recording's columns are still derived with RuneWidth - but the
 	// emulator's side is now its own geometry, which is the thing under test.
 	cells [][]string
+	// histCells is History the same way, when the screen came from an emulator.
+	histCells [][]string
 }
 
 // ScreenOf renders a terminal's grid the way the oracle records one.
@@ -81,6 +87,16 @@ func ScreenOf(t vt.Terminal) Screen {
 		// alternative was to throw the distinction away on the tmux side, which would have made
 		// the one case that tests it untestable.
 		s.CursorCol = cols
+	}
+	if sb, ok := t.(Scrollbacker); ok {
+		for _, row := range sb.Scrollback() {
+			cells := make([]string, len(row))
+			for i, c := range row {
+				cells[i] = c.Content
+			}
+			s.histCells = append(s.histCells, trimBlanks(cells))
+			s.History = append(s.History, "")
+		}
 	}
 	for _, row := range t.Snapshot() {
 		cells := make([]string, len(row))
@@ -111,6 +127,20 @@ func trimBlanks(cells []string) []string {
 	return cells
 }
 
+// historyAt is one scrolled-off row laid out by display column.
+func (s Screen) historyAt(row int) ([]string, bool) {
+	if s.histCells != nil {
+		if row >= len(s.histCells) {
+			return nil, false
+		}
+		return s.histCells[row], true
+	}
+	if row >= len(s.History) {
+		return nil, false
+	}
+	return columns(s.History[row]), true
+}
+
 // columnsAt is one row laid out by display column, however the screen arrived: from an emulator's
 // grid directly, or derived from a recording's text.
 func (s Screen) columnsAt(row int) ([]string, bool) {
@@ -124,6 +154,16 @@ func (s Screen) columnsAt(row int) ([]string, bool) {
 		return nil, false
 	}
 	return columns(s.Lines[row]), true
+}
+
+// Scrollbacker is an emulator that keeps what scrolled off the top.
+//
+// Optional rather than part of vt.Terminal: an emulator for a pane that is only ever a live view -
+// the status line's, say - has no business keeping history, and requiring it would be requiring a
+// misfeature. An implementation that does not keep scrollback simply is not compared on it, which
+// the corpus makes visible because the recording still has the lines.
+type Scrollbacker interface {
+	Scrollback() [][]vt.Cell
 }
 
 // A Difference is one disagreement, named precisely enough to act on without rerunning anything.
@@ -180,12 +220,44 @@ func Diff(want, got Screen) []Difference {
 		diffs = append(diffs, diffColumns(row, w, g)...)
 	}
 
+	// Scrollback, oldest first. Compared after the screen because a disagreement here is usually
+	// a consequence of one up there, and reading the cause first is the point of ordering a bug
+	// report at all.
+	if len(want.History) != len(got.History) && want.histCells == nil && got.histCells == nil {
+		diffs = append(diffs, Difference{Row: -1, Col: -1, What: "scrollback length",
+			Want: fmt.Sprintf("%d lines", len(want.History)),
+			Got:  fmt.Sprintf("%d lines", len(got.History))})
+	}
+	hn := max(want.historyCount(), got.historyCount())
+	for row := 0; row < hn; row++ {
+		w, wok := want.historyAt(row)
+		g, gok := got.historyAt(row)
+		switch {
+		case !gok:
+			diffs = append(diffs, Difference{Row: -1, Col: -1, What: fmt.Sprintf("scrollback line %d is missing", row), Want: strings.Join(w, "")})
+		case !wok:
+			diffs = append(diffs, Difference{Row: -1, Col: -1, What: fmt.Sprintf("scrollback line %d was not expected", row), Got: strings.Join(g, "")})
+		default:
+			for _, d := range diffColumns(row, w, g) {
+				d.What = "scrollback " + d.What
+				diffs = append(diffs, d)
+			}
+		}
+	}
+
 	if want.CursorRow != got.CursorRow || want.CursorCol != got.CursorCol {
 		diffs = append(diffs, Difference{Row: -1, Col: -1, What: "cursor",
 			Want: fmt.Sprintf("%d,%d", want.CursorRow, want.CursorCol),
 			Got:  fmt.Sprintf("%d,%d", got.CursorRow, got.CursorCol)})
 	}
 	return diffs
+}
+
+func (s Screen) historyCount() int {
+	if s.histCells != nil {
+		return len(s.histCells)
+	}
+	return len(s.History)
 }
 
 func (s Screen) rowCount() int {

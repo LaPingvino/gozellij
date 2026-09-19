@@ -1,0 +1,10 @@
+# size 20x5
+# A scrolling region whose top IS the top of the screen. The lines leaving it have left the screen,
+# so they go to the scrollback.
+#
+# This case was written to assert the opposite - that a region never feeds history - and tmux said
+# otherwise on the first recording. The rule is about where the region starts, not about whether it
+# covers everything. See scrollregion-low for the other half.
+\e[H\e[2Jkeep-a\r\nkeep-b\r\nkeep-c\r\nkeep-d
+\e[1;3r\e[3;1Hrgn-1\r\nrgn-2\r\n
+\e[r

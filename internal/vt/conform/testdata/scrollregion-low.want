@@ -1,0 +1,10 @@
+cols 20
+rows 5
+cursor 0 0
+hist mid-c
+hist mid-d
+row top-a
+row top-b
+row push-1
+row push-2
+row

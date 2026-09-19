@@ -73,6 +73,14 @@ func Unescape(s string) ([]byte, error) {
 func (s Screen) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cols %d\nrows %d\ncursor %d %d\n", s.Cols, s.Rows, s.CursorRow, s.CursorCol)
+	for _, l := range s.History {
+		l = escapeRow(l)
+		if l == "" {
+			b.WriteString("hist\n")
+			continue
+		}
+		fmt.Fprintf(&b, "hist %s\n", l)
+	}
 	for _, l := range s.Lines {
 		l = escapeRow(l)
 		if l == "" {
@@ -111,6 +119,10 @@ func ParseScreen(text string) (Screen, error) {
 				s.CursorCol, err = strconv.Atoi(col)
 			}
 			sawCursor = true
+		case "hist":
+			var line string
+			line, err = unescapeRow(rest)
+			s.History = append(s.History, line)
 		case "row":
 			// Exactly one space after the keyword is the separator; anything beyond it is
 			// content, so a row that genuinely starts with a space survives the round trip.

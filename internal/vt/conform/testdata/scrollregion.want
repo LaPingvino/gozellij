@@ -1,0 +1,10 @@
+cols 20
+rows 5
+cursor 0 0
+hist keep-a
+hist keep-b
+row rgn-1c
+row rgn-2
+row
+row keep-d
+row

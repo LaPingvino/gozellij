@@ -1,0 +1,9 @@
+# size 20x5
+# A scrolling region that does NOT start at the top of the screen. The line leaving the region has
+# not left the screen - rows above the region are still showing - so nothing goes to the scrollback.
+#
+# The other half of scrollregion, and written because the oracle contradicted the assumption behind
+# that case rather than because the rule was known in advance.
+\e[H\e[2Jtop-a\r\ntop-b\r\nmid-c\r\nmid-d\r\nmid-e
+\e[3;5r\e[5;1Hpush-1\r\npush-2\r\n
+\e[r

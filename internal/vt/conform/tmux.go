@@ -43,8 +43,17 @@ func Record(c Case) (Screen, error) {
 	}
 	sock := filepath.Join(dir, "sock")
 
+	// A fixed configuration, never the user's. tmux reads ~/.tmux.conf by default, so a recording
+	// made here would carry whatever that file says - and on the machine this corpus was first
+	// recorded on it says `set -g history-limit 0`, which silently made every recording of
+	// scrollback empty. A corpus that depends on whose laptop it was taken on is not an oracle.
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte(tmuxConfig), 0o600); err != nil {
+		return Screen{}, err
+	}
+
 	tm := func(args ...string) (string, error) {
-		out, err := exec.Command(tmux, append([]string{"-S", sock}, args...)...).CombinedOutput()
+		out, err := exec.Command(tmux, append([]string{"-f", conf, "-S", sock}, args...)...).CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("tmux %s: %v: %s", strings.Join(args, " "), err, out)
 		}
@@ -77,6 +86,27 @@ func Record(c Case) (Screen, error) {
 	if err != nil {
 		return Screen{}, err
 	}
+	// Everything above the visible screen: the user's scrollback, recorded because an emulator
+	// that draws the screen correctly while losing what scrolled off is worse than the terminal it
+	// replaced.
+	//
+	// The size is asked for first and the capture skipped when it is zero. `capture-pane -S - -E
+	// -1` on a pane with no history does not return nothing - it returns the first *visible* line,
+	// which quietly gave every case in the corpus one line of scrollback that was never there.
+	var hist string
+	size, err := tm("display", "-p", "#{history_size}")
+	if err != nil {
+		return Screen{}, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(size))
+	if err != nil {
+		return Screen{}, fmt.Errorf("tmux reported the history size as %q", size)
+	}
+	if n > 0 {
+		if hist, err = tm("capture-pane", "-p", "-S", "-"+strconv.Itoa(n), "-E", "-1"); err != nil {
+			return Screen{}, err
+		}
+	}
 	pos, err := tm("display", "-p", "#{cursor_y} #{cursor_x}")
 	if err != nil {
 		return Screen{}, err
@@ -104,8 +134,21 @@ func Record(c Case) (Screen, error) {
 		lines = append(lines, "")
 	}
 	s.Lines = lines[:c.Rows]
+
+	if h := strings.TrimRight(hist, "\n"); h != "" {
+		s.History = strings.Split(h, "\n")
+	}
 	return s, nil
 }
+
+// tmuxConfig is the terminal the corpus is recorded against.
+//
+// Written out rather than relying on defaults so that a recording says what it was made with. Only
+// what changes a screen belongs here.
+const tmuxConfig = `# Written by internal/vt/conform. Not the user's configuration, deliberately.
+set -g history-limit 1000
+set -g default-terminal "xterm-256color"
+`
 
 // doneSignal is the tmux wait-for channel the pane signals once it has written everything.
 const doneSignal = "conform-written"
