@@ -35,6 +35,13 @@ type Term struct {
 	bottom int
 
 	parser parser
+
+	// alt is the alternate screen buffer: the one full-screen programs draw on so that what was
+	// on the terminal before them comes back when they exit. Kept as a whole spare grid rather
+	// than as a flag, because that is what it is - switching is swapping which grid is live.
+	alt      [][]vt.Cell
+	altSaved vt.Cursor
+	onAlt    bool
 }
 
 // New makes a terminal of the given size with an empty grid.
@@ -90,6 +97,62 @@ func (t *Term) Snapshot() [][]vt.Cell {
 
 func (t *Term) Close() error { return nil }
 
+// enterAlt switches to the alternate screen, saving the cursor and the primary grid.
+//
+// The saved cursor is separate from the DECSC slot on purpose. Mode 1049 saves the cursor as part
+// of switching, and a program that also uses DECSC while on the alternate screen must not clobber
+// the position its own exit depends on. One save slot shared between the two is the defect the
+// status line has lived with all along, and it is not being reproduced here.
+func (t *Term) enterAlt(save bool) {
+	if t.onAlt {
+		return
+	}
+	if save {
+		t.altSaved = t.cur
+	}
+	t.alt = t.cells
+	// A fresh grid, which is also the clearing that mode 1049 specifies: there is nothing to
+	// erase afterwards. An explicit eraseAll() was here until a sabotage showed that removing it
+	// changed no case - it could not, because these rows have never been written to.
+	t.cells = make([][]vt.Cell, t.rows)
+	for r := range t.cells {
+		t.cells[r] = blankRow(t.cols)
+	}
+	t.onAlt = true
+}
+
+// leaveAlt switches back, putting the primary grid and its cursor where they were.
+func (t *Term) leaveAlt(restore bool) {
+	if !t.onAlt {
+		return
+	}
+	// A plain swap. The invariant that both grids are always the current size is kept by Resize,
+	// which resizes the hidden one too - and having the fix in both places meant neither could be
+	// shown to matter: disabling either alone changed no test, because the other covered it. One
+	// mechanism that a sabotage can reach is worth more than two that hide each other.
+	t.cells = t.alt
+	t.alt = nil
+	t.onAlt = false
+	if restore {
+		t.cur = t.altSaved
+		t.cur.Row = min(t.cur.Row, t.rows-1)
+		t.cur.Col = min(t.cur.Col, t.cols-1)
+	}
+	t.pend = false
+}
+
+// resizeCells fits a grid to a size, keeping what still fits and blanking the rest.
+func resizeCells(cells [][]vt.Cell, cols, rows int) [][]vt.Cell {
+	out := make([][]vt.Cell, rows)
+	for r := 0; r < rows; r++ {
+		out[r] = blankRow(cols)
+		if r < len(cells) {
+			copy(out[r], cells[r][:min(cols, len(cells[r]))])
+		}
+	}
+	return out
+}
+
 // Resize changes the grid size, keeping what still fits.
 //
 // No reflow: a line that was wrapped stays broken where it was. That is a real difference from
@@ -99,14 +162,14 @@ func (t *Term) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
 		return nil
 	}
-	cells := make([][]vt.Cell, rows)
-	for r := 0; r < rows; r++ {
-		cells[r] = blankRow(cols)
-		if r < len(t.cells) {
-			copy(cells[r], t.cells[r][:min(cols, t.cols)])
-		}
+	t.cells = resizeCells(t.cells, cols, rows)
+	if t.alt != nil {
+		// The buffer that is not being shown is resized too. A program that is on the alternate
+		// screen when the window changes still expects its shell's screen to be the right shape
+		// when it exits.
+		t.alt = resizeCells(t.alt, cols, rows)
 	}
-	t.cells, t.cols, t.rows = cells, cols, rows
+	t.cols, t.rows = cols, rows
 	t.top, t.bottom = 0, rows-1
 	t.cur.Row = min(t.cur.Row, rows-1)
 	t.cur.Col = min(t.cur.Col, cols-1)

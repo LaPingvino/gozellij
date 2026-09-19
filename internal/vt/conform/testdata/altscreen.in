@@ -1,0 +1,12 @@
+# size 20x5
+# The alternate screen, in and out. Nothing else in the corpus leaves it: the vim and less captures
+# were killed while still on it, so they test entering and never restoring - which is the half that
+# makes "your shell comes back when you quit vim" work.
+#
+# Write on the primary screen, switch (which saves the cursor and clears), write something else,
+# switch back. The primary text and the cursor must both be where they were, and nothing written on
+# the alternate screen may survive.
+\e[H\e[2Jkept-one\r\nkept-two\r\n\e[2;4H
+\e[?1049h
+OVERWRITTEN\r\nalso-gone
+\e[?1049l

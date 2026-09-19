@@ -1,0 +1,9 @@
+# size 20x5
+# Entering the alternate screen and staying there, with the primary screen full.
+#
+# The corpus needs this because the other alternate-screen cases leave, and what is on the screen
+# afterwards is the primary grid - so an emulator that never clears on entry passes them both. Here
+# the alternate screen is what is being looked at, and the rows the program did not write must be
+# blank rather than showing what the shell left behind.
+\e[H\e[2Jprimary-one\r\nprimary-two\r\nprimary-three\r\nprimary-four
+\e[?1049h\e[2;1Honly-this-line

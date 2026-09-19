@@ -1,0 +1,7 @@
+# size 20x5
+# Entering the alternate screen, drawing, and leaving after the screen has been scrolled by the
+# program on it. The primary grid must come back unscrolled: it is a separate buffer, not the same
+# one with a bookmark.
+\e[H\e[2Jbase-a\r\nbase-b\r\nbase-c
+\e[?1049h\e[Halt\r\n\e[5;1H\e[3S
+\e[?1049l

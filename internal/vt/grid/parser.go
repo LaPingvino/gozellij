@@ -176,9 +176,35 @@ func (p *parser) dispatch(t *Term, final byte) {
 		// Private modes: DECTCEM is the only one that changes the screen we compare.
 		switch final {
 		case 'h', 'l':
+			set := final == 'h'
 			for _, n := range params(string(p.params[1:])) {
-				if n == 25 {
-					t.cur.Visible = final == 'h'
+				switch n {
+				case 25:
+					t.cur.Visible = set
+				case 47, 1047:
+					// The plain alternate screen: no cursor saving of its own.
+					if set {
+						t.enterAlt(false)
+					} else {
+						t.leaveAlt(false)
+					}
+				case 1048:
+					// Save or restore the cursor, without switching anything.
+					if set {
+						t.altSaved = t.cur
+					} else {
+						t.cur = t.altSaved
+						t.pend = false
+					}
+				case 1049:
+					// The one everything actually uses: save the cursor, switch, clear. vim,
+					// less, htop and top all begin with this and end with its opposite, which is
+					// why "your shell comes back when you quit vim" works at all.
+					if set {
+						t.enterAlt(true)
+					} else {
+						t.leaveAlt(true)
+					}
 				}
 			}
 		}
