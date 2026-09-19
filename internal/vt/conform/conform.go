@@ -54,6 +54,17 @@ type Screen struct {
 	Lines      []string
 	CursorRow  int
 	CursorCol  int
+
+	// cells is the grid laid out by column, when the screen came from an emulator rather than
+	// from a recording: cells[row][col] is what is drawn in that column, and a wide character's
+	// second column is empty.
+	//
+	// It exists because comparing rendered text is not comparing a grid. An emulator that treats
+	// a wide character as one column wide produces exactly the same row of text as one that gets
+	// it right, and that sabotage passed the whole corpus until this field existed. tmux can only
+	// hand over text, so the recording's columns are still derived with RuneWidth - but the
+	// emulator's side is now its own geometry, which is the thing under test.
+	cells [][]string
 }
 
 // ScreenOf renders a terminal's grid the way the oracle records one.
@@ -66,16 +77,47 @@ func ScreenOf(t vt.Terminal) Screen {
 	cur := t.Cursor()
 	s := Screen{Cols: cols, Rows: rows, CursorRow: cur.Row, CursorCol: cur.Col}
 	for _, row := range t.Snapshot() {
+		cells := make([]string, len(row))
 		var b strings.Builder
-		for _, c := range row {
+		for i, c := range row {
+			cells[i] = c.Content
 			if c.Content == "" {
 				continue
 			}
 			b.WriteString(c.Content)
 		}
+		s.cells = append(s.cells, trimBlanks(cells))
 		s.Lines = append(s.Lines, strings.TrimRight(b.String(), " "))
 	}
 	return s
+}
+
+// trimBlanks drops the trailing cells that were never written, matching what capture-pane does to
+// the other side of every comparison.
+func trimBlanks(cells []string) []string {
+	for len(cells) > 0 {
+		last := cells[len(cells)-1]
+		if last != "" && last != " " {
+			break
+		}
+		cells = cells[:len(cells)-1]
+	}
+	return cells
+}
+
+// columnsAt is one row laid out by display column, however the screen arrived: from an emulator's
+// grid directly, or derived from a recording's text.
+func (s Screen) columnsAt(row int) ([]string, bool) {
+	if s.cells != nil {
+		if row >= len(s.cells) {
+			return nil, false
+		}
+		return s.cells[row], true
+	}
+	if row >= len(s.Lines) {
+		return nil, false
+	}
+	return columns(s.Lines[row]), true
 }
 
 // A Difference is one disagreement, named precisely enough to act on without rerunning anything.
@@ -117,22 +159,19 @@ func Diff(want, got Screen) []Difference {
 			Got:  fmt.Sprintf("%dx%d", got.Cols, got.Rows)})
 	}
 
-	n := len(want.Lines)
-	if len(got.Lines) > n {
-		n = len(got.Lines)
-	}
+	n := max(want.rowCount(), got.rowCount())
 	for row := 0; row < n; row++ {
-		w, wok := line(want.Lines, row)
-		g, gok := line(got.Lines, row)
+		w, wok := want.columnsAt(row)
+		g, gok := got.columnsAt(row)
 		switch {
 		case !gok:
-			diffs = append(diffs, Difference{Row: row, Col: -1, What: "row is missing", Want: w})
+			diffs = append(diffs, Difference{Row: row, Col: -1, What: "row is missing", Want: strings.Join(w, "")})
 			continue
 		case !wok:
-			diffs = append(diffs, Difference{Row: row, Col: -1, What: "row was not expected", Got: g})
+			diffs = append(diffs, Difference{Row: row, Col: -1, What: "row was not expected", Got: strings.Join(g, "")})
 			continue
 		}
-		diffs = append(diffs, diffRow(row, w, g)...)
+		diffs = append(diffs, diffColumns(row, w, g)...)
 	}
 
 	if want.CursorRow != got.CursorRow || want.CursorCol != got.CursorCol {
@@ -143,22 +182,17 @@ func Diff(want, got Screen) []Difference {
 	return diffs
 }
 
-func line(lines []string, i int) (string, bool) {
-	if i >= len(lines) {
-		return "", false
+func (s Screen) rowCount() int {
+	if s.cells != nil {
+		return len(s.cells)
 	}
-	return lines[i], true
+	return len(s.Lines)
 }
 
-// diffRow compares one row by display column, so that a wide character disagreeing is reported at
-// the column it is drawn in rather than at its offset in a byte string.
-func diffRow(row int, want, got string) []Difference {
-	w := columns(want)
-	g := columns(got)
-	n := len(w)
-	if len(g) > n {
-		n = len(g)
-	}
+// diffColumns compares one row column by column, so that a wide character disagreeing is reported
+// at the column it is drawn in rather than at its offset in a byte string.
+func diffColumns(row int, w, g []string) []Difference {
+	n := max(len(w), len(g))
 	var diffs []Difference
 	for col := 0; col < n; col++ {
 		var wc, gc string
