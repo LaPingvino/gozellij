@@ -438,3 +438,63 @@ func resizeFlags(wrapped []bool, used []int, rows int) ([]bool, []int) {
 	copy(u, used[:min(rows, len(used))])
 	return w, u
 }
+
+// Scrolled is a read-only view of this terminal with the screen moved back into its scrollback.
+//
+// A view rather than a mode: the terminal keeps running, its grid keeps being written to, and what
+// changes is only which rows somebody draws. A multiplexer that had to stop the world to let you
+// look at what scrolled past would be a worse terminal than the one it replaced - you would miss
+// the line you were waiting for while reading the line before it.
+//
+// offset is how many lines back the top of the view is. Zero is the live screen.
+func (t *Term) Scrolled(offset int) vt.Grid {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(t.history) {
+		offset = len(t.history)
+	}
+	return &view{term: t, offset: offset}
+}
+
+// MaxScroll is how far back this terminal can be scrolled.
+func (t *Term) MaxScroll() int { return len(t.history) }
+
+type view struct {
+	term   *Term
+	offset int
+}
+
+func (v *view) Size() (cols, rows int) { return v.term.cols, v.term.rows }
+
+// Cursor is hidden whenever the view is scrolled back: the cursor belongs to the live screen, and
+// drawing it among old lines would put it somewhere the next character will not appear.
+func (v *view) Cursor() vt.Cursor {
+	if v.offset == 0 {
+		return v.term.Cursor()
+	}
+	return vt.Cursor{Visible: false}
+}
+
+func (v *view) Snapshot() [][]vt.Cell {
+	if v.offset == 0 {
+		return v.term.Snapshot()
+	}
+	out := make([][]vt.Cell, 0, v.term.rows)
+	// The tail of the scrollback first, then as much of the live screen as still fits.
+	start := len(v.term.history) - v.offset
+	for i := start; i < len(v.term.history) && len(out) < v.term.rows; i++ {
+		row := make([]vt.Cell, v.term.cols)
+		copy(row, v.term.history[i].cells[:min(v.term.cols, len(v.term.history[i].cells))])
+		for c := len(v.term.history[i].cells); c < v.term.cols; c++ {
+			row[c] = vt.Cell{Content: " ", Width: 1}
+		}
+		out = append(out, row)
+	}
+	for r := 0; r < v.term.rows && len(out) < v.term.rows; r++ {
+		row := make([]vt.Cell, v.term.cols)
+		copy(row, v.term.cells[r])
+		out = append(out, row)
+	}
+	return out
+}

@@ -565,6 +565,40 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm renderdemo rendertwo >/dev/null 2>&1
 
+    # ------------------------------------------------ looking back through a rendered pane
+    #
+    # A rendered attach paints the whole screen, which takes the user's own terminal scrollback
+    # away: the lines that scrolled past are in the emulator's grid, not in the terminal's history.
+    # Giving them back is not a nicety, it is repairing something the mode broke.
+    "$gz" add scroller -start -- sh -c 'i=1; while [ $i -le 60 ]; do printf "row-%02d\r\n" $i; i=$((i+1)); done; sleep 120' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach scroller'"
+    sleep 3
+
+    live=$(pane | sed -n '8p')
+    tmux -L "$tmuxSock" send-keys C-] 'b'
+    sleep 1
+    back=$(pane | sed -n '8p')
+    if [ -n "$live" ] && [ "$back" != "$live" ] && pane | grep -q 'row-'; then
+        ok "Ctrl-] b looks back through a rendered pane's scrollback"
+    else
+        bad "scrolling back changed nothing: still $back"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] 'g'
+    sleep 1
+    if [ "$(pane | sed -n '8p')" = "$live" ]; then
+        ok "Ctrl-] g returns to the live screen"
+    else
+        bad "after Ctrl-] g the screen is $(pane | sed -n '8p'), want $live"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm scroller >/dev/null 2>&1
+
     # ------------------------------------- the emulator against tmux, on a real program, for real
     #
     # Everything else here checks that gozellij does what gozellij intends. This checks that its

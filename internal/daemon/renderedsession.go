@@ -37,11 +37,13 @@ type livePane struct {
 	// finished marks a service that has ended. Its pane stays on screen with its last output,
 	// because a pane that vanishes takes the error message with it.
 	finished bool
+	// scroll is how many lines back this pane is being looked at. Zero is live.
+	scroll int
 }
 
 // Rect, Grid and Service are what the painter needs of a pane.
 func (p *livePane) Rect() layout.Rect { return p.rect }
-func (p *livePane) Grid() vt.Grid     { return p.term }
+func (p *livePane) Grid() vt.Grid     { return p.term.Scrolled(p.scroll) }
 func (p *livePane) Service() string   { return p.service }
 
 // paneEvent is something a pane's connection had to say.
@@ -128,6 +130,20 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				go readFrames(p, events)
 				paint()
 
+			case outcomeScrollBack, outcomeScrollForward, outcomeScrollLive:
+				p := panes[focus]
+				_, rows := p.term.Size()
+				step := max(rows/2, 1)
+				switch want {
+				case outcomeScrollBack:
+					p.scroll = min(p.scroll+step, p.term.MaxScroll())
+				case outcomeScrollForward:
+					p.scroll = max(p.scroll-step, 0)
+				default:
+					p.scroll = 0
+				}
+				paint()
+
 			case outcomeFocus:
 				focus = (focus + 1) % len(panes)
 				paint()
@@ -158,6 +174,13 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			}
 			if len(ev.data) > 0 {
 				_, _ = ev.pane.term.Write(ev.data)
+				if ev.pane.scroll > 0 {
+					// Output while somebody is reading back pushes the lines they are looking at
+					// further into the scrollback, so the offset has to grow with it or the view
+					// slides forward under them. Capped, so a pane that scrolls faster than it
+					// has history does not walk off the top.
+					ev.pane.scroll = min(ev.pane.scroll+countNewlines(ev.data), ev.pane.term.MaxScroll())
+				}
 				paint()
 			}
 			if ev.finished {
@@ -327,4 +350,21 @@ func note(msg string) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
+}
+
+// countNewlines is how many lines a chunk of output is likely to have pushed onto the screen.
+//
+// An approximation, and a deliberate one: what actually scrolls depends on the escape sequences in
+// the chunk, and asking the emulator would mean asking it before and after every write. This keeps
+// a reader's place roughly still while a service is chattering, which is what the reader wants; it
+// does not claim to be exact, and the way to make it exact is for the grid to report how far it
+// scrolled, which is a change to make when something needs it.
+func countNewlines(b []byte) int {
+	n := 0
+	for _, c := range b {
+		if c == '\n' {
+			n++
+		}
+	}
+	return n
 }

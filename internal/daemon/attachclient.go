@@ -54,11 +54,17 @@ const (
 	outcomeSplit
 	outcomeFocus
 	outcomeClosePane
+	// outcomeScrollBack, outcomeScrollForward and outcomeScrollLive look through a pane's
+	// scrollback. Only a rendered session has any: a byte pipe leaves the scrollback to the
+	// user's own terminal, which is one of the things it is better at.
+	outcomeScrollBack
+	outcomeScrollForward
+	outcomeScrollLive
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split · o switch pane · x close pane · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -597,6 +603,18 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case 'x', 'X':
 					if !command(outcomeClosePane) {
+						return
+					}
+				case 'b', 'B':
+					if !command(outcomeScrollBack) {
+						return
+					}
+				case 'f', 'F':
+					if !command(outcomeScrollForward) {
+						return
+					}
+				case 'g', 'G':
+					if !command(outcomeScrollLive) {
 						return
 					}
 				case '?', 'h':
