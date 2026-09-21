@@ -98,11 +98,41 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 	for _, p := range cfg.Problems {
 		fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", p)
 	}
-	painter := newStatusPainter(screen, in, cfg, func() status.Context {
-		return StatusContext(socket, service)
-	})
-	defer painter.Close()
-	out = screen
+	// Two ways to put a screen on a terminal, and only one of them is on by default.
+	//
+	// The painter borrows: it writes a status line onto a terminal the service is also drawing
+	// on, which needs the terminal's single cursor-save slot and a scrolling region. The rendered
+	// screen owns: it interprets the service's output into a grid of its own and paints the
+	// result, so the status line is a row the service was never given. renderclient.go says why
+	// the borrowing one is still the default.
+	var (
+		painter  *statusPainter
+		rendered *renderedScreen
+	)
+	if renderEnabled() {
+		cols, rows := 0, 0
+		if term.IsTerminal(int(in.Fd())) {
+			cols, rows, _ = term.GetSize(int(in.Fd()))
+		}
+		reserved := 0
+		if cfg.Where == status.Bottom {
+			reserved = 1
+		}
+		if cols > 0 && rows > 0 {
+			rendered = newRenderedScreen(screen, cols, rows, reserved, statusLine(cfg, func() status.Context {
+				return StatusContext(socket, service)
+			}))
+			defer rendered.Close()
+			out = rendered
+		}
+	}
+	if rendered == nil {
+		painter = newStatusPainter(screen, in, cfg, func() status.Context {
+			return StatusContext(socket, service)
+		})
+		defer painter.Close()
+		out = screen
+	}
 
 	// A terminal that is closed, or a client that is told to stop, must still get its screen
 	// back. Without this the scrolling region stays set after the client is gone: the shell that
@@ -119,12 +149,34 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			return
 		}
 		painter.Close()
+		if rendered != nil {
+			_ = rendered.Close()
+		}
 		restore()
 		signal.Stop(fatal)
 		if s, isUnix := sig.(syscall.Signal); isUnix {
 			_ = syscall.Kill(os.Getpid(), s)
 		}
 	}()
+
+	if rendered != nil {
+		// The status line has a clock in it. Nothing in the service's output makes it tick, so
+		// something has to ask for a repaint; the painter had its own ticker for the same reason.
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			t := time.NewTicker(cfg.Every)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					_ = rendered.Repaint()
+				case <-stop:
+					return
+				}
+			}
+		}()
+	}
 
 	first := true
 	for {
@@ -144,7 +196,15 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			c = back
 		}
 
-		outcome, err := c.runSession(service, input, in, out, replay && first, painter.Reserved())
+		reserved := painter.Reserved()
+		if rendered != nil {
+			// The rendered screen keeps its own row back; the session only needs to know how
+			// many rows the service is not getting, so that a resize tells it the same thing.
+			_, srows := rendered.ServiceSize()
+			_, trows, _ := term.GetSize(int(in.Fd()))
+			reserved = trows - srows
+		}
+		outcome, err := c.runSession(service, input, in, out, replay && first, reserved)
 		c.Close()
 		if err != nil {
 			return err
@@ -642,6 +702,13 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 			w, h, err := term.GetSize(int(in.Fd()))
 			if err != nil || w <= 0 || h-reserved <= 0 {
 				continue
+			}
+			if r, ok := out.(*renderedScreen); ok {
+				// The grid has to change shape before the service is told, or the next output
+				// is drawn into a screen that is still the old size.
+				if rerr := r.Resize(w, h); rerr != nil {
+					return outcomeDisconnected, rerr
+				}
 			}
 			// Minus the reserved row here too, or a resize hands the service back the row the
 			// status line is standing on.

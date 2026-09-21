@@ -486,6 +486,45 @@ else
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
 
+    # ------------------------------------------------ the rendered attach, which owns the screen
+    #
+    # The default attach borrows the terminal: the status line needs its single cursor-save slot
+    # and a scrolling region, shared with a service that does not know it is sharing. With
+    # GOZELLIJ_RENDER=1 the client keeps a grid of its own and paints it, so the status line is a
+    # row the service was never given. The observable difference is the scrolling region: the
+    # borrowing one sets it, and this one must leave the whole screen alone.
+    "$gz" add renderdemo -start -- sh -c 'printf "RENDERED-OUTPUT-HERE\r\n"; sleep 120' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach renderdemo'"
+    sleep 3
+
+    if pane | grep -q 'RENDERED-OUTPUT-HERE'; then
+        ok "a rendered attach shows the service's output"
+    else
+        bad "the rendered attach drew no service output: $(pane | head -2)"
+    fi
+
+    if pane | sed -n '12p' | grep -q 'renderdemo'; then
+        ok "the rendered attach draws the status line on the last row"
+    else
+        bad "row 12 of the rendered screen is $(pane | sed -n '12p')"
+    fi
+
+    # The point of the whole exercise. A region of 0-11 on a twelve-row screen is the terminal
+    # untouched; the borrowing painter would have set 0-10 to keep the last row for itself.
+    region=$(ask '#{scroll_region_upper}-#{scroll_region_lower}')
+    if [ "$region" = "0-11" ]; then
+        ok "the rendered attach borrows no scrolling region (it is $region, the whole screen)"
+    else
+        bad "the rendered attach set a scrolling region: $region"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm renderdemo >/dev/null 2>&1
+
     # Not checked here: that attaching does not overwrite the line you typed the command on.
     #
     # It is a real bug when it happens - reserving the bottom row used to land the cursor on the
