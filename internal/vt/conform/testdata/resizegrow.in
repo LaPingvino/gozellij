@@ -1,0 +1,6 @@
+# size 12x3
+# Growing, then writing across the new width. A grid that was not grown properly indexes off the
+# end of a row here rather than drawing.
+\e[H\e[2Jsmall\r\nrows
+# resize 24x6
+\e[6;1H012345678901234567890123

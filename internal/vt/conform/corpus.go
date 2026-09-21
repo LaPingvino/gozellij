@@ -47,17 +47,16 @@ func LoadCase(path string) (Case, error) {
 	if err != nil {
 		return Case{}, fmt.Errorf("%s: %w", path, err)
 	}
-	input, err := Unescape(text)
+	steps, err := parseSteps(text, filepath.Dir(path))
 	if err != nil {
 		return Case{}, fmt.Errorf("%s: %w", path, err)
 	}
-	raw, err := included(text, filepath.Dir(path))
-	if err != nil {
-		return Case{}, fmt.Errorf("%s: %w", path, err)
+	var input []byte
+	for _, st := range steps {
+		input = append(input, st.Write...)
 	}
-	input = append(input, raw...)
 	name := strings.TrimSuffix(filepath.Base(path), ".in")
-	return Case{Name: name, Cols: cols, Rows: rows, Input: input}, nil
+	return Case{Name: name, Cols: cols, Rows: rows, Input: input, Steps: steps}, nil
 }
 
 // WantPath is where a case's recording lives.
@@ -70,22 +69,56 @@ func size(text string) (cols, rows int, err error) {
 		if !ok {
 			continue
 		}
-		c, r, ok := strings.Cut(strings.TrimSpace(rest), "x")
-		if !ok {
-			return 0, 0, fmt.Errorf("size must be written <cols>x<rows>")
-		}
-		if cols, err = strconv.Atoi(c); err != nil {
-			return 0, 0, fmt.Errorf("size columns %q: %w", c, err)
-		}
-		if rows, err = strconv.Atoi(r); err != nil {
-			return 0, 0, fmt.Errorf("size rows %q: %w", r, err)
-		}
-		if cols <= 0 || rows <= 0 {
-			return 0, 0, fmt.Errorf("size %dx%d is not a screen", cols, rows)
-		}
-		return cols, rows, nil
+		return parseSize(rest)
 	}
 	return 0, 0, fmt.Errorf("no `# size <cols>x<rows>` line")
+}
+
+// parseSteps reads a .in file in order, turning it into writes and resizes.
+//
+// Order is the whole point, so this cannot be the two independent passes that Unescape and
+// included were: `# resize 10x4` has to land between the bytes before it and the bytes after it.
+func parseSteps(text, dir string) ([]Step, error) {
+	var (
+		steps []Step
+		buf   []byte
+	)
+	flush := func() {
+		if len(buf) > 0 {
+			steps = append(steps, Step{Write: buf})
+			buf = nil
+		}
+	}
+	for n, raw := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if rest, ok := strings.CutPrefix(trimmed, "# resize "); ok {
+			cols, rows, err := parseSize(rest)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", n+1, err)
+			}
+			flush()
+			steps = append(steps, Step{Cols: cols, Rows: rows})
+			continue
+		}
+		if rest, ok := strings.CutPrefix(trimmed, "# include "); ok {
+			b, err := includedFile(rest, dir)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", n+1, err)
+			}
+			buf = append(buf, b...)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		b, err := Unescape(raw)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", n+1, err)
+		}
+		buf = append(buf, b...)
+	}
+	flush()
+	return steps, nil
 }
 
 // included appends the bytes of any `# include <file>` line.
@@ -94,24 +127,30 @@ func size(text string) (cols, rows int, err error) {
 // .in file would produce something no one can review and a diff no one can read. So the readable
 // header stays in the .in file and the payload sits beside it as raw bytes - which is also exactly
 // what a terminal received, with nothing in between to get wrong.
-func included(text, dir string) ([]byte, error) {
-	var out []byte
-	for _, line := range strings.Split(text, "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "# include ")
-		if !ok {
-			continue
-		}
-		name := strings.TrimSpace(rest)
-		if name == "" || strings.Contains(name, "/") {
-			// A plain name beside the case. A path would make a corpus that only works from
-			// one directory, and "../" would make it a way to read anything.
-			return nil, fmt.Errorf("include takes a file name beside the case, not %q", name)
-		}
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, b...)
+func includedFile(rest, dir string) ([]byte, error) {
+	name := strings.TrimSpace(rest)
+	if name == "" || strings.Contains(name, "/") {
+		// A plain name beside the case. A path would make a corpus that only works from one
+		// directory, and "../" would make it a way to read anything.
+		return nil, fmt.Errorf("include takes a file name beside the case, not %q", name)
 	}
-	return out, nil
+	return os.ReadFile(filepath.Join(dir, name))
+}
+
+// parseSize reads a <cols>x<rows> pair.
+func parseSize(s string) (cols, rows int, err error) {
+	c, r, ok := strings.Cut(strings.TrimSpace(s), "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("a size is written <cols>x<rows>")
+	}
+	if cols, err = strconv.Atoi(c); err != nil {
+		return 0, 0, fmt.Errorf("columns %q: %w", c, err)
+	}
+	if rows, err = strconv.Atoi(r); err != nil {
+		return 0, 0, fmt.Errorf("rows %q: %w", r, err)
+	}
+	if cols <= 0 || rows <= 0 {
+		return 0, 0, fmt.Errorf("%dx%d is not a screen", cols, rows)
+	}
+	return cols, rows, nil
 }

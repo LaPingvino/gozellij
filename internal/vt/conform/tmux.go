@@ -34,13 +34,6 @@ func Record(c Case) (Screen, error) {
 	}
 	defer os.RemoveAll(dir)
 
-	// The input goes through a file rather than the command line: a case is arbitrary bytes,
-	// including NUL and escape, and quoting those into a shell command is a way to test the
-	// quoting instead of the terminal.
-	in := filepath.Join(dir, "in")
-	if err := os.WriteFile(in, c.Input, 0o600); err != nil {
-		return Screen{}, err
-	}
 	sock := filepath.Join(dir, "sock")
 
 	// A fixed configuration, never the user's. tmux reads ~/.tmux.conf by default, so a recording
@@ -52,6 +45,38 @@ func Record(c Case) (Screen, error) {
 		return Screen{}, err
 	}
 
+	// Each write step goes through its own file rather than the command line: a case is arbitrary
+	// bytes, including NUL and escape, and quoting those into a shell command is a way to test the
+	// quoting instead of the terminal.
+	steps := c.Steps
+	if len(steps) == 0 {
+		steps = []Step{{Write: c.Input}}
+	}
+	var script strings.Builder
+	script.WriteString("stty -echo\n")
+	writes := 0
+	for i, st := range steps {
+		if st.IsResize() {
+			// The pane hands control back here and waits. A resize has to happen between two
+			// writes, and nothing else orders the tmux socket against the pty.
+			fmt.Fprintf(&script, "%s -S %s wait-for -S %s%d\n", tmux, sock, stepSignal, i)
+			fmt.Fprintf(&script, "%s -S %s wait-for %s%d\n", tmux, sock, goSignal, i)
+			continue
+		}
+		path := filepath.Join(dir, fmt.Sprintf("in%d", writes))
+		if err := os.WriteFile(path, st.Write, 0o600); err != nil {
+			return Screen{}, err
+		}
+		writes++
+		fmt.Fprintf(&script, "cat %s\n", path)
+	}
+	fmt.Fprintf(&script, "%s -S %s wait-for -S %s\nsleep 300\n", tmux, sock, doneSignal)
+
+	sh := filepath.Join(dir, "case.sh")
+	if err := os.WriteFile(sh, []byte(script.String()), 0o700); err != nil {
+		return Screen{}, err
+	}
+
 	tm := func(args ...string) (string, error) {
 		out, err := exec.Command(tmux, append([]string{"-f", conf, "-S", sock}, args...)...).CombinedOutput()
 		if err != nil {
@@ -60,9 +85,9 @@ func Record(c Case) (Screen, error) {
 		return string(out), nil
 	}
 
-	// stty -echo, then cat, then signal, then sleep, in one shell. The pane must stay alive after
-	// the bytes are drawn, because a pane that exits takes the screen with it and there would be
-	// nothing to capture; the signal in the middle is what says the bytes have all been written.
+	// The pane runs a generated script: write, hand back, wait, write again, and finally signal
+	// that everything has been written. It must stay alive after that, because a pane that exits
+	// takes the screen with it and there would be nothing to capture.
 	//
 	// The -echo is not tidiness. A real program's output contains device queries - vim asks for
 	// the cursor position and the terminal's identity - and tmux answers them on the pty. With
@@ -70,12 +95,28 @@ func Record(c Case) (Screen, error) {
 	// recording of vim came out with `^[[2;2R^[[3;1R^[[>84;0;0c` drawn across its first row. The
 	// oracle was recording its own replies as if they were the program's output.
 	if _, err := tm("new-session", "-d", "-x", strconv.Itoa(c.Cols), "-y", strconv.Itoa(c.Rows),
-		"sh", "-c", fmt.Sprintf("stty -echo; cat %s; %s -S %s wait-for -S %s; sleep 300", in, tmux, sock, doneSignal)); err != nil {
+		"sh", sh); err != nil {
 		return Screen{}, err
 	}
 	defer tm("kill-server")
 
-	if err := waitForWrites(tmux, sock); err != nil {
+	// Take the turns the script hands over: at each resize it stops and waits to be told to go on.
+	for i, st := range steps {
+		if !st.IsResize() {
+			continue
+		}
+		if err := waitFor(tmux, sock, fmt.Sprintf("%s%d", stepSignal, i)); err != nil {
+			return Screen{}, err
+		}
+		if _, err := tm("resize-window", "-x", strconv.Itoa(st.Cols), "-y", strconv.Itoa(st.Rows)); err != nil {
+			return Screen{}, err
+		}
+		if _, err := tm("wait-for", "-S", fmt.Sprintf("%s%d", goSignal, i)); err != nil {
+			return Screen{}, err
+		}
+	}
+
+	if err := waitFor(tmux, sock, doneSignal); err != nil {
 		return Screen{}, err
 	}
 	if err := settle(tm); err != nil {
@@ -124,7 +165,13 @@ func Record(c Case) (Screen, error) {
 	if !ok {
 		return Screen{}, fmt.Errorf("tmux reported the cursor as %q", pos)
 	}
-	s := Screen{Cols: c.Cols, Rows: c.Rows}
+	cols, rows := c.Cols, c.Rows
+	for _, st := range c.Steps {
+		if st.IsResize() {
+			cols, rows = st.Cols, st.Rows
+		}
+	}
+	s := Screen{Cols: cols, Rows: rows}
 	if s.CursorRow, err = strconv.Atoi(row); err != nil {
 		return Screen{}, fmt.Errorf("cursor row %q: %w", row, err)
 	}
@@ -139,14 +186,14 @@ func Record(c Case) (Screen, error) {
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil
 	}
-	for len(lines) < c.Rows {
+	for len(lines) < rows {
 		lines = append(lines, "")
 	}
-	s.Lines = lines[:c.Rows]
+	s.Lines = lines[:rows]
 
 	styledLines := strings.Split(strings.TrimRight(styled, "\n"), "\n")
 	styles := styledScreen(styledLines)
-	for r := 0; r < c.Rows; r++ {
+	for r := 0; r < rows; r++ {
 		if r < len(styles) {
 			s.Styles = append(s.Styles, styles[r])
 			continue
@@ -169,8 +216,12 @@ set -g history-limit 1000
 set -g default-terminal "xterm-256color"
 `
 
-// doneSignal is the tmux wait-for channel the pane signals once it has written everything.
-const doneSignal = "conform-written"
+// The tmux wait-for channels the pane and the recorder take turns on.
+const (
+	doneSignal = "conform-written"
+	stepSignal = "conform-step"
+	goSignal   = "conform-go"
+)
 
 // waitForWrites blocks until the pane has finished writing the case.
 //
@@ -181,12 +232,12 @@ const doneSignal = "conform-written"
 // package itself on its first run.
 //
 // tmux wait-for is signalled by the pane's own shell after cat returns, so it cannot fire early.
-func waitForWrites(tmux, sock string) error {
+func waitFor(tmux, sock, channel string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, tmux, "-S", sock, "wait-for", doneSignal).CombinedOutput()
+	out, err := exec.CommandContext(ctx, tmux, "-S", sock, "wait-for", channel).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("waiting for the case to be written: %v: %s", err, out)
+		return fmt.Errorf("waiting on %s: %v: %s", channel, err, out)
 	}
 	return nil
 }

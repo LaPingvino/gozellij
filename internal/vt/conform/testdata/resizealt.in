@@ -1,0 +1,10 @@
+# size 20x5
+# Resizing while a full-screen program owns the terminal, then leaving it.
+#
+# This is the case that had no way of being written before, and the bug it covers was real: the
+# hidden primary buffer was being truncated the moment the window changed, so the shell's screen
+# came back with the middle cut out of its lines. Short lines again, so reflow is not in question.
+\e[H\e[2Jshell-one\r\nshell-two\r\nshell-three
+\e[?1049h\e[H\e[2Jfullscreen-app
+# resize 12x4
+\e[?1049l

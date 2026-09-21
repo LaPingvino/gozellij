@@ -44,11 +44,31 @@ import (
 // A Case is one input to drive a terminal with, at a known size.
 type Case struct {
 	Name string
-	// Cols and Rows are the size of the screen the case expects.
+	// Cols and Rows are the size the screen starts at.
 	Cols, Rows int
-	// Input is what is written to the terminal, already unescaped.
+	// Input is everything the case writes, already unescaped. It is the concatenation of the
+	// Steps' bytes, kept because split-invariance replays a case as one stream.
 	Input []byte
+	// Steps is the case as an ordered script: write these bytes, then change to that size, then
+	// write these. A case with no resize in it is a single step and reads exactly as before.
+	Steps []Step
 }
+
+// A Step is one thing a case does.
+//
+// Resize is a separate step rather than an escape sequence because it is not one: the size of a
+// terminal changes from outside, through SIGWINCH, and an emulator finds out by being told. The
+// corpus could not express it at all until now, which left every resize in this project tested
+// against what a terminal is specified to do rather than against what one does.
+type Step struct {
+	// Write is the bytes to write, when this is a write step.
+	Write []byte
+	// Cols and Rows are the new size, when this is a resize step. Both zero means a write.
+	Cols, Rows int
+}
+
+// IsResize reports whether this step changes the screen size.
+func (s Step) IsResize() bool { return s.Cols > 0 && s.Rows > 0 }
 
 // Screen is what a terminal ended up showing: one string per row, plus the cursor.
 //

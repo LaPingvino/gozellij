@@ -32,7 +32,7 @@ func TestCorpus(t *testing.T) {
 			}
 
 			term := New(c.Cols, c.Rows)
-			if _, err := term.Write(c.Input); err != nil {
+			if err := play(term, c); err != nil {
 				t.Fatal(err)
 			}
 			diffs := conform.Diff(want, conform.ScreenOf(term))
@@ -50,6 +50,26 @@ func TestCorpus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// play runs a case's steps in order: write these bytes, change to that size, write those.
+func play(term *Term, c conform.Case) error {
+	steps := c.Steps
+	if len(steps) == 0 {
+		steps = []conform.Step{{Write: c.Input}}
+	}
+	for _, st := range steps {
+		if st.IsResize() {
+			if err := term.Resize(st.Cols, st.Rows); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := term.Write(st.Write); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // unsupported names what this emulator cannot do yet and why, so that a red case is a decision

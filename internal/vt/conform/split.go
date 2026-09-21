@@ -25,7 +25,7 @@ import (
 func SplitInvariance(newTerm func(cols, rows int) vt.Terminal, c Case) []Difference {
 	whole := newTerm(c.Cols, c.Rows)
 	defer whole.Close()
-	if _, err := whole.Write(c.Input); err != nil {
+	if err := replay(whole, c, 0); err != nil {
 		return []Difference{{Row: -1, Col: -1, What: "writing the whole stream", Got: err.Error()}}
 	}
 	want := ScreenOf(whole)
@@ -33,13 +33,11 @@ func SplitInvariance(newTerm func(cols, rows int) vt.Terminal, c Case) []Differe
 	var diffs []Difference
 	for _, size := range splitSizes {
 		term := newTerm(c.Cols, c.Rows)
-		for i := 0; i < len(c.Input); i += size {
-			end := min(i+size, len(c.Input))
-			if _, err := term.Write(c.Input[i:end]); err != nil {
-				diffs = append(diffs, Difference{Row: -1, Col: -1,
-					What: fmt.Sprintf("writing in chunks of %d", size), Got: err.Error()})
-				break
-			}
+		if err := replay(term, c, size); err != nil {
+			diffs = append(diffs, Difference{Row: -1, Col: -1,
+				What: fmt.Sprintf("writing in chunks of %d", size), Got: err.Error()})
+			term.Close()
+			continue
 		}
 		for _, d := range Diff(want, ScreenOf(term)) {
 			d.What = fmt.Sprintf("in chunks of %d: %s", size, d.What)
@@ -48,6 +46,38 @@ func SplitInvariance(newTerm func(cols, rows int) vt.Terminal, c Case) []Differe
 		term.Close()
 	}
 	return diffs
+}
+
+// replay runs a case's steps, writing in chunks of the given size (0 means whole steps).
+//
+// The resizes happen where the case puts them. Replaying only the concatenated bytes would be a
+// consistency check on a stream the case does not describe - true of Input, and quietly not the
+// thing the case is about.
+func replay(term vt.Terminal, c Case, chunk int) error {
+	steps := c.Steps
+	if len(steps) == 0 {
+		steps = []Step{{Write: c.Input}}
+	}
+	for _, st := range steps {
+		if st.IsResize() {
+			if err := term.Resize(st.Cols, st.Rows); err != nil {
+				return err
+			}
+			continue
+		}
+		if chunk <= 0 {
+			if _, err := term.Write(st.Write); err != nil {
+				return err
+			}
+			continue
+		}
+		for i := 0; i < len(st.Write); i += chunk {
+			if _, err := term.Write(st.Write[i:min(i+chunk, len(st.Write))]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // splitSizes are the chunk sizes to try.

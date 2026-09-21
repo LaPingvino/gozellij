@@ -1,0 +1,10 @@
+# size 20x5
+# A resize, which the corpus could not express until now.
+#
+# Every line here is short enough not to wrap, deliberately. tmux does not reflow and this emulator
+# does, so a case with a wrapped line in it would be asking two terminals a question they answer
+# differently by design. What is being compared is everything else a resize touches: which content
+# survives, where the cursor lands, and what the screen is afterwards.
+\e[H\e[2Jalpha\r\nbravo\r\ncharlie\r\ndelta
+# resize 10x3
+\e[3;1Hafter
