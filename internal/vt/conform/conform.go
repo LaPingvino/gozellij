@@ -30,6 +30,7 @@ package conform
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/LaPingvino/gozellij/internal/vt"
@@ -71,6 +72,10 @@ type Screen struct {
 	cells [][]string
 	// histCells is History the same way, when the screen came from an emulator.
 	histCells [][]string
+	// Styles is one signature per display column per row: see style.go. Recorded from tmux with
+	// capture-pane -e and built from an emulator's cells, so the two are comparable without the
+	// harness ever interpreting escape codes with the implementation under test.
+	Styles [][]string
 }
 
 // ScreenOf renders a terminal's grid the way the oracle records one.
@@ -110,8 +115,28 @@ func ScreenOf(t vt.Terminal) Screen {
 		}
 		s.cells = append(s.cells, trimBlanks(cells))
 		s.Lines = append(s.Lines, strings.TrimRight(b.String(), " "))
+		s.Styles = append(s.Styles, trimDefaults(stylesOf(row)))
 	}
 	return s
+}
+
+// stylesOf is one row's styles, by display column: a wide character's continuation column carries
+// the same signature as the character itself, because that is what the terminal will draw there.
+func stylesOf(row []vt.Cell) []string {
+	out := make([]string, len(row))
+	for i, c := range row {
+		out[i] = styleSig(c.Style)
+	}
+	return out
+}
+
+// trimDefaults drops trailing columns in the terminal's default style, matching what is done to
+// trailing blanks on the other side of every comparison.
+func trimDefaults(sigs []string) []string {
+	for len(sigs) > 0 && sigs[len(sigs)-1] == "-" {
+		sigs = sigs[:len(sigs)-1]
+	}
+	return sigs
 }
 
 // trimBlanks drops the trailing cells that were never written, matching what capture-pane does to
@@ -218,6 +243,7 @@ func Diff(want, got Screen) []Difference {
 			continue
 		}
 		diffs = append(diffs, diffColumns(row, w, g)...)
+		diffs = append(diffs, diffStyles(row, g, want.stylesAt(row), got.stylesAt(row))...)
 	}
 
 	// Scrollback, oldest first. Compared after the screen because a disagreement here is usually
@@ -251,6 +277,85 @@ func Diff(want, got Screen) []Difference {
 			Got:  fmt.Sprintf("%d,%d", got.CursorRow, got.CursorCol)})
 	}
 	return diffs
+}
+
+// stylesAt is one row's style signatures, or nil when this screen carries none.
+func (s Screen) stylesAt(row int) []string {
+	if row >= len(s.Styles) {
+		return nil
+	}
+	return s.Styles[row]
+}
+
+// diffStyles compares one row's styles by column.
+//
+// A screen with no styles recorded at all is not compared, so that a case written before styles
+// existed does not start failing about something it never claimed.
+//
+// One kind of column is skipped, and it is a limit of the oracle rather than a convenience: a cell
+// that draws as a blank in the terminal's default background. tmux's capture-pane -e emits the
+// escape sequences needed to *reproduce* the screen, not a dump of its cells, so a space carrying
+// only a foreground colour - which looks exactly like a plain space - comes back unstyled. vim
+// fills the rows past the end of a buffer with exactly those, and the emulator is right to keep
+// the colour while the recording cannot show it. Where tmux does report a style on a blank, as on
+// the reverse-video status line of a pager, the comparison still happens.
+func diffStyles(row int, content, want, got []string) []Difference {
+	if want == nil && got == nil {
+		return nil
+	}
+	blank := func(col int) bool {
+		if col >= len(content) {
+			return true
+		}
+		return content[col] == "" || content[col] == " "
+	}
+	var diffs []Difference
+	for col := 0; col < max(len(want), len(got)); col++ {
+		w, g := "-", "-"
+		if col < len(want) {
+			w = want[col]
+		}
+		if col < len(got) {
+			g = got[col]
+		}
+		if blank(col) {
+			// On a blank cell only some of a style is visible, and the rest cannot be seen by
+			// any oracle that reads a screen rather than a cell dump: a space with a foreground
+			// colour draws exactly like a plain space. Underline, reverse, strikethrough and the
+			// background all do show on a blank, so those are still compared.
+			w, g = visibleOnBlank(w), visibleOnBlank(g)
+		}
+		if w != g {
+			diffs = append(diffs, Difference{Row: row, Col: col, What: "style", Want: w, Got: g})
+		}
+	}
+	return diffs
+}
+
+// visibleOnBlank reduces a style signature to the parts a blank cell actually shows.
+//
+// Foreground colour, bold, faint, italic and blink change nothing about a space. Underline,
+// reverse and strikethrough draw marks, and a background colour fills the cell.
+func visibleOnBlank(sig string) string {
+	var kept []string
+	for i := 0; i < len(sig); i++ {
+		switch c := sig[i]; {
+		case c == 'u', c == 'r', c == 's':
+			kept = append(kept, string(c))
+		case c == '^':
+			j := i + 1
+			for j < len(sig) && sig[j] != 'u' && sig[j] != 'r' && sig[j] != 's' && sig[j] != '^' {
+				j++
+			}
+			kept = append(kept, sig[i:j])
+			i = j - 1
+		}
+	}
+	if len(kept) == 0 {
+		return "-"
+	}
+	sort.Strings(kept)
+	return strings.Join(kept, "")
 }
 
 func (s Screen) historyCount() int {

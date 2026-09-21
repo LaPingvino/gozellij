@@ -107,6 +107,15 @@ func Record(c Case) (Screen, error) {
 			return Screen{}, err
 		}
 	}
+	// The same screen again with its escape sequences, which is where the styles come from. Two
+	// captures rather than one parse of the styled form: the plain one is what a person reads in
+	// the recording, and deriving it by stripping escapes would mean the harness's own stripper
+	// stood between the oracle and the comparison.
+	styled, err := tm("capture-pane", "-p", "-e")
+	if err != nil {
+		return Screen{}, err
+	}
+
 	pos, err := tm("display", "-p", "#{cursor_y} #{cursor_x}")
 	if err != nil {
 		return Screen{}, err
@@ -134,6 +143,16 @@ func Record(c Case) (Screen, error) {
 		lines = append(lines, "")
 	}
 	s.Lines = lines[:c.Rows]
+
+	styledLines := strings.Split(strings.TrimRight(styled, "\n"), "\n")
+	styles := styledScreen(styledLines)
+	for r := 0; r < c.Rows; r++ {
+		if r < len(styles) {
+			s.Styles = append(s.Styles, styles[r])
+			continue
+		}
+		s.Styles = append(s.Styles, nil)
+	}
 
 	if h := strings.TrimRight(hist, "\n"); h != "" {
 		s.History = strings.Split(h, "\n")

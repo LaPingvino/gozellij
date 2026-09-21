@@ -1,0 +1,13 @@
+# size 20x5
+# What an erase leaves behind, style-wise.
+#
+# Erasing fills with the current BACKGROUND and nothing else. Not the whole active style: an
+# underline on a blank cell is visible - it draws as a line - so an emulator that carries the full
+# style into erased cells paints underscores across a row that a real terminal leaves empty.
+#
+# Row 1: underlined red text, then erase to end of line. The tail must be plain.
+# Row 3: text on a blue background, then erase to end of line. The tail keeps the background,
+#        because that part IS what a terminal carries.
+\e[H\e[4;31mUNDER\e[K
+\e[3;1H\e[0m\e[44mBLUE\e[K
+\e[5;1H\e[0mdone

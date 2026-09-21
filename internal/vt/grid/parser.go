@@ -336,7 +336,8 @@ func (t *Term) sgr(ps []int) {
 	if len(ps) == 0 {
 		ps = []int{0}
 	}
-	for _, n := range ps {
+	for i := 0; i < len(ps); i++ {
+		n := ps[i]
 		switch {
 		case n == 0:
 			t.style = vt.Style{}
@@ -362,6 +363,10 @@ func (t *Term) sgr(ps []int) {
 			t.style.Underline = false
 		case n == 27:
 			t.style.Reverse = false
+		case n == 25:
+			t.style.Blink = false
+		case n == 29:
+			t.style.Strikethrough = false
 		case n >= 30 && n <= 37:
 			t.style.Fg = vt.Color{Kind: vt.ColorIndexed, Index: uint8(n - 30)}
 		case n >= 40 && n <= 47:
@@ -370,6 +375,23 @@ func (t *Term) sgr(ps []int) {
 			t.style.Fg = vt.Color{}
 		case n == 49:
 			t.style.Bg = vt.Color{}
+		case n >= 90 && n <= 97:
+			// The bright colours, 8-15 of the palette. Missing these is not cosmetic: vim draws
+			// the tildes past the end of a buffer in bright blue, and the corpus caught it the
+			// first time styles were compared at all.
+			t.style.Fg = vt.Color{Kind: vt.ColorIndexed, Index: uint8(n - 90 + 8)}
+		case n >= 100 && n <= 107:
+			t.style.Bg = vt.Color{Kind: vt.ColorIndexed, Index: uint8(n - 100 + 8)}
+		case n == 38 || n == 48:
+			// 38;5;N and 38;2;R;G;B, and the same for the background. The parameters belong to
+			// this code rather than being separate attributes, so they are consumed here.
+			c, used := extendedColor(ps[i+1:])
+			if n == 38 {
+				t.style.Fg = c
+			} else {
+				t.style.Bg = c
+			}
+			i += used
 		}
 	}
 }
@@ -403,4 +425,25 @@ func (p *parser) osc(c byte) {
 		// about.
 		p.state = ground
 	}
+}
+
+// extendedColor reads the 5;N and 2;R;G;B forms of SGR 38 and 48, returning how many parameters it
+// consumed so the caller can skip them.
+func extendedColor(rest []int) (vt.Color, int) {
+	if len(rest) == 0 {
+		return vt.Color{}, 0
+	}
+	switch rest[0] {
+	case 5:
+		if len(rest) < 2 {
+			return vt.Color{}, 1
+		}
+		return vt.Color{Kind: vt.ColorIndexed, Index: uint8(rest[1])}, 2
+	case 2:
+		if len(rest) < 4 {
+			return vt.Color{}, len(rest)
+		}
+		return vt.Color{Kind: vt.ColorRGB, R: uint8(rest[1]), G: uint8(rest[2]), B: uint8(rest[3])}, 4
+	}
+	return vt.Color{}, 1
 }

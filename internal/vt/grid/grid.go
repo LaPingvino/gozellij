@@ -406,8 +406,19 @@ func (t *Term) eraseInRow(row, from, to int) {
 	if row < 0 || row >= t.rows {
 		return
 	}
+	// Erasing fills with the background colour and nothing else. Not the whole active style: vim
+	// draws a tilde in bright blue and then erases to the end of the line, and carrying the
+	// foreground into those blanks paints a row of invisible blue spaces that a real terminal
+	// does not have. The corpus reported it at every column of the row the first time styles were
+	// compared.
+	// Erasing fills with the terminal's default, not with the active style and not even with its
+	// background. Background-colour erase is a terminal capability that the oracle does not have
+	// switched on, and a case that sets a blue background and erases to the end of the line came
+	// back from tmux with a plain tail. Matching what an emulator "should" do here would mean
+	// disagreeing with the terminal this is recorded against, and with the one the user has.
+	fill := vt.Cell{Content: " ", Width: 1}
 	for c := max(from, 0); c <= min(to, t.cols-1); c++ {
-		t.cells[row][c] = vt.Cell{Content: " ", Width: 1, Style: t.style}
+		t.cells[row][c] = fill
 	}
 }
 

@@ -81,7 +81,10 @@ func (s Screen) String() string {
 		}
 		fmt.Fprintf(&b, "hist %s\n", l)
 	}
-	for _, l := range s.Lines {
+	for i, l := range s.Lines {
+		if i < len(s.Styles) && len(s.Styles[i]) > 0 {
+			fmt.Fprintf(&b, "sty %s\n", strings.Join(s.Styles[i], " "))
+		}
 		l = escapeRow(l)
 		if l == "" {
 			b.WriteString("row\n")
@@ -96,6 +99,7 @@ func (s Screen) String() string {
 func ParseScreen(text string) (Screen, error) {
 	var s Screen
 	var sawCols, sawRows, sawCursor bool
+	var pendingStyles []string
 	for n, raw := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
 		if raw == "" {
 			continue
@@ -123,12 +127,20 @@ func ParseScreen(text string) (Screen, error) {
 			var line string
 			line, err = unescapeRow(rest)
 			s.History = append(s.History, line)
+		case "sty":
+			// A sty line describes the row that follows it, so it is held until that row arrives.
+			pendingStyles = strings.Fields(rest)
 		case "row":
 			// Exactly one space after the keyword is the separator; anything beyond it is
 			// content, so a row that genuinely starts with a space survives the round trip.
 			var row string
 			row, err = unescapeRow(rest)
 			s.Lines = append(s.Lines, row)
+			for len(s.Styles) < len(s.Lines)-1 {
+				s.Styles = append(s.Styles, nil)
+			}
+			s.Styles = append(s.Styles, pendingStyles)
+			pendingStyles = nil
 		default:
 			err = fmt.Errorf("unknown key %q", key)
 		}
