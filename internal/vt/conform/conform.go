@@ -108,7 +108,7 @@ type Screen struct {
 // Continuation cells (Width 0 directly after a wide cell) contribute nothing, because they are
 // not characters - the wide grapheme before them already occupies their column. A combining mark
 // also has Width 0 and *is* content, so it is kept: the difference is whether Content is empty.
-func ScreenOf(t vt.Terminal) Screen {
+func ScreenOf(t vt.Grid) Screen {
 	cols, rows := t.Size()
 	cur := t.Cursor()
 	s := Screen{Cols: cols, Rows: rows, CursorRow: cur.Row, CursorCol: cur.Col}

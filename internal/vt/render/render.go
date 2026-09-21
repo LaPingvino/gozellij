@@ -24,7 +24,7 @@ import (
 //
 // It begins by resetting the attributes and the scrolling region and homing the cursor, because it
 // is a repaint of everything: whatever the terminal was doing before, this is what it shows now.
-func Screen(t vt.Terminal) []byte {
+func Screen(t vt.Grid) []byte {
 	cols, rows := t.Size()
 	grid := t.Snapshot()
 
@@ -75,8 +75,9 @@ func Screen(t vt.Terminal) []byte {
 		//
 		// Without this, replaying a rendered screen put the cursor one column to the left of
 		// where it was and the next character appeared inside the line instead of wrapping.
-		if cell, ok := t.Cell(cur.Row, cols-max(1, widthAt(grid, cur.Row, cols-1))); ok {
-			fmt.Fprintf(&b, "\x1b[%d;%dH", cur.Row+1, cols-max(1, cell.Width)+1)
+		w := widthAt(grid, cur.Row, cols-1)
+		if cell, ok := cellAt(grid, cur.Row, cols-w); ok {
+			fmt.Fprintf(&b, "\x1b[%d;%dH", cur.Row+1, cols-w+1)
 			b.WriteString(sgr(style, cell.Style))
 			style = cell.Style
 			if cell.Content == "" {
@@ -192,4 +193,12 @@ func widthAt(grid [][]vt.Cell, row, col int) int {
 		}
 	}
 	return 1
+}
+
+// cellAt reads from a snapshot, so that the renderer needs no more of a screen than its grid.
+func cellAt(grid [][]vt.Cell, row, col int) (vt.Cell, bool) {
+	if row < 0 || row >= len(grid) || col < 0 || col >= len(grid[row]) {
+		return vt.Cell{}, false
+	}
+	return grid[row][col], true
 }

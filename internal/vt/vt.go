@@ -84,12 +84,29 @@ type Cursor struct {
 	Pending bool
 }
 
+// A Grid is anything that can show a screen: an emulator, or several of them composed into one.
+//
+// Narrower than Terminal on purpose. Drawing a screen and owning one are different jobs - a
+// renderer has no business writing to what it draws, and a composition of panes has no Write to
+// give it. Insisting on the whole of Terminal would mean a composed frame pretending to be an
+// emulator in order to be looked at.
+type Grid interface {
+	// Size returns the screen size in cells.
+	Size() (cols, rows int)
+	// Snapshot returns a copy of the visible grid, row-major.
+	Snapshot() [][]Cell
+	// Cursor returns where the cursor is and what it looks like.
+	Cursor() Cursor
+}
+
 // Terminal is a terminal emulator: bytes in, a grid out.
 //
 // Implementations are not required to be safe for concurrent use; the caller serialises access.
 // (x/vt has an open data race on its closed flag, which is a reason to be explicit about this
 // rather than hopeful.)
 type Terminal interface {
+	Grid
+
 	// Write feeds output from the child process to the emulator. It must never fail in a way
 	// that loses the rest of the stream: malformed escape sequences are the normal case, not an
 	// error, and a multiplexer that dies on one is useless.
@@ -100,19 +117,9 @@ type Terminal interface {
 	// because it is where the candidate backends disagree most.
 	Resize(cols, rows int) error
 
-	// Size returns the current grid size.
-	Size() (cols, rows int)
-
 	// Cell returns the cell at a position. Out-of-range positions return the zero Cell and
 	// false rather than panicking - see the scroll-after-shrink panic in the survey.
 	Cell(row, col int) (Cell, bool)
-
-	// Cursor returns the current cursor state.
-	Cursor() Cursor
-
-	// Snapshot returns a copy of the visible grid, row-major. Used by the renderer and, more
-	// importantly, by the differential harness to compare two implementations cell by cell.
-	Snapshot() [][]Cell
 
 	// Close releases the emulator's resources.
 	Close() error
