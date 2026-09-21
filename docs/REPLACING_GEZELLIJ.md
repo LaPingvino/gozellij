@@ -116,6 +116,18 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Off by default: it interprets every escape sequence the service emits, so a sequence the emulator
   gets wrong is a screen `Ctrl-L` cannot fix, whereas a byte pipe's failures are the terminal's own.
 
+- **A split screen, and an emulator checked against another one.** In a rendered attach,
+  `Ctrl-] |` opens the next service as a second pane, `Ctrl-] o` moves the keyboard and `Ctrl-] x`
+  closes a pane. Two services drawing on one terminal is the thing a byte pipe cannot do at all.
+  **Verified** on a real tmux screen: both services' output side by side, the status line naming
+  which pane has the keyboard, and the scrolling region still `0-11` with two panes up.
+  The emulator itself is **verified** against a different one end to end: the same `vim`, the same
+  file of wide characters and accents, the same keystroke, one through a rendered gozellij attach
+  and one straight into tmux at the size gozellij gives the service - captured with escape
+  sequences on both sides, so colours are compared and not just text. The screens match exactly.
+  Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
+  of this check used a pager over a file of numbers and caught neither.
+
 - **One command, several services.** `status`, `start`, `stop`, `restart` and `rm` each take as many
   names as you give them, and keep going past a name that fails rather than abandoning the rest —
   the exit status carries a count. `attach` still takes exactly one, because a terminal does.

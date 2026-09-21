@@ -601,8 +601,11 @@ else
     tmux -L "$plain" send-keys G
     sleep 2
 
-    pane | head -22 > "$home/screen-gozellij.txt"
-    tmux -L "$plain" capture-pane -p | head -22 > "$home/screen-tmux.txt"
+    # With -e, so that colours are compared and not just text. Without it the comparison is blind
+    # to every attribute: breaking bright colours in the emulator passed this check, because
+    # capture-pane without -e returns the characters and nothing about how they are drawn.
+    tmux -L "$tmuxSock" capture-pane -pe | head -22 > "$home/screen-gozellij.txt"
+    tmux -L "$plain" capture-pane -pe | head -22 > "$home/screen-tmux.txt"
     if ! grep -q 'alpha' "$home/screen-tmux.txt"; then
         bad "the reference editor drew nothing, so this comparison would be vacuous"
     elif ! grep -q '日本語' "$home/screen-tmux.txt"; then
