@@ -216,6 +216,16 @@ type Scrollbacker interface {
 	Scrollback() [][]vt.Cell
 }
 
+// WithoutHistory is the same screen with its scrollback dropped.
+//
+// For comparing things that only ever describe a visible screen - a repaint, for instance. A
+// repainted terminal has no history because nothing scrolled to make any, and comparing it would
+// be holding the renderer to something it never claimed to carry.
+func (s Screen) WithoutHistory() Screen {
+	s.History, s.histCells = nil, nil
+	return s
+}
+
 // A Difference is one disagreement, named precisely enough to act on without rerunning anything.
 type Difference struct {
 	// Row and Col are the display position. Col is -1 for a difference about the whole screen,
