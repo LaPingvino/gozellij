@@ -298,7 +298,10 @@ func (p *parser) insertLines(t *Term, n int) {
 	}
 	for i := 0; i < n; i++ {
 		copy(t.cells[t.cur.Row+1:t.bottom+1], t.cells[t.cur.Row:t.bottom])
+		copy(t.wrapped[t.cur.Row+1:t.bottom+1], t.wrapped[t.cur.Row:t.bottom])
+		copy(t.used[t.cur.Row+1:t.bottom+1], t.used[t.cur.Row:t.bottom])
 		t.cells[t.cur.Row] = blankRow(t.cols)
+		t.wrapped[t.cur.Row], t.used[t.cur.Row] = false, 0
 	}
 }
 
@@ -308,7 +311,10 @@ func (p *parser) deleteLines(t *Term, n int) {
 	}
 	for i := 0; i < n; i++ {
 		copy(t.cells[t.cur.Row:t.bottom], t.cells[t.cur.Row+1:t.bottom+1])
+		copy(t.wrapped[t.cur.Row:t.bottom], t.wrapped[t.cur.Row+1:t.bottom+1])
+		copy(t.used[t.cur.Row:t.bottom], t.used[t.cur.Row+1:t.bottom+1])
 		t.cells[t.bottom] = blankRow(t.cols)
+		t.wrapped[t.bottom], t.used[t.bottom] = false, 0
 	}
 }
 

@@ -26,6 +26,14 @@ import (
 type Term struct {
 	cols, rows int
 	cells      [][]vt.Cell
+	// wrapped[r] is true when row r ran into the right margin and continues on the row below,
+	// as opposed to ending because the program printed a newline. Reflow is the difference
+	// between the two: one may be re-broken at a new width, the other may not.
+	wrapped []bool
+	// used[r] is how many columns of row r were written. A row that wrapped early because a wide
+	// character would not fit has one column fewer than the screen, and joining rows without
+	// knowing that inserts a space into the middle of a re-wrapped line.
+	used []int
 
 	cur    vt.Cursor
 	saved  vt.Cursor
@@ -39,16 +47,32 @@ type Term struct {
 	// alt is the alternate screen buffer: the one full-screen programs draw on so that what was
 	// on the terminal before them comes back when they exit. Kept as a whole spare grid rather
 	// than as a flag, because that is what it is - switching is swapping which grid is live.
-	alt      [][]vt.Cell
-	altSaved vt.Cursor
-	onAlt    bool
+	alt [][]vt.Cell
+	// altWrapped and altUsed are the hidden buffer's per-row bookkeeping. They travel with the
+	// grid they describe: leaving them behind meant the primary screen came back described by the
+	// alternate screen's rows, which reflowed it wrongly and panicked when the row counts differed.
+	altWrapped []bool
+	altUsed    []int
+	altSaved   vt.Cursor
+	onAlt      bool
+	// altPending records that the screen changed size while a program owned it, so the primary
+	// grid still has to be reflowed when that program exits.
+	altPending bool
 
 	// history is what has scrolled off the top of the primary screen, oldest first.
-	history []([]vt.Cell)
+	history []histLine
 	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
 	// scrollback the moment it takes over the terminal, which is the most visible way to be worse
 	// than what it replaced.
 	limit int
+}
+
+// histLine is a scrolled-off line and whether it continued onto the line below it. The flag is
+// what lets a resize re-break a paragraph that scrolled off halfway.
+type histLine struct {
+	cells   []vt.Cell
+	wrapped bool
+	used    int
 }
 
 // DefaultScrollback is how many scrolled-off lines a terminal keeps.
@@ -72,6 +96,8 @@ func New(cols, rows int) *Term {
 	for r := range t.cells {
 		t.cells[r] = blankRow(cols)
 	}
+	t.wrapped = make([]bool, rows)
+	t.used = make([]int, rows)
 	return t
 }
 
@@ -124,7 +150,9 @@ func (t *Term) enterAlt(save bool) {
 	if save {
 		t.altSaved = t.cur
 	}
-	t.alt = t.cells
+	t.alt, t.altWrapped, t.altUsed = t.cells, t.wrapped, t.used
+	t.wrapped = make([]bool, t.rows)
+	t.used = make([]int, t.rows)
 	// A fresh grid, which is also the clearing that mode 1049 specifies: there is nothing to
 	// erase afterwards. An explicit eraseAll() was here until a sabotage showed that removing it
 	// changed no case - it could not, because these rows have never been written to.
@@ -144,9 +172,15 @@ func (t *Term) leaveAlt(restore bool) {
 	// which resizes the hidden one too - and having the fix in both places meant neither could be
 	// shown to matter: disabling either alone changed no test, because the other covered it. One
 	// mechanism that a sabotage can reach is worth more than two that hide each other.
-	t.cells = t.alt
-	t.alt = nil
+	t.cells, t.wrapped, t.used = t.alt, t.altWrapped, t.altUsed
+	t.alt, t.altWrapped, t.altUsed = nil, nil, nil
 	t.onAlt = false
+	if t.altPending {
+		// The window changed size while the program was running. Now that its screen is gone,
+		// the user's own text can be re-broken to fit.
+		t.altPending = false
+		t.reflowTo(t.cols, t.rows)
+	}
 	if restore {
 		t.cur = t.altSaved
 		t.cur.Row = min(t.cur.Row, t.rows-1)
@@ -176,18 +210,23 @@ func (t *Term) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
 		return nil
 	}
-	t.cells = resizeCells(t.cells, cols, rows)
-	if t.alt != nil {
-		// The buffer that is not being shown is resized too. A program that is on the alternate
-		// screen when the window changes still expects its shell's screen to be the right shape
-		// when it exits.
+	if t.onAlt {
+		// A program owns this screen and will redraw it on SIGWINCH. Both buffers are brought to
+		// the new size, and the primary one is reflowed when it comes back rather than now: doing
+		// it now would re-break a screen the user cannot see, twice if they resize again.
+		t.cells = resizeCells(t.cells, cols, rows)
 		t.alt = resizeCells(t.alt, cols, rows)
+		t.wrapped, t.used = resizeFlags(t.wrapped, t.used, rows)
+		t.altWrapped, t.altUsed = resizeFlags(t.altWrapped, t.altUsed, rows)
+		t.cols, t.rows = cols, rows
+		t.top, t.bottom = 0, rows-1
+		t.cur.Row = min(t.cur.Row, rows-1)
+		t.cur.Col = min(t.cur.Col, cols-1)
+		t.pend = false
+		t.altPending = true
+		return nil
 	}
-	t.cols, t.rows = cols, rows
-	t.top, t.bottom = 0, rows-1
-	t.cur.Row = min(t.cur.Row, rows-1)
-	t.cur.Col = min(t.cur.Col, cols-1)
-	t.pend = false
+	t.reflowTo(cols, rows)
 	return nil
 }
 
@@ -214,6 +253,9 @@ func (t *Term) put(r rune, width int) {
 		t.wrap()
 	}
 	t.cells[t.cur.Row][t.cur.Col] = vt.Cell{Content: string(r), Width: width, Style: t.style}
+	if end := t.cur.Col + width; end > t.used[t.cur.Row] {
+		t.used[t.cur.Row] = end
+	}
 	for i := 1; i < width; i++ {
 		// The continuation cell of a wide character: no content of its own, as the conform
 		// package's format says.
@@ -243,6 +285,10 @@ func (t *Term) combine(r rune) {
 }
 
 func (t *Term) wrap() {
+	// This row ran into the margin rather than being ended by a newline, which is the whole
+	// distinction reflow rests on. Recorded before the line feed, because that may scroll and the
+	// row is then somewhere else.
+	t.wrapped[t.cur.Row] = true
 	t.pend = false
 	t.cur.Col = 0
 	t.lineFeed()
@@ -269,10 +315,13 @@ func (t *Term) scrollUp(n int) {
 		// itself would leave the user's scrollback aliasing live cells. A sabotage that stores
 		// the row directly now fails four cases; before this it failed none.
 		recycled := t.cells[t.top]
-		t.remember(recycled)
+		t.remember(recycled, t.wrapped[t.top], t.used[t.top])
 		copy(t.cells[t.top:t.bottom], t.cells[t.top+1:t.bottom+1])
+		copy(t.wrapped[t.top:t.bottom], t.wrapped[t.top+1:t.bottom+1])
+		copy(t.used[t.top:t.bottom], t.used[t.top+1:t.bottom+1])
 		blank(recycled)
 		t.cells[t.bottom] = recycled
+		t.wrapped[t.bottom], t.used[t.bottom] = false, 0
 	}
 }
 
@@ -295,13 +344,13 @@ func blank(row []vt.Cell) {
 // times. This is a place where terminals genuinely differ; gozellij matches the one it is recorded
 // against and the one its users already have in their fingers. scrollregion and scrollregion-low
 // are those two cases, kept because they are the evidence.
-func (t *Term) remember(line []vt.Cell) {
+func (t *Term) remember(line []vt.Cell, wrapped bool, used int) {
 	if t.onAlt || t.limit <= 0 {
 		return
 	}
 	kept := make([]vt.Cell, len(line))
 	copy(kept, line)
-	t.history = append(t.history, kept)
+	t.history = append(t.history, histLine{cells: kept, wrapped: wrapped, used: used})
 	if len(t.history) > t.limit {
 		// Drop from the front. Copying the slice header forward would keep the whole backing
 		// array alive for as long as the pane exists, which for a long-running login shell is
@@ -318,8 +367,8 @@ func (t *Term) remember(line []vt.Cell) {
 func (t *Term) Scrollback() [][]vt.Cell {
 	out := make([][]vt.Cell, len(t.history))
 	for i, line := range t.history {
-		out[i] = make([]vt.Cell, len(line))
-		copy(out[i], line)
+		out[i] = make([]vt.Cell, len(line.cells))
+		copy(out[i], line.cells)
 	}
 	return out
 }
@@ -338,7 +387,10 @@ func (t *Term) SetScrollback(n int) {
 func (t *Term) scrollDown(n int) {
 	for i := 0; i < n; i++ {
 		copy(t.cells[t.top+1:t.bottom+1], t.cells[t.top:t.bottom])
+		copy(t.wrapped[t.top+1:t.bottom+1], t.wrapped[t.top:t.bottom])
+		copy(t.used[t.top+1:t.bottom+1], t.used[t.top:t.bottom])
 		t.cells[t.top] = blankRow(t.cols)
+		t.wrapped[t.top], t.used[t.top] = false, 0
 	}
 }
 
@@ -358,3 +410,12 @@ func (t *Term) eraseInRow(row, from, to int) {
 }
 
 func clamp(v, lo, hi int) int { return max(lo, min(v, hi)) }
+
+// resizeFlags brings the per-row bookkeeping to a new row count, keeping what still fits.
+func resizeFlags(wrapped []bool, used []int, rows int) ([]bool, []int) {
+	w := make([]bool, rows)
+	u := make([]int, rows)
+	copy(w, wrapped[:min(rows, len(wrapped))])
+	copy(u, used[:min(rows, len(used))])
+	return w, u
+}
