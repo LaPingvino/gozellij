@@ -128,6 +128,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **Scrollback in a rendered attach.** Painting the whole screen stops the user's own terminal
+  history from filling up, so the lines that scrolled past live in the emulator's grid and nowhere
+  the terminal can show them. `Ctrl-] b` goes back half a screen, `Ctrl-] f` forward, `Ctrl-] g`
+  returns to live. A view rather than a mode: the service keeps running and its grid keeps being
+  written to while you read. **Verified** on a real screen - scrolling back changes what is drawn
+  and `Ctrl-] g` restores exactly the live screen - with three sabotages, each failing one of the
+  two checks.
+
 - **One command, several services.** `status`, `start`, `stop`, `restart` and `rm` each take as many
   names as you give them, and keep going past a name that fails rather than abandoning the rest —
   the exit status carries a count. `attach` still takes exactly one, because a terminal does.
