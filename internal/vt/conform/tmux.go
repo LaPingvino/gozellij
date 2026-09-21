@@ -53,7 +53,12 @@ func Record(c Case) (Screen, error) {
 		steps = []Step{{Write: c.Input}}
 	}
 	var script strings.Builder
-	script.WriteString("stty -echo\n")
+	// -onlcr as well as -echo: without it the pty turns every bare newline into a carriage return
+	// and a newline before tmux sees it, so the oracle was answering a question about different
+	// bytes than the ones the case contains. Every corpus case so far wrote \r\n explicitly, so
+	// it never showed - until a generated stream contained a bare \n and the disagreement was
+	// entirely the recorder's.
+	script.WriteString("stty -echo -onlcr\n")
 	writes := 0
 	for i, st := range steps {
 		if st.IsResize() {

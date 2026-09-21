@@ -1,0 +1,4 @@
+# size 40x8
+# A scrolling region with only a top given, then a delete-line inside it. Found by the
+# generator; both halves matter, which is what shrinking established.
+\e[2rw\e[M

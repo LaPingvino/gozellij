@@ -217,6 +217,15 @@ func (p *parser) csi(t *Term, c byte) {
 	case c >= 0x20 && c <= 0x2f: // intermediate bytes
 		p.inter = append(p.inter, c)
 		return
+	case c == 0x1b:
+		// An escape inside a sequence starts a new sequence. It does not merely abandon this one:
+		// abandoning and returning to ground made the `[` that followed print as text, which is
+		// how `\e[\e[m` put "[m" on the screen where a terminal shows nothing. Found by the
+		// generator in five bytes.
+		p.state = escape
+		p.params = p.params[:0]
+		p.inter = p.inter[:0]
+		return
 	case c < 0x40 || c > 0x7e:
 		// Not a final byte at all: abandon rather than hang in this state for ever.
 		p.state = ground
@@ -329,9 +338,20 @@ func (p *parser) dispatch(t *Term, final byte) {
 	case 'T': // scroll down
 		t.scrollDown(arg(0, 1))
 	case 'r': // set scrolling region
+		// An explicitly written zero is not "use the default" here, it is nonsense, and a
+		// terminal discards the whole sequence. `\e[0;0r` looked like a request for the whole
+		// screen to this code, which set the region and homed the cursor - moving it for a
+		// sequence tmux throws away. `\e[r` with no parameters at all is still the reset.
+		if (len(ps) > 0 && ps[0] <= 0) || (len(ps) > 1 && ps[1] <= 0) {
+			return
+		}
 		top, bottom := arg(0, 1)-1, arg(1, t.rows)-1
 		if top < 0 || bottom >= t.rows || top >= bottom {
-			top, bottom = 0, t.rows-1
+			// Out of range: ignored completely, region and cursor both left alone. Not reset to
+			// the whole screen, which is what this did - a stray `\e[77r` on an eight-row screen
+			// then homed the cursor, moving it for a sequence a real terminal had discarded.
+			// Measured against tmux, which leaves the cursor exactly where it was.
+			return
 		}
 		t.top, t.bottom = top, bottom
 		// DECSTBM homes the cursor. Forgetting this is how a status line ends up putting the
@@ -347,29 +367,46 @@ func (p *parser) dispatch(t *Term, final byte) {
 	}
 }
 
+// shiftBottom is the last row that an insert or delete of lines moves.
+//
+// The scrolling region's bottom when the cursor is inside the region, and the bottom of the screen
+// when it is not. Measured against tmux rather than reasoned about: with a region over rows 3-5, a
+// delete-line with the cursor above the region shifted the whole screen up, one inside it shifted
+// only to the region's bottom, and one below it moved that row alone. The previous rule here -
+// ignore the operation entirely when the cursor is outside the region - left a line on screen that
+// a real terminal had removed, which the generator found in twelve streams.
+func (t *Term) shiftBottom() int {
+	if t.cur.Row >= t.top && t.cur.Row <= t.bottom {
+		return t.bottom
+	}
+	return t.rows - 1
+}
+
 func (p *parser) insertLines(t *Term, n int) {
-	if t.cur.Row < t.top || t.cur.Row > t.bottom {
+	bottom := t.shiftBottom()
+	if t.cur.Row > bottom {
 		return
 	}
 	for i := 0; i < n; i++ {
-		copy(t.cells[t.cur.Row+1:t.bottom+1], t.cells[t.cur.Row:t.bottom])
-		copy(t.wrapped[t.cur.Row+1:t.bottom+1], t.wrapped[t.cur.Row:t.bottom])
-		copy(t.used[t.cur.Row+1:t.bottom+1], t.used[t.cur.Row:t.bottom])
+		copy(t.cells[t.cur.Row+1:bottom+1], t.cells[t.cur.Row:bottom])
+		copy(t.wrapped[t.cur.Row+1:bottom+1], t.wrapped[t.cur.Row:bottom])
+		copy(t.used[t.cur.Row+1:bottom+1], t.used[t.cur.Row:bottom])
 		t.cells[t.cur.Row] = blankRow(t.cols)
 		t.wrapped[t.cur.Row], t.used[t.cur.Row] = false, 0
 	}
 }
 
 func (p *parser) deleteLines(t *Term, n int) {
-	if t.cur.Row < t.top || t.cur.Row > t.bottom {
+	bottom := t.shiftBottom()
+	if t.cur.Row > bottom {
 		return
 	}
 	for i := 0; i < n; i++ {
-		copy(t.cells[t.cur.Row:t.bottom], t.cells[t.cur.Row+1:t.bottom+1])
-		copy(t.wrapped[t.cur.Row:t.bottom], t.wrapped[t.cur.Row+1:t.bottom+1])
-		copy(t.used[t.cur.Row:t.bottom], t.used[t.cur.Row+1:t.bottom+1])
-		t.cells[t.bottom] = blankRow(t.cols)
-		t.wrapped[t.bottom], t.used[t.bottom] = false, 0
+		copy(t.cells[t.cur.Row:bottom], t.cells[t.cur.Row+1:bottom+1])
+		copy(t.wrapped[t.cur.Row:bottom], t.wrapped[t.cur.Row+1:bottom+1])
+		copy(t.used[t.cur.Row:bottom], t.used[t.cur.Row+1:bottom+1])
+		t.cells[bottom] = blankRow(t.cols)
+		t.wrapped[bottom], t.used[bottom] = false, 0
 	}
 }
 

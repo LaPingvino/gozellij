@@ -1,0 +1,4 @@
+# size 20x6
+# A scrolling region whose bounds make no sense. A terminal discards the sequence: it does not
+# reset the region to the whole screen and it does not move the cursor. Found by the generator.
+ab\e[2;5rCD\e[77rEF\e[0;0rGH

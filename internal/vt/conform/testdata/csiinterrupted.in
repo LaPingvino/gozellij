@@ -1,0 +1,4 @@
+# size 40x8
+# An escape sequence interrupted by another escape. The second one starts a new sequence rather
+# than being swallowed by the first - found by the generator, shrunk to five bytes.
+\e[\e[m

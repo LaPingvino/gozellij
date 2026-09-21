@@ -1,0 +1,6 @@
+# size 20x6
+# A bare newline, with no carriage return. It moves down and does NOT return to column zero.
+#
+# This case exists because the recorder used to let the pty rewrite it: every case until now wrote
+# \\r\\n explicitly, so nothing noticed that the oracle was being asked about different bytes.
+ab\ncd\nef
