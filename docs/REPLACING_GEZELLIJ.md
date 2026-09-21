@@ -104,6 +104,18 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   name and no line carried the other's, one service alone stayed byte-identical and unprefixed, and
   several names without `-f` were refused rather than run together. All three were shown to fail
   when the behaviour was deliberately broken.
+- **A rendered attach that owns the screen.** `GOZELLIJ_RENDER=1 gozellij attach <name>` keeps a
+  grid of its own, feeds the service's output through the emulator in `internal/vt/grid`, and
+  paints the result. The status line is then a row the service was never given, rather than a row
+  painted over one it was - so nothing saves and restores the terminal's cursor and nothing sets a
+  scrolling region. Those were the two defects that could not be fixed from a byte pipe.
+  **Verified** on a real tmux screen: the service's output is drawn, the status line is on the last
+  row, and the scrolling region is `0-11` on a twelve-row terminal - the whole screen - where the
+  default attach sets `0-10`. All three checks were shown to fail when the behaviour was removed;
+  switching the mode off reports the region as `0-10`, which is the default path's signature.
+  Off by default: it interprets every escape sequence the service emits, so a sequence the emulator
+  gets wrong is a screen `Ctrl-L` cannot fix, whereas a byte pipe's failures are the terminal's own.
+
 - **One command, several services.** `status`, `start`, `stop`, `restart` and `rm` each take as many
   names as you give them, and keep going past a name that fails rather than abandoning the rest —
   the exit status carries a count. `attach` still takes exactly one, because a terminal does.
