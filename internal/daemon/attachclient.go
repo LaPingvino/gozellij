@@ -86,7 +86,16 @@ const ReattachWindow = 15 * time.Second
 //
 // It returns when the user detaches, when the service is gone, or when the daemon does not come
 // back within ReattachWindow.
+// AttachLoop attaches with the byte pipe, the default and the conservative choice.
+//
+// Kept as the name the rest of the program and its tests already call, so that adding a way to ask
+// for the other mode did not mean touching every caller.
 func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool) error {
+	return AttachLoopMode(socket, service, in, out, replay, RenderAuto)
+}
+
+// AttachLoopMode attaches, choosing explicitly whether the client owns the screen.
+func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay bool, mode RenderMode) error {
 	// Raw mode and the terminal reader belong to the loop, not to one session: keystrokes go to
 	// the far end untouched (including Ctrl-C, which belongs to the program you are attached to
 	// and not to us), and switching services must not hand the terminal back and forth.
@@ -121,7 +130,7 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 		painter  *statusPainter
 		rendered *renderedScreen
 	)
-	if renderEnabled() {
+	if renderEnabled(mode) {
 		cols, rows := 0, 0
 		if term.IsTerminal(int(in.Fd())) {
 			cols, rows, _ = term.GetSize(int(in.Fd()))

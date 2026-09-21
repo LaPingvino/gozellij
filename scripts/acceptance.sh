@@ -497,8 +497,8 @@ else
     sleep 1
     tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
-        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
-        "sh -c 'stty -echo; exec $gz attach renderdemo'"
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render renderdemo'"
     sleep 3
 
     if pane | grep -q 'RENDERED-OUTPUT-HERE'; then
@@ -520,6 +520,26 @@ else
         ok "the rendered attach borrows no scrolling region (it is $region, the whole screen)"
     else
         bad "the rendered attach set a scrolling region: $region"
+    fi
+
+    # -no-render must win over the environment. Somebody who has switched rendering on for their
+    # session needs a way to get the plain attach for one command, which is the first thing they
+    # will want if a screen ever looks wrong.
+    # Its own server, so that "the pane being asked about" is not in question. Asking the first
+    # server for `-t :.+` returned the original, still-rendered window and the check failed for
+    # that reason rather than for the one it names.
+    override="${tmuxSock}-override"
+    tmux -L "$override" new-session -d -x 60 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -no-render renderdemo'"
+    sleep 2
+    plainRegion=$(tmux -L "$override" display -p '#{scroll_region_upper}-#{scroll_region_lower}' 2>/dev/null || echo unknown)
+    tmux -L "$override" kill-server 2>/dev/null
+    if [ "$plainRegion" != "0-11" ]; then
+        ok "-no-render falls back to the byte pipe even with GOZELLIJ_RENDER set (region $plainRegion)"
+    else
+        bad "-no-render still rendered: region $plainRegion"
     fi
 
     # --------------------------------------------------------------- two services, one screen

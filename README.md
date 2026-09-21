@@ -127,10 +127,37 @@ open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZE
 | `gozellij start\|stop\|restart <name>...` | change the state of one or several; `stop` stops what the service started too, and means it stays stopped across a reboot |
 | `gozellij logs <name> [-n bytes]` | what it printed, read from disk, so it outlives the daemon |
 | `gozellij logs -f <name>...` | follow the live output; several services interleave with a name on every line, and `Ctrl-C` stops watching, not the service |
-| `gozellij attach <name>` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] l` picks one from a list, `Ctrl-] ?` lists the keys |
+| `gozellij attach <name> [-render]` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] l` picks one from a list, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
 | `gozellij rm <name>... [-keep-logs]` | stop them, forget them, delete their logs |
+
+### Splitting the screen
+
+By default an attach is a byte pipe: the service's output goes straight to your terminal, which
+does the emulating. That cannot show two services at once - they would draw over each other - so
+there is a second mode where gozellij interprets the output itself and paints the screen:
+
+```sh
+gozellij attach -render web       # or: export GOZELLIJ_RENDER=1
+```
+
+Then `Ctrl-] |` opens the next service beside the current one, `Ctrl-] o` moves the keyboard
+between panes, and `Ctrl-] x` closes one. The status line says which pane your keystrokes are going
+to. Because gozellij owns the screen rather than borrowing it, the status line no longer needs the
+terminal's cursor-save slot or a scrolling region - the two things it could not do properly from a
+byte pipe.
+
+Painting the whole screen means your terminal's own scrollback stops filling up, so gozellij keeps
+2000 lines per pane and gives you `Ctrl-] b` back, `Ctrl-] f` forward and `Ctrl-] g` to return to
+the live screen.
+
+It is not the default, and the reason is worth knowing: a byte pipe cannot corrupt a screen it
+never interprets, while this interprets every escape sequence a service emits. One it gets wrong is
+a screen `Ctrl-L` will not fix. What it understands is pinned by a corpus of screens recorded from
+a real terminal (`make conform`), and `make acceptance` checks that a real `vim` drawing wide
+characters looks identical through gozellij and through tmux. `-no-render` gets you the byte pipe
+back for one command if a screen ever looks wrong.
 
 ### A status line
 

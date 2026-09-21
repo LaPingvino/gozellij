@@ -40,11 +40,11 @@ Usage:
   gozellij status <name>...            show one service, or several
   gozellij add <name> -- <cmd> [args]  define a service
   gozellij start|stop|restart <name>.. change the state of one or several
-  gozellij attach <name>               attach your terminal to it
+  gozellij attach <name> [-render]     attach your terminal to it
   gozellij logs <name>                 print its recent output and exit
   gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
-  gozellij shell [-name <name>]        the same, with a different service name
+  gozellij shell [-name <n>] [-render] the same, with a different service name
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
@@ -179,6 +179,7 @@ func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sock := socketFlag(fs)
 	name := fs.String("name", DefaultShellService, "the service to land in")
+	render := renderFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -231,7 +232,7 @@ func cmdShell(args []string) error {
 		return err
 	}
 
-	return daemon.AttachLoop(path, *name, os.Stdin, os.Stdout, true)
+	return daemon.AttachLoopMode(path, *name, os.Stdin, os.Stdout, true, renderMode(render))
 }
 
 // shellState reports whether the service is running and whether it exists at all.
@@ -537,6 +538,7 @@ func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	sock := socketFlag(fs)
 	noReplay := fs.Bool("no-replay", false, "do not replay the recent output before the live stream")
+	render := renderFlags(fs)
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
@@ -550,7 +552,7 @@ func cmdAttach(args []string) error {
 	// AttachLoop rather than a single attach: a daemon upgrade takes the socket with it, and a
 	// terminal that silently returns to a shell prompt cannot tell you whether your service died
 	// or the daemon was replaced.
-	return daemon.AttachLoop(path, fs.Arg(0), os.Stdin, os.Stdout, !*noReplay)
+	return daemon.AttachLoopMode(path, fs.Arg(0), os.Stdin, os.Stdout, !*noReplay, renderMode(render))
 }
 
 func cmdLogs(args []string) error {
@@ -758,6 +760,38 @@ func (w prefixWriter) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+// renderFlags adds -render and -no-render to a command.
+//
+// Two flags rather than one taking a value, because `-render` is what a person types and
+// `-render=false` is not. They are read together by renderMode, which rejects being given both -
+// a command line that says two opposite things is a mistake worth pointing at rather than
+// resolving by whichever came last.
+type renderChoice struct{ on, off *bool }
+
+func renderFlags(fs *flag.FlagSet) renderChoice {
+	return renderChoice{
+		on: fs.Bool("render", false, "draw the screen here instead of passing the bytes through: "+
+			"needed for splitting panes, and it interprets everything the service emits"),
+		off: fs.Bool("no-render", false, "pass the bytes through even if GOZELLIJ_RENDER is set"),
+	}
+}
+
+func renderMode(c renderChoice) daemon.RenderMode {
+	switch {
+	case *c.on && *c.off:
+		// Neither is chosen, which surfaces as the default. Saying so is better than silently
+		// picking one, and this is checked by the caller before it gets here in practice.
+		fmt.Fprintln(os.Stderr, "gozellij: -render and -no-render contradict each other; using the default")
+		return daemon.RenderAuto
+	case *c.on:
+		return daemon.RenderOn
+	case *c.off:
+		return daemon.RenderOff
+	default:
+		return daemon.RenderAuto
+	}
 }
 
 // upgradeWait is how long we give the daemon to come back after replacing itself.

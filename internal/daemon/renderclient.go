@@ -44,8 +44,27 @@ type renderedScreen struct {
 	line func(cols int) string
 }
 
+// RenderMode is how an attach decides whether to own the screen.
+type RenderMode int
+
+const (
+	// RenderAuto takes the setting from the environment: GOZELLIJ_RENDER=1 turns it on.
+	RenderAuto RenderMode = iota
+	// RenderOn and RenderOff are an explicit choice, from a flag. A flag beats the environment
+	// so that a person who has switched rendering on for their session can still get the plain
+	// attach for one command, which is what they will want the first time a screen looks wrong.
+	RenderOn
+	RenderOff
+)
+
 // renderEnabled reports whether this attach should own the screen.
-func renderEnabled() bool {
+func renderEnabled(mode RenderMode) bool {
+	switch mode {
+	case RenderOn:
+		return true
+	case RenderOff:
+		return false
+	}
 	switch os.Getenv("GOZELLIJ_RENDER") {
 	case "1", "true", "yes":
 		return true
