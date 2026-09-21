@@ -1,9 +1,9 @@
 cols 24
 rows 6
 cursor 5 24
-row small
-row rows
-row
-row
-row
+row one
+row two
+row three
+row four
+row five
 row 012345678901234567890123

@@ -1,7 +1,8 @@
 cols 12
-rows 4
-cursor 2 11
-row shell-one
-row shell-two
+rows 3
+cursor 2 10
+hist shell-one
+hist shell-two
 row shell-three
-row
+row shell-four
+row shell-five

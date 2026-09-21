@@ -1,6 +1,10 @@
 # size 12x3
-# Growing, then writing across the new width. A grid that was not grown properly indexes off the
-# end of a row here rather than drawing.
-\e[H\e[2Jsmall\r\nrows
+# Growing, after the old size forced content to scroll.
+#
+# Five lines on a three-row screen: two are in the scrollback before the resize happens. That is
+# what makes this case able to tell a resize applied at the right moment from one applied before
+# the writes that precede it - with the resize first, nothing ever scrolls and there is no history
+# at all. A case that cannot tell those apart is not testing the ordering it claims to.
+\e[H\e[2Jone\r\ntwo\r\nthree\r\nfour\r\nfive
 # resize 24x6
 \e[6;1H012345678901234567890123

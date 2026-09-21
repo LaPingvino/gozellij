@@ -294,3 +294,47 @@ func TestRecordingsEscapeControlBytes(t *testing.T) {
 		t.Fatalf("round trip changed the row: %q -> %q", want.Lines[0], got.Lines[0])
 	}
 }
+
+// Steps must come out in the order the file wrote them.
+//
+// This is checked here rather than by a case, and the reason is worth recording: no corpus case
+// can catch a resize applied at the wrong moment. Whether the resize happens before or after a
+// given write only changes the screen when the old width changed where lines broke - and wrapping
+// is exactly what tmux and this emulator disagree about by design, so a case that depended on it
+// could not be recorded. Moving the resize one step earlier in the parser leaves every one of the
+// eighteen cases passing. It fails here.
+func TestStepsKeepTheirOrder(t *testing.T) {
+	c, err := LoadCase(Dir + "/resizenarrow.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Steps) != 3 {
+		t.Fatalf("got %d steps, want write, resize, write", len(c.Steps))
+	}
+	if c.Steps[0].IsResize() || !c.Steps[1].IsResize() || c.Steps[2].IsResize() {
+		t.Fatalf("the steps are %v, want write, resize, write", c.Steps)
+	}
+	if !strings.Contains(string(c.Steps[0].Write), "alpha") {
+		t.Fatalf("the first step does not carry the text written before the resize: %q", c.Steps[0].Write)
+	}
+	if !strings.Contains(string(c.Steps[2].Write), "after") {
+		t.Fatalf("the last step does not carry the text written after the resize: %q", c.Steps[2].Write)
+	}
+	if c.Steps[1].Cols != 10 || c.Steps[1].Rows != 3 {
+		t.Fatalf("the resize is to %dx%d, want 10x3", c.Steps[1].Cols, c.Steps[1].Rows)
+	}
+}
+
+// A case with no resize in it is one step, so nothing about the ordinary path changed.
+func TestACaseWithoutAResizeIsOneStep(t *testing.T) {
+	c, err := LoadCase(Dir + "/wrap.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Steps) != 1 || c.Steps[0].IsResize() {
+		t.Fatalf("got %d steps, want a single write", len(c.Steps))
+	}
+	if string(c.Steps[0].Write) != string(c.Input) {
+		t.Fatal("the single step and Input disagree")
+	}
+}
