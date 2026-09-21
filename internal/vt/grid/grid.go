@@ -215,9 +215,11 @@ func (t *Term) Resize(cols, rows int) error {
 		// the new size, and the primary one is reflowed when it comes back rather than now: doing
 		// it now would re-break a screen the user cannot see, twice if they resize again.
 		t.cells = resizeCells(t.cells, cols, rows)
-		t.alt = resizeCells(t.alt, cols, rows)
 		t.wrapped, t.used = resizeFlags(t.wrapped, t.used, rows)
-		t.altWrapped, t.altUsed = resizeFlags(t.altWrapped, t.altUsed, rows)
+		// The hidden primary buffer is deliberately left at its old width. Truncating it here
+		// destroyed every character past the new margin before reflow could see them, so leaving
+		// vim in a narrowed window returned a shell screen with the middle of its lines cut out.
+		// It is re-laid whole when the program exits, which is what altPending is for.
 		t.cols, t.rows = cols, rows
 		t.top, t.bottom = 0, rows-1
 		t.cur.Row = min(t.cur.Row, rows-1)

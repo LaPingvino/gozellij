@@ -128,18 +128,32 @@ func TestWideCharacterIsNotSplitByReflow(t *testing.T) {
 }
 
 // A program on the alternate screen owns its display and redraws on SIGWINCH; re-breaking its
-// lines would invent a screen it never drew.
+// lines would invent a screen it never drew. What must survive is the *primary* screen, which is
+// reflowed when the program exits.
+//
+// The first version of this test asserted only that the alternate screen's second row was not the
+// re-broken text - and passed when the guard was removed, because reflowing the alternate screen
+// destroyed that chunk rather than moving it. An assertion that cannot tell "skipped" from
+// "mangled" is not a test. This follows through to the exit, which is where the difference shows.
 func TestAlternateScreenIsNotReflowed(t *testing.T) {
 	term := New(20, 4)
+	term.Write([]byte("\x1b[Hshell-text-that-wraps-past-twenty"))
 	term.Write([]byte("\x1b[?1049h\x1b[HABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-	term.Resize(10, 4)
 
-	got := screenRows(t, term)
-	if got[0] != "ABCDEFGHIJ" {
-		t.Fatalf("the first row is %q", got[0])
+	term.Resize(10, 4)
+	if got := screenRows(t, term)[0]; got != "ABCDEFGHIJ" {
+		t.Fatalf("the alternate screen's first row is %q, want it truncated rather than re-broken", got)
 	}
-	// Truncated, not re-broken: the program will redraw.
-	if got[1] == "KLMNOPQRST" {
-		t.Fatalf("the alternate screen was reflowed: %q", got)
+
+	term.Write([]byte("\x1b[?1049l"))
+	// Back on the user's screen, which must now be re-broken at ten columns with nothing lost.
+	all := strings.Join(append(historyRows(term), screenRows(t, term)...), "")
+	if want := "shell-text-that-wraps-past-twenty"; !strings.Contains(all, want) {
+		t.Fatalf("after the program exited the primary screen reads %q, want it to still contain %q", all, want)
+	}
+	for _, r := range screenRows(t, term) {
+		if len([]rune(r)) > 10 {
+			t.Fatalf("row %q is wider than the screen", r)
+		}
 	}
 }

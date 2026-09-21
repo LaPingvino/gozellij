@@ -129,24 +129,29 @@ func (t *Term) logicalLines() []logical {
 	// are the part of the screen nothing has been written to - and carrying them through as empty
 	// paragraphs makes the output longer than the screen, which pushes real lines into the
 	// scrollback. Measured: narrowing a 26-character line put its first row into history.
-	last := t.cur.Row
-	for r := t.rows - 1; r > last; r-- {
-		if t.used[r] > 0 {
+	// Over the rows the grid actually has, not the rows the screen claims: after a resize that
+	// happened while the alternate screen was showing, this grid is still the old size and is
+	// being re-laid to the new one.
+	have := len(t.cells)
+	last := min(t.cur.Row, have-1)
+	for r := have - 1; r > last; r-- {
+		if t.usedAt(r) > 0 {
 			last = r
 			break
 		}
 	}
 	for r := 0; r <= last; r++ {
 		col := -1
+		used := t.usedAt(r)
 		if r == t.cur.Row {
 			col = t.cur.Col
 			// A row the cursor sits past the end of still has to reach that far, or the cursor
 			// would be pulled back to the last written column by the join.
-			if t.cur.Col > t.used[r] {
-				t.used[r] = t.cur.Col
+			if t.cur.Col > used {
+				used = t.cur.Col
 			}
 		}
-		add(t.cells[r], t.used[r], t.wrapped[r], col)
+		add(t.cells[r], used, t.wrappedAt(r), col)
 	}
 	if open || cur.cursor >= 0 {
 		lines = append(lines, cur)
@@ -207,4 +212,20 @@ func fitRow(row []vt.Cell, cols int) []vt.Cell {
 	out := blankRow(cols)
 	copy(out, row[:min(cols, len(row))])
 	return out
+}
+
+// usedAt and wrappedAt read the per-row bookkeeping defensively.
+//
+// The arrays and the grid can be different lengths for exactly one moment: a resize that happened
+// while the alternate screen was showing leaves the primary grid at its old size until the program
+// exits. Indexing blind there is a panic, and a panic in a multiplexer is every pane at once.
+func (t *Term) usedAt(r int) int {
+	if r < len(t.used) {
+		return t.used[r]
+	}
+	return 0
+}
+
+func (t *Term) wrappedAt(r int) bool {
+	return r < len(t.wrapped) && t.wrapped[r]
 }
