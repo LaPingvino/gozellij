@@ -14,9 +14,14 @@
 //
 // # What is compared, and what is not
 //
-// Content and cursor position. Not style: colours, bold and underline are not compared by anything
-// here yet, so a passing case says nothing about them. That limit is written here rather than in a
-// footnote because a harness that quietly checks less than it appears to is worse than no harness.
+// Content, cursor position, scrollback and style. Style as far as a screen can show it: see
+// style.go for the signature, and the note in diffStyles for the one thing no oracle of this kind
+// can see - a blank cell carrying only a foreground colour draws exactly like a plain space.
+//
+// Not compared: anything that is not on the screen. Cursor shape and visibility, the title, mouse
+// modes, bracketed paste. An emulator can get all of those wrong and pass every case here, and
+// that is written down rather than left to be discovered, because a harness that quietly checks
+// less than it appears to is worse than no harness.
 //
 // # Two things the format has to decide, and does
 //

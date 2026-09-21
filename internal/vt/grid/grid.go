@@ -9,10 +9,16 @@
 // go straight to the user's terminal - and the status line's two unfixable defects (one cursor-save
 // slot, one scrolling region, both shared with the service) are what owning a grid fixes.
 //
-// What it does not do yet, said here rather than discovered later: no styles beyond storing them,
-// no alternate screen buffer, no scrollback, no reflow on resize, no grapheme clustering beyond
-// combining marks, no tabs stops other than every eight columns, no charset selection, no mouse.
-// The corpus says exactly which real-program cases that costs.
+// What it does not do yet, said here rather than discovered later: no grapheme clustering beyond
+// combining marks, no tab stops other than every eight columns, no charset selection, no mouse
+// reporting, no bracketed paste, and nothing is done with the title. The corpus says exactly which
+// real-program cases that costs, which at the time of writing is none of them - meaning the gap is
+// in the corpus as much as in the emulator.
+//
+// What it does do, each with cases behind it: the grid and the cursor, wrapping with a deferred
+// last column, scrolling regions, erase and insert/delete, the alternate screen, scrollback,
+// styles, and reflow on resize. Reflow is the one with no oracle behind it, because tmux does not
+// reflow at all; reflow.go says so.
 package grid
 
 import (
