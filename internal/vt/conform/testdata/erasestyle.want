@@ -1,0 +1,10 @@
+cols 20
+rows 5
+cursor 4 4
+sty u1 u1 u1 u1 u1
+row UNDER
+row
+sty ^4 ^4 ^4 ^4
+row BLUE
+row
+row done

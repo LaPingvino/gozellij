@@ -26,7 +26,10 @@ type Rect struct {
 // refuses to draw during that window is a screen that flickers on every resize.
 type Pane struct {
 	Rect
-	Term vt.Terminal
+	// A Grid, not a Terminal: composing a screen reads panes, it never writes to them. Asking for
+	// the whole of Terminal here would stop a composed frame being used as a pane inside another
+	// one, which is what a nested layout is.
+	Term vt.Grid
 	// Focused marks the pane whose cursor is the screen's cursor. A screen has one cursor; the
 	// panes that are not focused keep theirs and do not get to show it.
 	Focused bool
