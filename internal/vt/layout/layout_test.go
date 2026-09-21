@@ -81,7 +81,13 @@ func TestTwoPanesSideBySide(t *testing.T) {
 // The screen's cursor is the focused pane's, moved to where that pane sits.
 func TestCursorComesFromTheFocusedPane(t *testing.T) {
 	a := load(t, "wrap", 20, 5)
-	b := load(t, "wrap", 20, 5)
+	// A case whose cursor is not in column zero, deliberately. With one that is, removing the
+	// offset entirely still passes: the clamp into the pane pulls the cursor to the pane's left
+	// edge, which is the right answer for the wrong reason.
+	b := load(t, "erase", 20, 5)
+	if b.Cursor().Col == 0 {
+		t.Fatal("this test needs a pane whose cursor is not at column zero")
+	}
 
 	f := Compose(40, 5, []Pane{
 		{Rect: Rect{Cols: 20, Rows: 5}, Term: a},
