@@ -522,8 +522,48 @@ else
         bad "the rendered attach set a scrolling region: $region"
     fi
 
+    # --------------------------------------------------------------- two services, one screen
+    #
+    # The thing a byte pipe cannot do at all: two services drawing at once would be two programs
+    # writing over each other. Owning the grid is what makes this possible, which is why DESIGN.md
+    # puts the emulator before the multiplexing.
+    "$gz" add rendertwo -start -- sh -c 'printf "SECOND-PANE-TEXT\r\n"; sleep 120' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 3
+
+    if pane | grep -q 'RENDERED-OUTPUT-HERE.*SECOND-PANE-TEXT'; then
+        ok "Ctrl-] | puts two services side by side on one screen"
+    else
+        bad "splitting did not show both services: $(pane | head -1)"
+    fi
+
+    # Which pane has the keyboard. With two shells on screen there is no other way to tell, and
+    # typing into the wrong one is the mistake this prevents.
+    if pane | sed -n '12p' | grep -q 'renderdemo \[rendertwo\]'; then
+        ok "the status line marks which pane the keyboard is going to"
+    else
+        bad "the pane marker is wrong: $(pane | sed -n '12p')"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] 'o'
+    sleep 2
+    if pane | sed -n '12p' | grep -q '\[renderdemo\] rendertwo'; then
+        ok "Ctrl-] o moves the keyboard to the other pane"
+    else
+        bad "focus did not move: $(pane | sed -n '12p')"
+    fi
+
+    # And still nothing borrowed, with two panes up.
+    region=$(ask '#{scroll_region_upper}-#{scroll_region_lower}')
+    if [ "$region" = "0-11" ]; then
+        ok "a split screen still borrows no scrolling region"
+    else
+        bad "the split screen set a scrolling region: $region"
+    fi
+
     tmux -L "$tmuxSock" kill-server 2>/dev/null
-    "$gz" rm renderdemo >/dev/null 2>&1
+    "$gz" rm renderdemo rendertwo >/dev/null 2>&1
 
     # Not checked here: that attaching does not overwrite the line you typed the command on.
     #

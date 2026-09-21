@@ -1,0 +1,330 @@
+package daemon
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/LaPingvino/gozellij/internal/ipc"
+	"github.com/LaPingvino/gozellij/internal/vt"
+	"github.com/LaPingvino/gozellij/internal/vt/grid"
+	"github.com/LaPingvino/gozellij/internal/vt/layout"
+	"golang.org/x/term"
+)
+
+// The rendered session is where gozellij stops being one service in one terminal.
+//
+// The byte-pipe attach can only ever show one thing: it hands the service's output to the user's
+// terminal unchanged, and two services would be two programs writing over each other. Owning the
+// grid is what makes a split screen possible at all, which is the whole reason DESIGN.md puts the
+// emulator before the multiplexing.
+//
+// One goroutine per pane reads that pane's frames and posts them to a single channel, and one
+// select owns everything else - the keyboard, the commands, the resizes. The same reasoning as
+// runSession's: the things that can happen next are few and naming them all in one place is easier
+// to be sure about than a mutex shared between readers.
+
+// a livePane is one service being shown.
+type livePane struct {
+	service string
+	client  *Client
+	term    *grid.Term
+	rect    layout.Rect
+	// finished marks a service that has ended. Its pane stays on screen with its last output,
+	// because a pane that vanishes takes the error message with it.
+	finished bool
+}
+
+// Rect, Grid and Service are what the painter needs of a pane.
+func (p *livePane) Rect() layout.Rect { return p.rect }
+func (p *livePane) Grid() vt.Grid     { return p.term }
+func (p *livePane) Service() string   { return p.service }
+
+// paneEvent is something a pane's connection had to say.
+type paneEvent struct {
+	pane     *livePane
+	data     []byte
+	finished bool
+	err      error
+	message  string
+}
+
+// renderedSession shows one or more services at once and returns why it ended.
+func renderedSession(socket string, first *Client, service string, input *terminalInput, in *os.File, screen *renderedScreen, replay bool) (attachOutcome, error) {
+	cols, rows := screen.ServiceSize()
+	if _, err := first.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay}); err != nil {
+		return outcomeDisconnected, err
+	}
+
+	events := make(chan paneEvent, 64)
+	panes := []*livePane{{service: service, client: first, term: grid.New(cols, rows)}}
+	layoutPanes(panes, screen)
+	go readFrames(panes[0], events)
+
+	defer func() {
+		for _, p := range panes {
+			p.client.Close()
+		}
+	}()
+
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+
+	focus := 0
+	paint := func() {
+		ps := make([]layoutPane, len(panes))
+		for i, p := range panes {
+			ps[i] = p
+		}
+		_ = screen.PaintPanes(ps, focus)
+	}
+	paint()
+
+	data, cmds, ended := input.data, input.cmds, input.ended
+	for {
+		select {
+		case chunk := <-data:
+			// To the focused pane only. A keystroke that went to all of them would be typed
+			// into every shell on the screen at once, which is the kind of mistake that is
+			// discovered by running rm in the wrong one.
+			if err := panes[focus].client.Writer().WriteFrame(ipc.KindData, chunk); err != nil {
+				return outcomeDisconnected, err
+			}
+
+		case want := <-cmds:
+			// Everything typed before the command goes first, for the same reason runSession
+			// drains here: two ready channels are chosen between at random.
+			for draining := true; draining; {
+				select {
+				case chunk := <-data:
+					_ = panes[focus].client.Writer().WriteFrame(ipc.KindData, chunk)
+				default:
+					draining = false
+				}
+			}
+			switch want {
+			case outcomeSplit:
+				next, err := nextUnshown(socket, panes[focus].service, panes)
+				if err != nil {
+					note(err.Error())
+					paint()
+					continue
+				}
+				p, err := openPane(socket, next, screen, len(panes)+1)
+				if err != nil {
+					note(err.Error())
+					paint()
+					continue
+				}
+				panes = append(panes, p)
+				focus = len(panes) - 1
+				layoutPanes(panes, screen)
+				resizePanes(panes)
+				go readFrames(p, events)
+				paint()
+
+			case outcomeFocus:
+				focus = (focus + 1) % len(panes)
+				paint()
+
+			case outcomeClosePane:
+				if len(panes) == 1 {
+					// Closing the only pane is detaching, and saying so is better than either
+					// doing nothing or leaving an empty screen.
+					return outcomeDetached, nil
+				}
+				panes[focus].client.Close()
+				panes = append(panes[:focus], panes[focus+1:]...)
+				focus = focus % len(panes)
+				layoutPanes(panes, screen)
+				resizePanes(panes)
+				paint()
+
+			default:
+				return want, nil
+			}
+
+		case <-ended:
+			data, cmds, ended = nil, nil, nil
+
+		case ev := <-events:
+			if ev.message != "" {
+				note(ev.message)
+			}
+			if len(ev.data) > 0 {
+				_, _ = ev.pane.term.Write(ev.data)
+				paint()
+			}
+			if ev.finished {
+				ev.pane.finished = true
+			}
+			if ev.err != nil || ev.finished {
+				if allDone(panes) {
+					if ev.finished {
+						return outcomeFinished, nil
+					}
+					return outcomeDisconnected, ev.err
+				}
+			}
+
+		case <-winch:
+			w, h, err := term.GetSize(int(in.Fd()))
+			if err != nil || w <= 0 || h <= 0 {
+				continue
+			}
+			if err := screen.Resize(w, h); err != nil {
+				return outcomeDisconnected, err
+			}
+			layoutPanes(panes, screen)
+			resizePanes(panes)
+			paint()
+		}
+	}
+}
+
+// layoutPanes divides the screen into equal columns, one per pane, with a blank column between.
+//
+// Columns rather than rows because a terminal is wider than it is tall and a shell needs its
+// width more than its height. Equal rather than adjustable because a pane you cannot resize is a
+// limitation, and a resize handle nobody has built yet is a lie.
+func layoutPanes(panes []*livePane, screen *renderedScreen) {
+	cols, rows := screen.ServiceSize()
+	n := len(panes)
+	if n == 0 {
+		return
+	}
+	// n-1 single-column gaps, so the panes do not run into each other with no visible seam.
+	usable := cols - (n - 1)
+	if usable < n {
+		usable = n
+	}
+	width := usable / n
+	x := 0
+	for i, p := range panes {
+		w := width
+		if i == n-1 {
+			// The last pane takes the remainder, so that a width that does not divide evenly
+			// leaves no unused stripe down the right-hand side.
+			w = cols - x
+		}
+		p.rect = layout.Rect{Col: x, Row: 0, Cols: w, Rows: rows}
+		x += w + 1
+	}
+}
+
+// resizePanes tells each pane's grid and each pane's service how big it now is.
+func resizePanes(panes []*livePane) {
+	for _, p := range panes {
+		_ = p.term.Resize(p.rect.Cols, p.rect.Rows)
+		_ = p.client.sendResize(p.rect.Cols, p.rect.Rows)
+	}
+}
+
+func allDone(panes []*livePane) bool {
+	for _, p := range panes {
+		if !p.finished {
+			return false
+		}
+	}
+	return true
+}
+
+// openPane attaches to another service for a new pane.
+func openPane(socket, service string, screen *renderedScreen, count int) (*livePane, error) {
+	c, err := Dial(socket)
+	if err != nil {
+		return nil, err
+	}
+	cols, rows := screen.ServiceSize()
+	// A first guess at the size; layoutPanes and resizePanes correct it immediately. Attaching at
+	// the full width for an instant is better than attaching at zero, which some programs read as
+	// "no terminal" and never redraw from.
+	cols = max(cols/max(count, 1), 1)
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true}); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return &livePane{service: service, client: c, term: grid.New(cols, rows)}, nil
+}
+
+// nextUnshown finds the next service that is not already on the screen.
+//
+// Next in the same rotation Ctrl-] n walks, starting from the focused pane, rather than first in
+// the list. Splitting and switching should agree about what "the next one" means: picking the
+// alphabetically first unshown service instead meant that in a session with several services the
+// split showed whichever one happened to sort first, which is not a thing anyone asked for and was
+// caught by an acceptance check pairing the wrong two panes.
+func nextUnshown(socket, from string, panes []*livePane) (string, error) {
+	names, err := serviceNames(socket)
+	if err != nil {
+		return "", err
+	}
+	shown := make(map[string]bool, len(panes))
+	for _, p := range panes {
+		shown[p.service] = true
+	}
+	start := 0
+	for i, n := range names {
+		if n == from {
+			start = i
+			break
+		}
+	}
+	for i := 1; i <= len(names); i++ {
+		n := names[(start+i)%len(names)]
+		if !shown[n] {
+			return n, nil
+		}
+	}
+	return "", errors.New("every service is already on the screen")
+}
+
+// readFrames turns one connection into events.
+func readFrames(p *livePane, events chan<- paneEvent) {
+	for {
+		kind, payload, err := p.client.Reader().ReadFrame()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				events <- paneEvent{pane: p, err: nil, finished: false}
+				return
+			}
+			events <- paneEvent{pane: p, err: err}
+			return
+		}
+		switch kind {
+		case ipc.KindData:
+			// Copied: the frame reader reuses its buffer, and a pane's grid would otherwise be
+			// written from a slice that is about to hold somebody else's output.
+			b := make([]byte, len(payload))
+			copy(b, payload)
+			events <- paneEvent{pane: p, data: b}
+		case ipc.KindEvent:
+			var ev ipc.Event
+			if jsonUnmarshal(payload, &ev) == nil {
+				events <- paneEvent{pane: p, finished: ev.Kind == ipc.EventFinished, message: ev.Message}
+			}
+		case ipc.KindResponse:
+			var r ipc.Response
+			if jsonUnmarshal(payload, &r) == nil && !r.OK {
+				events <- paneEvent{pane: p, message: r.Error}
+			}
+		}
+	}
+}
+
+// note puts a message where a user will see it without disturbing the drawn screen.
+//
+// Standard error, which in a rendered session is not the screen: the next paint covers whatever it
+// printed. That is a real limitation and the honest place for it is here rather than in a silent
+// drop - a message nobody can read is worse than one that flashes.
+func note(msg string) {
+	if msg == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
+}

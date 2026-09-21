@@ -48,11 +48,17 @@ const (
 	outcomePrev
 	// outcomeList means the user asked to see what there is and pick one.
 	outcomeList
+	// outcomeSplit, outcomeFocus and outcomeClosePane are the split-screen commands. They only
+	// mean anything in a rendered session - a byte pipe has one screen and no way to divide it -
+	// and the reader says so rather than letting the key do nothing.
+	outcomeSplit
+	outcomeFocus
+	outcomeClosePane
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split · o switch pane · x close pane · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -123,7 +129,6 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 				return StatusContext(socket, service)
 			}))
 			defer rendered.Close()
-			out = rendered
 		}
 	}
 	if rendered == nil {
@@ -196,15 +201,15 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 			c = back
 		}
 
-		reserved := painter.Reserved()
+		var outcome attachOutcome
 		if rendered != nil {
-			// The rendered screen keeps its own row back; the session only needs to know how
-			// many rows the service is not getting, so that a resize tells it the same thing.
-			_, srows := rendered.ServiceSize()
-			_, trows, _ := term.GetSize(int(in.Fd()))
-			reserved = trows - srows
+			// A session that owns the screen can show more than one service at a time, which a
+			// byte pipe cannot: two services writing to one terminal would be two programs
+			// drawing over each other. This is what the emulator was built for.
+			outcome, err = renderedSession(socket, c, service, input, in, rendered, replay && first)
+		} else {
+			outcome, err = c.runSession(service, input, in, out, replay && first, painter.Reserved())
 		}
-		outcome, err := c.runSession(service, input, in, out, replay && first, reserved)
 		c.Close()
 		if err != nil {
 			return err
@@ -582,6 +587,18 @@ func (t *terminalInput) run(in *os.File) {
 					if !command(outcomeList) {
 						return
 					}
+				case '|', 's', 'S':
+					if !command(outcomeSplit) {
+						return
+					}
+				case 'o', 'O', '\t':
+					if !command(outcomeFocus) {
+						return
+					}
+				case 'x', 'X':
+					if !command(outcomeClosePane) {
+						return
+					}
 				case '?', 'h':
 					if !flush() {
 						return
@@ -702,13 +719,6 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 			w, h, err := term.GetSize(int(in.Fd()))
 			if err != nil || w <= 0 || h-reserved <= 0 {
 				continue
-			}
-			if r, ok := out.(*renderedScreen); ok {
-				// The grid has to change shape before the service is told, or the next output
-				// is drawn into a screen that is still the old size.
-				if rerr := r.Resize(w, h); rerr != nil {
-					return outcomeDisconnected, rerr
-				}
 			}
 			// Minus the reserved row here too, or a resize hands the service back the row the
 			// status line is standing on.

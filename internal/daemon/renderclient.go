@@ -8,7 +8,6 @@ import (
 
 	"github.com/LaPingvino/gozellij/internal/status"
 	"github.com/LaPingvino/gozellij/internal/vt"
-	"github.com/LaPingvino/gozellij/internal/vt/grid"
 	"github.com/LaPingvino/gozellij/internal/vt/layout"
 	"github.com/LaPingvino/gozellij/internal/vt/render"
 )
@@ -30,9 +29,13 @@ import (
 // Ctrl-L - whereas the byte pipe's failures are the terminal's own. The corpus says what is
 // understood; until a pane needs it, the conservative default is the honest one.
 type renderedScreen struct {
-	mu   sync.Mutex
-	term *grid.Term
-	out  io.Writer
+	mu  sync.Mutex
+	out io.Writer
+
+	// lastPanes is what was drawn last, so that a repaint for the clock draws the same screen
+	// rather than a different one.
+	lastPanes []layoutPane
+	lastFocus int
 
 	cols, rows int
 	// reserved is how many rows at the bottom belong to the status line.
@@ -56,11 +59,7 @@ func newRenderedScreen(out io.Writer, cols, rows, reserved int, line func(cols i
 		// row from a one-row screen would leave the service nothing to draw on at all.
 		reserved = 0
 	}
-	s := &renderedScreen{
-		out: out, cols: cols, rows: rows, reserved: reserved, line: line,
-		term: grid.New(cols, rows-reserved),
-	}
-	return s
+	return &renderedScreen{out: out, cols: cols, rows: rows, reserved: reserved, line: line}
 }
 
 // ServiceSize is the screen the service is told it has, which is the terminal minus the status row.
@@ -70,22 +69,26 @@ func (s *renderedScreen) ServiceSize() (cols, rows int) {
 	return s.cols, s.rows - s.reserved
 }
 
-// Write feeds the service's output into the grid and repaints.
+// Repaint draws the same panes again, for when something outside them has changed - the status
+// line's clock, most obviously.
 //
-// A repaint per write, and per write rather than on a timer on purpose: a timer adds latency to
-// every keystroke's echo, and this is what the user is looking at. Whole-screen repaints are what
-// render.Screen does today; if that turns out to be too much for a busy pane, the fix is damage
-// tracking in the renderer rather than a delay here.
-func (s *renderedScreen) Write(p []byte) (int, error) {
+// The same panes, remembered from the last paint, and that is the point. An earlier version kept a
+// grid of its own for this and painted that instead, so the ticker quietly replaced the screen
+// with an empty one a second after every keystroke. Two things that both paint the terminal is one
+// too many; there is now a single path and it cannot disagree with itself.
+func (s *renderedScreen) Repaint() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.term.Write(p); err != nil {
-		return 0, err
+	panes, focus := s.lastPanes, s.lastFocus
+	s.mu.Unlock()
+	if len(panes) == 0 {
+		return nil
 	}
-	return len(p), s.paint()
+	return s.PaintPanes(panes, focus)
 }
 
-// Resize changes the terminal size and repaints.
+// Resize records the new terminal size. It does not draw: the session that owns the panes has to
+// give each of them its new rectangle first, and painting in between would show a screen laid out
+// for the old size.
 func (s *renderedScreen) Resize(cols, rows int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,18 +97,7 @@ func (s *renderedScreen) Resize(cols, rows int) error {
 		reserved = 0
 	}
 	s.cols, s.rows, s.reserved = cols, rows, reserved
-	if err := s.term.Resize(cols, rows-reserved); err != nil {
-		return err
-	}
-	return s.paint()
-}
-
-// Repaint draws again without anything having changed, for when something outside the grid has -
-// the status line's clock, or the service being switched.
-func (s *renderedScreen) Repaint() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.paint()
+	return nil
 }
 
 // Close puts the terminal back the way a program that owned it should: attributes reset, cursor
@@ -114,20 +106,6 @@ func (s *renderedScreen) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := io.WriteString(s.out, "\x1b[0m\x1b[?25h\r\n")
-	return err
-}
-
-func (s *renderedScreen) paint() error {
-	panes := []layout.Pane{{
-		Rect:    layout.Rect{Cols: s.cols, Rows: s.rows - s.reserved},
-		Term:    s.term,
-		Focused: true,
-	}}
-	frame := layout.Compose(s.cols, s.rows, panes)
-	if s.reserved > 0 && s.line != nil {
-		writeStatus(frame, s.rows-1, s.line(s.cols))
-	}
-	_, err := s.out.Write(render.Screen(frame))
 	return err
 }
 
@@ -174,4 +152,63 @@ func statusLine(cfg status.Config, ctx func() status.Context) func(int) string {
 		}
 		return strings.TrimRight(status.Render(ctx(), cfg.Left, cfg.Right, cols), " ")
 	}
+}
+
+// PaintPanes draws several panes and the status line as one screen.
+//
+// The whole picture in one composition: the panes, the blank seams between them, a marker on the
+// focused one, and the status row. Nothing is drawn over anything else, which is what makes the
+// cursor land where it belongs without anything having to save and restore it.
+func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastPanes, s.lastFocus = panes, focus
+
+	ps := make([]layout.Pane, 0, len(panes))
+	for i, p := range panes {
+		ps = append(ps, layout.Pane{Rect: p.Rect(), Term: p.Grid(), Focused: i == focus})
+	}
+	frame := layout.Compose(s.cols, s.rows, ps)
+	if s.reserved > 0 && s.line != nil {
+		text := s.line(s.cols)
+		if len(panes) > 1 {
+			// Which pane has the keyboard, since with two shells on screen there is no other way
+			// to tell. In front of the rest of the line: it is the thing that changes what your
+			// next keystroke does.
+			text = trimToWidth(paneMarker(panes, focus)+" "+text, s.cols)
+		}
+		writeStatus(frame, s.rows-1, text)
+	}
+	_, err := s.out.Write(render.Screen(frame))
+	return err
+}
+
+// layoutPane is what PaintPanes needs of a pane, so that this file does not have to know what a
+// session is.
+type layoutPane interface {
+	Rect() layout.Rect
+	Grid() vt.Grid
+	Service() string
+}
+
+func paneMarker(panes []layoutPane, focus int) string {
+	var b strings.Builder
+	for i, p := range panes {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		if i == focus {
+			b.WriteString("[" + p.Service() + "]")
+			continue
+		}
+		b.WriteString(p.Service())
+	}
+	return b.String()
+}
+
+func trimToWidth(s string, cols int) string {
+	if vt.StringWidth(s) <= cols {
+		return s
+	}
+	return vt.TruncateToWidth(s, cols)
 }
