@@ -19,6 +19,18 @@ type parser struct {
 	params []byte
 	inter  []byte
 	utf8   []byte
+	// invalid marks bytes that turned out not to be a character. The replacement is drawn at the
+	// next opportunity rather than immediately, so that an escape sequence arriving in between is
+	// obeyed first - see the comment where it is set.
+	invalid bool
+}
+
+// drawPending draws the replacement character owed for bytes that could not be decoded.
+func (p *parser) drawPending(t *Term) {
+	if p.invalid {
+		p.invalid = false
+		t.put(utf8.RuneError, 1)
+	}
 }
 
 type state int
@@ -50,6 +62,17 @@ func (p *parser) feed(t *Term, b []byte) {
 // so that a multi-byte rune is decoded whole.
 func (p *parser) ground(t *Term, b []byte, i int) int {
 	c := b[i]
+
+	// A byte that is not a continuation byte ends any half-decoded character, whatever it is.
+	//
+	// At the top, before the escape check, because this has to hold however the bytes were split.
+	// The look-ahead below can only see within one write, so with a pty handing over one byte at a
+	// time the truncated character was never noticed and its replacement never drawn - which
+	// split-invariance reported and a single-write test could not.
+	if len(p.utf8) > 0 && (c < 0x80 || c > 0xbf) {
+		p.utf8 = p.utf8[:0]
+		p.invalid = true
+	}
 	switch {
 	case c == 0x1b:
 		p.state = escape
@@ -85,6 +108,7 @@ func (p *parser) ground(t *Term, b []byte, i int) int {
 	}
 
 	if c < 0x80 {
+		p.drawPending(t)
 		t.put(rune(c), vt.RuneWidth(rune(c)))
 		return 0
 	}
@@ -99,14 +123,45 @@ func (p *parser) ground(t *Term, b []byte, i int) int {
 	p.utf8 = append(p.utf8, c)
 	extra := 0
 	for !utf8.FullRune(p.utf8) && extra < 3 && i+extra+1 < len(b) {
+		next := b[i+extra+1]
+		if next < 0x80 || next > 0xbf {
+			// Not a continuation byte, so the character is truncated and this byte belongs to
+			// whatever comes next. Absorbing it anyway is how an escape sequence following a
+			// half-written character got eaten: vim emitted a colour change straight after one,
+			// utf8.FullRune said three bytes were a complete rune because it only counts them,
+			// and the ESC vanished into a replacement character while `[34m` printed as text
+			// across the screen. Found by running vim through gozellij and diffing against the
+			// same vim in tmux. The byte is left for the next pass, where the rule at the top of
+			// this function turns the leftovers into a replacement.
+			break
+		}
 		extra++
-		p.utf8 = append(p.utf8, b[i+extra])
+		p.utf8 = append(p.utf8, next)
 	}
 	if !utf8.FullRune(p.utf8) {
+		if len(p.utf8) >= utf8.UTFMax || !couldComplete(p.utf8) {
+			// These bytes will never become a character, so a replacement is drawn for them
+			// rather than dropped - dropping them shifted everything after them one column left,
+			// which the corpus reported at the exact column. But not yet: what follows may be an
+			// escape sequence, and a terminal obeys that first, so the replacement appears in
+			// whatever style is current by then. tmux draws it blue when a colour change follows
+			// the truncated character, which is exactly what vim emits.
+			p.utf8 = p.utf8[:0]
+			p.invalid = true
+			return extra
+		}
 		return extra // wait for the rest
 	}
-	r, _ := utf8.DecodeRune(p.utf8)
+	r, size := utf8.DecodeRune(p.utf8)
+	if r == utf8.RuneError && size <= 1 {
+		// Bytes that are a complete-looking sequence but not a valid character.
+		p.utf8 = p.utf8[:0]
+		p.drawPending(t)
+		t.put(utf8.RuneError, 1)
+		return extra
+	}
 	p.utf8 = p.utf8[:0]
+	p.drawPending(t)
 	t.put(r, vt.RuneWidth(r))
 	return extra
 }
@@ -446,4 +501,29 @@ func extendedColor(rest []int) (vt.Color, int) {
 		return vt.Color{Kind: vt.ColorRGB, R: uint8(rest[1]), G: uint8(rest[2]), B: uint8(rest[3])}, 4
 	}
 	return vt.Color{}, 1
+}
+
+// couldComplete reports whether these bytes might still become a character once more arrive.
+//
+// A lead byte says how many bytes follow it. Anything else - a stray continuation byte, or a lead
+// byte that promises fewer bytes than are already buffered - is rubbish that will never resolve,
+// and a parser that waits for it stops drawing.
+func couldComplete(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	var want int
+	switch c := b[0]; {
+	case c < 0x80:
+		want = 1
+	case c >= 0xc2 && c <= 0xdf:
+		want = 2
+	case c >= 0xe0 && c <= 0xef:
+		want = 3
+	case c >= 0xf0 && c <= 0xf4:
+		want = 4
+	default:
+		return false
+	}
+	return len(b) < want
 }

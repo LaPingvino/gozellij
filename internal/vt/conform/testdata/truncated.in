@@ -1,0 +1,12 @@
+# size 20x5
+# A character cut in half, and what must happen to whatever follows it.
+#
+# Row 1: two bytes of a three-byte character, then an escape sequence. The sequence must still be
+#        obeyed - this is the bug that made vim's colour changes print as text across the screen,
+#        found by running vim through gozellij and diffing against the same vim in tmux.
+# Row 3: a stray continuation byte with no lead byte in front of it.
+# Row 5: a lead byte that promises four bytes and gets one, then ordinary text. The text must not
+#        be swallowed waiting for bytes that are never coming.
+\e[H\xe6\x97\e[34mAFTER-ESCAPE
+\e[3;1H\x9ctail
+\e[5;1H\xf0OK-ANYWAY

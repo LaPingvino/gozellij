@@ -565,6 +565,58 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm renderdemo rendertwo >/dev/null 2>&1
 
+    # ------------------------------------- the emulator against tmux, on a real program, for real
+    #
+    # Everything else here checks that gozellij does what gozellij intends. This checks that its
+    # terminal emulator agrees with a different one about what a real program's output means: the
+    # same editor, the same file, the same keystroke, one through gozellij and one straight into
+    # tmux at the size gozellij gives the service. The screens must match.
+    #
+    # vim on a file with wide characters and an accent, because the subject has to exercise
+    # something. The first version of this check used a pager on a file of numbers, and three
+    # deliberate breakages of the emulator - erase-in-line, the right margin, cursor positioning -
+    # all passed it: ASCII in a pager touches almost none of an emulator.
+    #
+    # Both sides get the same TERM and the same LANG. Without that, the service inherits the
+    # daemon's environment, which under `env -i` has no locale at all - vim then falls back to
+    # latin1 and draws each byte of a wide character as its own blue placeholder. That is vim
+    # being told something different, not an emulator disagreeing, and it made the two screens
+    # differ for a reason that had nothing to do with what is being tested.
+    #
+    # Rows 1 to 22 only: row 23 is vim's message line, and attaching sends a resize which makes vim
+    # clear it. That is about when each vim was told its size, not about either emulator.
+    printf 'alpha\n\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e line\ncaf\xc3\xa9\nlast\n' > "$home/wide-one.txt"
+    cp "$home/wide-one.txt" "$home/wide-two.txt"
+    "$gz" add vimmy -start -- sh -c "TERM=xterm-256color LANG=C.UTF-8 exec vim -u NONE -N -n $home/wide-one.txt" >/dev/null 2>&1
+    sleep 1
+    plain="${tmuxSock}-plain"
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach vimmy'"
+    tmux -L "$plain" new-session -d -x 80 -y 23 -e TERM=xterm-256color -e LANG=C.UTF-8 \
+        "sh -c 'stty -echo; exec vim -u NONE -N -n $home/wide-two.txt'"
+    sleep 3
+    tmux -L "$tmuxSock" send-keys G
+    tmux -L "$plain" send-keys G
+    sleep 2
+
+    pane | head -22 > "$home/screen-gozellij.txt"
+    tmux -L "$plain" capture-pane -p | head -22 > "$home/screen-tmux.txt"
+    if ! grep -q 'alpha' "$home/screen-tmux.txt"; then
+        bad "the reference editor drew nothing, so this comparison would be vacuous"
+    elif ! grep -q '日本語' "$home/screen-tmux.txt"; then
+        bad "the reference editor did not draw the wide characters, so this comparison proves less than it claims"
+    elif diff -q "$home/screen-gozellij.txt" "$home/screen-tmux.txt" >/dev/null; then
+        ok "gozellij's emulator and tmux's draw a real editor identically, wide characters included"
+    else
+        bad "the two emulators disagree: $(diff "$home/screen-gozellij.txt" "$home/screen-tmux.txt" | head -4 | tr '\n' ' ')"
+    fi
+
+    tmux -L "$plain" kill-server 2>/dev/null
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm vimmy >/dev/null 2>&1
+
     # Not checked here: that attaching does not overwrite the line you typed the command on.
     #
     # It is a real bug when it happens - reserving the bottom row used to land the cursor on the

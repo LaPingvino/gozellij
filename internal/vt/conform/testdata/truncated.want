@@ -1,0 +1,11 @@
+cols 20
+rows 5
+cursor 4 10
+sty 4 4 4 4 4 4 4 4 4 4 4 4 4
+row �AFTER-ESCAPE
+row
+sty 4 4 4 4 4
+row �tail
+row
+sty 4 4 4 4 4 4 4 4 4 4
+row �OK-ANYWAY
