@@ -100,6 +100,38 @@ kill_daemon_hard() {
     daemon_pid=""
 }
 
+# only <name>... - removes every service except the ones named.
+#
+# Later checks run in an environment the earlier ones littered, and three checks have now quietly
+# tested the wrong thing because of it: a split opened `pineapple` left over from the log-survival
+# check, then `stubborn` left over from the tree-kill check, and a status line was read that was
+# perfectly correct about a service the check had never heard of. Anything that depends on *which*
+# service gozellij picks must say what it expects to be there.
+#
+# Removal rather than a fresh daemon per section: the daemon surviving its own checks is one of the
+# things being tested, and restarting it between them would quietly stop testing that.
+only() {
+    local keep=" $* "
+    local name
+    for name in $("$gz" ls 2>/dev/null | awk 'NR>1 {print $1}'); do
+        case "$keep" in
+            *" $name "*) ;;
+            *) "$gz" rm "$name" >/dev/null 2>&1 ;;
+        esac
+    done
+    # And say so if it did not work. A helper that clears the ground and silently fails to is
+    # worse than no helper: the checks that follow would go back to depending on what the earlier
+    # ones left behind, and would pass or fail for reasons nobody could see.
+    local left
+    left=$("$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')
+    for name in $left; do
+        case "$keep" in
+            *" $name "*) ;;
+            *) bad "could not clear the ground before a screen check: $name is still defined" ;;
+        esac
+    done
+}
+
 # in_terminal <keys-script> <command...> - runs a command on a real pty, feeding it keys over time.
 #
 # The keys come from a shell fragment rather than a file, because *when* a key arrives is half of
@@ -493,6 +525,7 @@ else
     # GOZELLIJ_RENDER=1 the client keeps a grid of its own and paints it, so the status line is a
     # row the service was never given. The observable difference is the scrolling region: the
     # borrowing one sets it, and this one must leave the whole screen alone.
+    only
     "$gz" add renderdemo -start -- sh -c 'printf "RENDERED-OUTPUT-HERE\r\n"; sleep 120' >/dev/null 2>&1
     sleep 1
     tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
@@ -594,6 +627,7 @@ else
     # next service there is, and the services left behind by earlier checks are in that order too.
     # Without this the split opened `stubborn` from the tree-kill section and the check reported a
     # status line that was perfectly correct about something else.
+    only
     "$gz" add msg1 -start -- sh -c 'printf "STILL-HERE\r\n"; sleep 120' >/dev/null 2>&1
     "$gz" add msg2 -start -- sh -c 'printf "ABOUT-TO-FAIL\r\n"; sleep 5; exit 3' >/dev/null 2>&1
     sleep 1
@@ -619,6 +653,7 @@ else
     # `gozellij upgrade` keeps every process running, and that promise is worth less than it sounds
     # if the screen showing them has to be rebuilt afterwards. Both panes must still be live: the
     # failure this catches was silent, because two frozen panes look exactly like two idle shells.
+    only
     "$gz" add tickone -start -- sh -c 'i=0; while :; do printf "one-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
     "$gz" add ticktwo -start -- sh -c 'i=0; while :; do printf "two-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
     sleep 1
