@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/LaPingvino/gozellij/internal/vt"
 )
 
 // Record drives a case through a real tmux and returns what the screen became.
@@ -259,12 +261,17 @@ func expandTabs(lines []string) []string {
 			continue
 		}
 		var b strings.Builder
+		width := 0
 		for _, r := range l {
 			if r != '\t' {
 				b.WriteRune(r)
+				width += vt.RuneWidth(r)
 				continue
 			}
-			for next := (b.Len()/8 + 1) * 8; b.Len() < next; {
+			// Columns, not bytes. Padding by byte length made a three-byte replacement character
+			// count as three columns, so a tab after one landed two columns early and the
+			// comparison blamed the emulator for the oracle's arithmetic.
+			for next := (width/8 + 1) * 8; width < next; width++ {
 				b.WriteByte(' ')
 			}
 		}

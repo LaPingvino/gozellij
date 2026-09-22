@@ -1,0 +1,9 @@
+# size 20x3
+# Escapes that restart, and a tab measured in columns.
+#
+# Row 1: two escapes and a final byte. The second escape starts the sequence again and the A ends
+#        it, so nothing is drawn - this used to print the A.
+# Row 2: a byte that is not a character, then a tab, then a mark. The tab stop is counted in
+#        columns, so the mark lands at column eight however many bytes the replacement took.
+\e\eA
+\e[2;1H\x81\t@

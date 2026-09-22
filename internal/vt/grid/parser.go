@@ -184,7 +184,15 @@ func (p *parser) control(t *Term, c byte) bool {
 }
 
 func (p *parser) escape(t *Term, c byte) {
-	if c != 0x1b && c < 0x20 {
+	if c == 0x1b {
+		// Another escape starts again from the beginning. `\e\eA` draws nothing: the second ESC
+		// restarts the sequence and the A ends it. Dropping to ground on the second one, which is
+		// what this did, printed the A.
+		p.params = p.params[:0]
+		p.inter = p.inter[:0]
+		return
+	}
+	if c < 0x20 {
 		// A control character between the ESC and the byte that names the sequence is executed
 		// where it appears, and the sequence is still waiting afterwards. `\e\rB` is a carriage
 		// return and then ESC B, and draws nothing; this used to abandon the escape on the
