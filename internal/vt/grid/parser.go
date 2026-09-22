@@ -431,6 +431,13 @@ func (p *parser) dispatch(t *Term, final byte) {
 		t.restoreCursor()
 	case 'm':
 		t.sgr(ps)
+	case 'q':
+		// DECSCUSR: the shape of the cursor, written `CSI Ps SP q`. The space is what tells it
+		// apart from other sequences ending in q, so the intermediate byte has to be checked -
+		// acting on every `q` would make an unrelated sequence change the cursor.
+		if len(p.inter) == 1 && p.inter[0] == ' ' {
+			t.cur.Shape = arg(0, 0)
+		}
 	}
 }
 

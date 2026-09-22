@@ -56,6 +56,9 @@ type renderedScreen struct {
 	// title is what the terminal has been told to call itself, so that it is only told when it
 	// changes rather than on every repaint.
 	title string
+	// shape is the cursor shape the terminal has been told to use, so that it is told only when
+	// it changes.
+	shape int
 
 	// suspended stops painting while something else owns the screen - the service picker, which
 	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
@@ -154,6 +157,13 @@ func (s *renderedScreen) Close() error {
 	// terminal keeps output - but a status bar left along the bottom says gozellij is still here
 	// when it is not, and the next shell prompt appears above it.
 	s.releaseModes()
+	if s.shape != 0 {
+		// Back to the terminal's own default. A cursor left as a blinking bar after a detach is
+		// the same class of mess as mouse reporting left switched on: it outlives the program
+		// that asked for it.
+		s.shape = 0
+		fmt.Fprint(s.out, "\x1b[0 q")
+	}
 	var b strings.Builder
 	b.WriteString("\x1b[0m")
 	if s.reserved > 0 && s.rows > 0 {
@@ -264,6 +274,7 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	if focus < len(panes) {
 		s.applyModes(panes[focus].Modes())
 		s.applyTitle(panes[focus].Title())
+		s.applyShape(panes[focus].CursorShape())
 	}
 	frame := layout.Compose(s.cols, s.rows, ps)
 	if s.reserved > 0 && s.line != nil {
@@ -297,6 +308,8 @@ type layoutPane interface {
 	Modes() map[int]bool
 	// Title is what this pane's program asked the window to be called.
 	Title() string
+	// CursorShape is the shape that program asked for, zero for the terminal's default.
+	CursorShape() int
 }
 
 // applyModes puts the real terminal into the state a pane asked for, changing only what differs.
@@ -339,6 +352,20 @@ func (s *renderedScreen) applyTitle(title string) {
 	}
 	s.title = title
 	fmt.Fprintf(s.out, "\x1b]2;%s\x07", title)
+}
+
+// applyShape tells the terminal what shape to draw the cursor, when that has changed.
+//
+// The focused pane's, like the title and the modes: there is one cursor. A program that asks for a
+// bar while editing and a block otherwise is doing something the user can see, and a client that
+// interprets the stream has to carry it or the shape is whatever the last program to set it left
+// behind.
+func (s *renderedScreen) applyShape(shape int) {
+	if shape == s.shape {
+		return
+	}
+	s.shape = shape
+	fmt.Fprintf(s.out, "\x1b[%d q", shape)
 }
 
 // releaseModes puts back everything this client switched on.

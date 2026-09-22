@@ -702,6 +702,39 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------------ the cursor shape has to reach the terminal
+    #
+    # The last item on the list of things nothing checked. A program that asks for a bar while
+    # editing and a block otherwise is doing something the user can see, and a rendered attach that
+    # keeps the shape to itself leaves whatever the previous program set.
+    only
+    "$gz" add shaper -start -- sh -c 'printf "\033[5 qBAR-CURSOR\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 5 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render shaper > $home/shape.bin'"
+    sleep 3
+
+    if grep -q "$(printf '\033')\[5 q" "$home/shape.bin"; then
+        ok "a rendered attach passes the cursor shape to the terminal"
+    else
+        bad "the cursor shape never reached the terminal"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    sleep 1
+    # And puts it back. A cursor left as a blinking bar after a detach outlives the program that
+    # asked for it, the same way mouse reporting does.
+    if grep -q "$(printf '\033')\[0 q" "$home/shape.bin"; then
+        ok "and resets it on the way out"
+    else
+        bad "the cursor shape was left as the service set it"
+    fi
+
+    "$gz" rm shaper >/dev/null 2>&1
+
     # ---------------------------------------------- the window title has to reach the terminal
     #
     # Same shape as the modes below: a byte pipe hands OSC 2 to the real terminal, so a shell's
