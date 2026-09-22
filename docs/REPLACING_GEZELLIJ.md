@@ -128,6 +128,15 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **Mouse and paste reach the terminal.** A byte pipe passes a service's mode changes through for
+  free; a client that interprets the output has to hand them on, and this one did not - mouse
+  reporting, its encoding, focus events and bracketed paste were all absorbed, so clicking did
+  nothing and pasting into an editor misbehaved on a screen that otherwise looked perfect. The
+  focused pane's modes are applied, withdrawn when the keyboard moves to a pane that did not ask
+  for them, and released on the way out, because mouse reporting left switched on after a detach
+  outlives the program that caused it. **Verified** by reading the bytes the client writes, since
+  none of this is visible on the screen - which is why it was missing for as long as it was.
+
 - **A split that stacks.** `Ctrl-] -` puts the new pane underneath instead of beside: three panes
   in columns on an eighty-column terminal give twenty-six each, which is not a pane but a margin.
   One orientation for the whole screen, not a tree of splits - a tree means resizing, moving panes
