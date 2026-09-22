@@ -615,6 +615,38 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # ------------------------------------------------ the help key has to answer where you look
+    #
+    # Ctrl-] ? exists to tell you what the keys are. In a rendered attach it wrote its answer to
+    # standard error, which the next paint covered within milliseconds - a help key that helps
+    # nobody. The same went for the message saying the key you pressed does nothing.
+    only
+    "$gz" add helpy -start -- sh -c 'printf "HELP-DEMO\r\n"; sleep 120' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render helpy'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '?'
+    sleep 2
+    if pane | sed -n '8p' | grep -q 'detach'; then
+        ok "Ctrl-] ? answers on the status line, where it can be read"
+    else
+        bad "the help key said nothing visible: $(pane | sed -n '8p')"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] 'z'
+    sleep 2
+    if pane | sed -n '8p' | grep -q 'does nothing'; then
+        ok "a key that does nothing says so"
+    else
+        bad "an unknown key was swallowed: $(pane | sed -n '8p')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm helpy >/dev/null 2>&1
+
     # --------------------------------------------- the picker has to be visible to be a picker
     #
     # `Ctrl-] l` draws a menu and waits for a keystroke. In a rendered attach the repaint that

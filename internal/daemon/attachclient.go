@@ -144,6 +144,9 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 				return StatusContext(socket, service)
 			}))
 			defer rendered.Close()
+			// Anything the keyboard reader has to say now goes on the status line, where a paint
+			// will not erase it a moment later.
+			input.sayTo(rendered.Say)
 		}
 	}
 	if rendered == nil {
@@ -520,6 +523,11 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 // per session that was a rare lost keystroke after a daemon upgrade; with a key that switches
 // services it would be every other press.
 type terminalInput struct {
+	// sayMu guards say, which is where messages to the user go and which changes once the attach
+	// knows whether it is rendering. See sayTo.
+	sayMu sync.Mutex
+	say   func(string)
+
 	// data carries bytes meant for whatever service is attached.
 	data chan []byte
 	// cmds carries the things the user asked gozellij itself for.
@@ -532,8 +540,17 @@ type terminalInput struct {
 }
 
 // startTerminalInput begins reading the terminal.
+// startTerminalInput reads the keyboard.
+//
+// What it has to tell the user goes through a sink rather than to standard error directly, because
+// in a rendered attach standard error is covered by the next paint within milliseconds - which
+// made `Ctrl-] ?`, the key whose entire job is to tell you what the keys are, print its answer
+// onto a screen that erased it. The same went for the message saying that the key you just
+// pressed does nothing. The sink starts as standard error and is redirected by sayTo once the
+// attach knows whether it is drawing the screen itself.
 func startTerminalInput(in *os.File) *terminalInput {
 	t := &terminalInput{
+		say: sayToStderr,
 		// Buffered so a burst read is not held up by a session that is mid-switch.
 		data:  make(chan []byte, 64),
 		cmds:  make(chan attachOutcome, 1),
@@ -542,6 +559,27 @@ func startTerminalInput(in *os.File) *terminalInput {
 	}
 	go t.run(in)
 	return t
+}
+
+// sayTo redirects what this reader tells the user.
+func (t *terminalInput) sayTo(f func(string)) {
+	t.sayMu.Lock()
+	defer t.sayMu.Unlock()
+	t.say = f
+}
+
+// tell says something to the user, wherever that currently is.
+func (t *terminalInput) tell(msg string) {
+	t.sayMu.Lock()
+	say := t.say
+	t.sayMu.Unlock()
+	say(msg)
+}
+
+// sayToStderr is the default sink: a line on standard error, which is right for a byte-pipe attach
+// because nothing there is drawing over it.
+func sayToStderr(msg string) {
+	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
 }
 
 // stop abandons the reader. It does not interrupt the read in progress - nothing can - but it does
@@ -639,14 +677,14 @@ func (t *terminalInput) run(in *os.File) {
 					if !flush() {
 						return
 					}
-					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", prefixHelp)
+					t.tell(prefixHelp)
 				default:
 					// Say what to do rather than swallowing it. A prefix key that silently
 					// eats the next keystroke is indistinguishable from a dropped one.
 					if !flush() {
 						return
 					}
-					fmt.Fprintf(os.Stderr, "\r\n[gozellij: Ctrl-] %q does nothing. %s]\r\n", b, prefixHelp)
+					t.tell(fmt.Sprintf("Ctrl-] %q does nothing. %s", b, prefixHelp))
 				}
 				continue
 			}
