@@ -102,6 +102,11 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   passing, which is what says the daemon is the thing enforcing it; removing both makes the `Ctrl-C`
   check fail.
 
+  `gozellij ls` says which of the terminals attached can type - `2+1r` is two that can and one that
+  cannot - and `gozellij status` spells it out. `logs -f` counts as read-only, because a follower
+  has no way to send anything. **Verified** with one of each attached at once. What it does not say
+  is *whose* they are: the daemon knows a connection, not a person.
+
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.

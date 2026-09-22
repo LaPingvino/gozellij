@@ -152,7 +152,8 @@ byte pipe.
 
 `gozellij attach -r <name>` watches without touching: your keystrokes and your window size do not
 reach the service, so you can put eyes on something without your Ctrl-C ending it. The daemon
-enforces it, not the client.
+enforces it, not the client, and `gozellij ls` says which of the terminals attached can type:
+`2+1r` is two that can and one that cannot.
 
 The arrangement is remembered. Attach to the same service again - after a detach, or after your
 connection dropped - and the panes, their orientation and their sizes come back. It is kept in
