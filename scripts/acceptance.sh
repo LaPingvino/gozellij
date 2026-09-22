@@ -702,6 +702,49 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------------------- panes that are not the same size
+    #
+    # An even split is not always the right split. Ctrl-] > gives the focused pane more of the
+    # screen and Ctrl-] < gives it less, which is measured here by where the seam between them
+    # falls: the column the second service's output starts in.
+    only
+    for n in resa resb; do
+        "$gz" add "$n" -start -- sh -c "while :; do printf '$n-XXXXXXXXXXXXXXXXXXXX\r\n'; sleep 1; done" >/dev/null 2>&1
+    done
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render resa'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 2
+
+    seam() { pane | awk '/resb-/ {print index($0, "resb-"); exit}'; }
+    even=$(seam)
+    tmux -L "$tmuxSock" send-keys C-] '>'
+    sleep 2
+    grown=$(seam)
+    if [ -n "$even" ] && [ -n "$grown" ] && [ "$grown" -lt "$even" ]; then
+        ok "Ctrl-] > gives the focused pane more of the screen"
+    else
+        bad "the seam did not move left: $even then $grown"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] '<'
+    tmux -L "$tmuxSock" send-keys C-] '<'
+    sleep 2
+    shrunk=$(seam)
+    if [ -n "$shrunk" ] && [ "$shrunk" -gt "$grown" ]; then
+        ok "Ctrl-] < gives it less"
+    else
+        bad "the seam did not move back right: $grown then $shrunk"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm resa resb >/dev/null 2>&1
+
     # ----------------------------------------------------- the set that draws boxes has to draw
     #
     # A program selects the DEC line-drawing set and sends "lqqqk", which is the top of a box and

@@ -37,6 +37,9 @@ type livePane struct {
 	finished bool
 	// scroll is how many lines back this pane is being looked at. Zero is live.
 	scroll int
+	// weight is this pane's share of the screen. Every pane starts equal; growing one takes from
+	// the others rather than from nowhere, because the screen does not get any bigger.
+	weight float64
 }
 
 // Rect, Grid and Service are what the painter needs of a pane.
@@ -193,6 +196,24 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeGrow, outcomeShrink:
+				if len(panes) == 1 {
+					note("nothing to share the screen with")
+					paint()
+					continue
+				}
+				// A step of a fifth, which is a noticeable change without being a jump, and
+				// bounded so a pane cannot be squeezed to nothing or grown until its neighbours
+				// are. A pane of one column is not a pane.
+				step := 0.2
+				if want == outcomeShrink {
+					step = -step
+				}
+				panes[focus].weight = min(max(panes[focus].weight+step, 0.2), float64(len(panes)))
+				layoutPanes(panes, screen, how)
+				resizePanes(panes)
+				paint()
+
 			case outcomeFocus:
 				focus = (focus + 1) % len(panes)
 				paint()
@@ -271,13 +292,19 @@ func layoutPanes(panes []*livePane, screen *renderedScreen, how stacked) {
 	if n == 0 {
 		return
 	}
+	total := 0.0
+	for _, p := range panes {
+		if p.weight <= 0 {
+			p.weight = 1
+		}
+		total += p.weight
+	}
 	if how == inRows {
 		// No gap row between them: a screen is short and a blank line costs more of it than a
 		// blank column costs of a width. The change of content is the seam.
-		height := max(rows/n, 1)
 		y := 0
 		for i, p := range panes {
-			h := height
+			h := max(int(float64(rows)*p.weight/total), 1)
 			if i == n-1 {
 				h = rows - y
 			}
@@ -291,10 +318,9 @@ func layoutPanes(panes []*livePane, screen *renderedScreen, how stacked) {
 	if usable < n {
 		usable = n
 	}
-	width := usable / n
 	x := 0
 	for i, p := range panes {
-		w := width
+		w := max(int(float64(usable)*p.weight/total), 1)
 		if i == n-1 {
 			// The last pane takes the remainder, so that a width that does not divide evenly
 			// leaves no unused stripe down the right-hand side.

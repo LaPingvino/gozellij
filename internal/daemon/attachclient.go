@@ -63,11 +63,14 @@ const (
 	outcomeScrollBack
 	outcomeScrollForward
 	outcomeScrollLive
+	// outcomeGrow and outcomeShrink change the focused pane's share of the screen.
+	outcomeGrow
+	outcomeShrink
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · < > resize · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -675,6 +678,14 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case 'x', 'X':
 					if !command(outcomeClosePane) {
+						return
+					}
+				case '>', '+', '=':
+					if !command(outcomeGrow) {
+						return
+					}
+				case '<':
+					if !command(outcomeShrink) {
 						return
 					}
 				case 'b', 'B':
