@@ -143,16 +143,13 @@ What is missing:
   And the limitation has been measured rather than imagined. `internal/vt/grid/probe_test.go` runs
   eleven real programs on a real pty and reports what each of them sends that this emulator does
   not implement: bash, vim, nvim, less, htop, top, man, git, python3, nano, mc. They sent five
-  things between them. Four are implemented now - control strings read to their end instead of
-  drawn on the screen, application cursor keys and the keypad passed to the terminal, autowrap,
-  the title stack, insert mode - and eight of the eleven programs now report that everything they
-  sent is understood.
+  things between them, and all five are handled now - control strings read to their end instead of
+  drawn on the screen, application cursor keys and the keypad passed to the terminal, autowrap, the
+  title stack, insert mode, and the colour queries answered from what the real terminal said when
+  the attach started. **Nine of the eleven** report that everything they sent is understood.
 
   What is left is named rather than unknown: OSC 8 hyperlinks, which `man` emits and which are
-  lost; OSC 10 and 11, where `vim` asks the terminal what colour it is and gets no answer, so it
-  guesses; and the bodies of DCS strings, which are read and thrown away on purpose. Answering the
-  colour queries properly means asking the real terminal once at attach time rather than inventing
-  a reply, and that has not been done.
+  lost, and the bodies of DCS strings, which are read and thrown away on purpose.
 - **The cost.** It was two to three times the byte pipe on a flood, and this entry said the reason
   was not the number of repaints. Counting them said otherwise: twenty thousand lines arrived as
   378 frames and drew 379 whole screens, which was 4.7 of the 5.9 seconds. The earlier experiment
@@ -192,6 +189,18 @@ the one you get without asking.
   all, which is a hang rather than a cosmetic difference. Cursor position, device status and both
   device-attribute forms are answered now, and the replies go back to that pane's service as input.
   **Verified** through the service's own log, where its pty echoes what it received.
+
+- **The terminal is asked what colour it is.** `vim` asks with OSC 11 and picks a light or a dark
+  scheme from the answer; a rendered attach is the terminal from the program's side and knew
+  nothing, so `vim` guessed. The client asks the real terminal the same question when it starts and
+  answers panes from what came back - and does not wait for it, because the link here is somebody's
+  ssh and a window long enough for that is a pause on every attach. The reply is caught whenever it
+  arrives, out of the user's own input, which is where a terminal's answers land. **Verified**
+  against a pipe standing in for a terminal that replies: an answer never reaches the pane, typing
+  on either side of one does, and a half-finished answer is handed over as typing rather than held,
+  bounded by both a two-second window and a kilobyte. Verified separately on a real screen that the
+  question is asked at all - tmux cannot answer it with no terminal of its own, which was measured
+  before the check was written rather than assumed.
 
 - **The cursor shape reaches the terminal.** A program that asks for a bar while editing and a
   block otherwise is doing something the user can see. A rendered attach kept it to itself, so the
