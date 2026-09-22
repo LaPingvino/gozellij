@@ -148,6 +148,33 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeNext, outcomePrev:
+				// In a split, next and previous change what the focused pane is showing rather
+				// than ending the session. Returning would have closed every pane and started
+				// again with one - the user's arrangement thrown away without a word, which is
+				// what this did until somebody pressed n with two panes open and watched the
+				// other one vanish.
+				//
+				// With a single pane there is nothing to preserve, so it goes back to the loop
+				// outside, which knows how to replay and reattach.
+				if len(panes) == 1 {
+					return want, nil
+				}
+				next, err := neighbourService(socket, panes[focus].service, want == outcomeNext)
+				if err != nil {
+					note(err.Error())
+					paint()
+					continue
+				}
+				if err := swapPane(socket, panes[focus], next); err != nil {
+					note(err.Error())
+				} else {
+					// The old connection's reader ended with the connection; the new one needs
+					// its own. Without this the pane drew its replay and then never moved again.
+					go readFrames(panes[focus], events)
+				}
+				paint()
+
 			case outcomeFocus:
 				focus = (focus + 1) % len(panes)
 				paint()
@@ -301,6 +328,27 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 			go readFrames(ev.pane, events)
 		}
 	}
+}
+
+// swapPane points an existing pane at a different service, keeping its place on the screen.
+//
+// A fresh grid, because the old one holds another service's output and anything kept would be a
+// screen the new service never drew. The replay is asked for: this is somebody choosing to look at
+// a service, and starting from a blank pane would hide everything it has already printed.
+func swapPane(socket string, p *livePane, service string) error {
+	c, err := Dial(socket)
+	if err != nil {
+		return err
+	}
+	cols, rows := p.rect.Cols, p.rect.Rows
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true}); err != nil {
+		c.Close()
+		return err
+	}
+	p.client.Close()
+	p.client, p.service, p.scroll, p.finished = c, service, 0, false
+	p.term = grid.New(cols, rows)
+	return nil
 }
 
 // reopenPane reconnects a pane to its service after the connection went away.

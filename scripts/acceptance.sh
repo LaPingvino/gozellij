@@ -615,6 +615,47 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # ----------------------------------- switching a service without throwing the layout away
+    #
+    # Ctrl-] n in a split used to end the session and start again with one pane: the other pane
+    # vanished, silently, and the user's arrangement with it. It now changes what the focused pane
+    # is showing and leaves the rest alone.
+    only
+    for n in swapa swapb swapc; do
+        "$gz" add "$n" -start -- sh -c "i=0; while :; do printf '$n-%d\r\n' \$i; i=\$((i+1)); sleep 1; done" >/dev/null 2>&1
+    done
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 70 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render swapa'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] 'n'
+    sleep 4
+
+    row=$(pane | head -1)
+    if printf '%s' "$row" | grep -q 'swapa-' && printf '%s' "$row" | grep -q 'swapc-'; then
+        ok "Ctrl-] n changes the focused pane's service and keeps the other pane"
+    else
+        bad "after switching, the top row is [$row]"
+    fi
+
+    # And the pane that was switched has to be live, not showing a replay and then nothing. The
+    # first version of this forgot to start a reader for the new connection, which looked right
+    # for one frame.
+    first=$(pane | head -1)
+    sleep 3
+    if [ "$(pane | head -1)" != "$first" ]; then
+        ok "the switched pane keeps receiving output"
+    else
+        bad "the switched pane stopped at [$first]"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm swapa swapb swapc >/dev/null 2>&1
+
     # ------------------------------------------ two shells, and typing into the right one
     #
     # The core of what a multiplexer does, and until now only the drawing was checked. A keystroke
