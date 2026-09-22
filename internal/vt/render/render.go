@@ -10,29 +10,42 @@
 // the obvious optimisation and is deliberately not here, and there is now a measurement instead of
 // an intention.
 //
-// Twenty thousand lines poured into a pane take about 0.6-0.8s through the byte pipe and about
-// 1.3-2.3s rendered, on this machine, with enough variance between runs to swamp anything smaller.
-// So rendering costs roughly two to three times the byte pipe on a flood, and nothing at all that
-// a person would notice on a shell or an editor.
+// Twenty thousand lines poured into a pane used to take about 0.6-0.8s through the byte pipe and
+// about 1.3-2.3s rendered - two to three times - and nothing at all that a person would notice on
+// a shell or an editor. The two changes below have taken most of that out. The end-to-end figure
+// is deliberately not restated: measuring it again gave 0.5s to 4.7s for the same flood in the same
+// mode, on a machine busy enough that the byte pipe's own runs spread just as wide, and a headline
+// number drawn from that would be a story about the load. What is quoted instead is what could be
+// counted: repaints, and the time inside them.
 //
-// The cost is not the number of repaints. Batching events so that a burst of output produced one
-// paint instead of several changed neither the time nor the bytes written - about 8-10 KB either
-// way for the whole flood, which is three or four whole-screen paints. Whatever the two-to-three
-// times is, it is not screens being drawn needlessly, and damage tracking would therefore not fix
-// it. That is worth knowing before writing it.
+// The cost *was* the number of repaints, and the measurement that said otherwise was wrong.
 //
-// Where a good part of it *was*: the scrollback. BenchmarkFloodEmulate here pushes the same twenty
-// thousand lines through the grid alone, with no client, no socket and no drawing. It took about
-// 1.2-2.5s before the scrollback became a ring and about 0.3-0.7s after - the same machine, the
-// same run, ranges that do not overlap. Dropping a line from the front of a slice moved the whole
-// scrollback one place left for every line that scrolled off; see history.go in internal/vt/grid.
-// BenchmarkFloodPaint, for comparison, is well under a millisecond, which is the earlier finding
-// about repaints arriving from a second direction.
+// Batching events that were ready at the same instant changed neither the time nor the bytes -
+// about 8-10 KB for the whole flood, which was read as three or four whole-screen paints. Counting
+// them says 379: one per frame the daemon delivered. Batching found nothing to batch because the
+// client painted between every pair of events, so there was never a second one waiting; the
+// experiment measured its own premise. The 8-10 KB was the bytes the *service* sent, not the bytes
+// the client wrote.
 //
-// This does not yet close the two-to-three times. Measured again end to end afterwards, through a
-// real pty in both modes, a rendered attach was still several times the byte pipe - so the
-// emulator's inner loop was not the whole of it, and where the rest goes is not yet known. What
-// changed here is a number that was measured, not the headline one.
+// Counted instead of reasoned about, twenty thousand lines into one pane: 378 frames in, 379
+// whole-screen repaints out, 4.7 seconds in those repaints against 1.1 seconds interpreting the
+// bytes, out of 5.9 seconds altogether. A repaint costs well under a millisecond to build - see
+// BenchmarkFloodPaint below - so what it costs is handing eight kilobytes of escape sequences to a
+// real terminal and waiting for it to draw them, several times more than the byte pipe ever writes.
+//
+// Two things came out of that, and both are measured rather than argued:
+//
+//   - The scrollback was three quarters of the interpreting half. Dropping a line from the front
+//     of a slice moved the whole scrollback one place left for every line that scrolled off;
+//     BenchmarkFloodEmulate here went from 1.2-2.5s to 0.3-0.7s when it became a ring. See
+//     history.go in internal/vt/grid.
+//   - A repaint rate rather than a repaint per frame. internal/daemon's minRepaint bounds output
+//     to twenty screens a second, which took the same flood from 379 repaints and 4.7s of
+//     painting to 11-22 repaints and 0.15-0.9s.
+//
+// Damage tracking still is not here, and now there is a reason rather than an intention: at twenty
+// repaints a second the painting is no longer the expensive half, and drawing less of each screen
+// would be optimising what is left.
 package render
 
 import (

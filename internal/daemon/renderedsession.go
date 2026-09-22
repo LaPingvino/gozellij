@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/ipc"
 	"github.com/LaPingvino/gozellij/internal/vt"
@@ -78,6 +79,26 @@ type paneEvent struct {
 	message string
 }
 
+// minRepaint is the shortest time between two repaints caused by a service's output.
+//
+// A measured number, not a taste. A flood of twenty thousand lines arrived as 378 frames and drew
+// 379 whole screens - one per frame - and those repaints took 4.7 of the 5.9 seconds the flood
+// lasted, against 1.1 seconds spent interpreting the bytes. A whole-screen repaint costs well
+// under a millisecond to *build* (BenchmarkFloodPaint in internal/vt/render); what it costs is
+// handing eight kilobytes of escape sequences to a real terminal and waiting for it to draw them,
+// and doing that once per frame writes several times more to the terminal than the byte pipe does.
+//
+// The paint loop had been ruled out once before, by an experiment that batched events that were
+// ready at the same instant and found it changed nothing. It changed nothing because the events
+// were not ready at the same instant: the client was painting between every pair of them, so
+// there was never a second one waiting. A rate is what breaks that, where draining the queue could
+// not.
+//
+// Fifty milliseconds is twenty screens a second, which is smooth to watch, and it bounds the cost
+// of output at twenty repaints a second however fast a program shouts. A keystroke's own answer is
+// not delayed by it: only output goes through the limit.
+const minRepaint = 50 * time.Millisecond
+
 // renderedSession shows one or more services at once and returns why it ended.
 func renderedSession(socket string, first *Client, service string, input *terminalInput, in *os.File, screen *renderedScreen, replay bool) (attachOutcome, error) {
 	cols, rows := screen.ServiceSize()
@@ -129,12 +150,34 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	// Messages go to the status line, where they will be seen. note() writes to standard error,
 	// which in a rendered session the next repaint covers within milliseconds.
 	note := screen.Say
+	lastPaint := time.Time{}
 	paint := func() {
 		ps := make([]layoutPane, len(panes))
 		for i, p := range panes {
 			ps[i] = p
 		}
 		_ = screen.PaintPanes(ps, focus)
+		lastPaint = time.Now()
+	}
+	// A repaint owed but not yet drawn, because one was drawn too recently. due fires when it is
+	// allowed; stopped and unset the rest of the time, so an idle session is an idle process.
+	due := time.NewTimer(time.Hour)
+	due.Stop()
+	owed := false
+	defer due.Stop()
+	// paintSoon draws, or arranges to draw, whichever keeps the screen inside minRepaint of the
+	// truth. Everything a *service* produces goes through this; a keystroke's own answer still
+	// draws at once, because that is the one a person is waiting for.
+	paintSoon := func() {
+		if wait := minRepaint - time.Since(lastPaint); wait > 0 {
+			if !owed {
+				owed = true
+				due.Reset(wait)
+			}
+			return
+		}
+		owed = false
+		paint()
 	}
 	for _, m := range restored {
 		note(m)
@@ -300,13 +343,20 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			// internal/vt/render), and an optimisation that cannot be shown to optimise anything
 			// is a claim with code attached.
 			applyEvent(socket, ev, events, note)
-			paint()
+			paintSoon()
 			if allDone(panes) {
+				// On the way out, whatever is owed is drawn: the last thing a service said - an
+				// error, usually - must not be the one frame the rate limit swallowed.
+				paint()
 				if ev.finished {
 					return outcomeFinished, nil
 				}
 				return outcomeDisconnected, ev.err
 			}
+
+		case <-due.C:
+			owed = false
+			paint()
 
 		case <-winch:
 			w, h, err := term.GetSize(int(in.Fd()))
