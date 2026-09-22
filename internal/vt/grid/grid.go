@@ -105,12 +105,11 @@ type Term struct {
 	// terminal ships with, but a program may set and clear them.
 	tabs []bool
 
-	// history is what has scrolled off the top of the primary screen, oldest first.
-	history []histLine
-	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
-	// scrollback the moment it takes over the terminal, which is the most visible way to be worse
-	// than what it replaced.
-	limit int
+	// hist is what has scrolled off the top of the primary screen, oldest first, and how many
+	// lines of it are kept. A ring, for the reason written down in history.go. A limit of zero
+	// would mean a multiplexer that loses your scrollback the moment it takes over the terminal,
+	// which is the most visible way to be worse than what it replaced.
+	hist histRing
 }
 
 // histLine is a scrolled-off line and whether it continued onto the line below it. The flag is
@@ -136,7 +135,8 @@ func New(cols, rows int) *Term {
 	if rows < 1 {
 		rows = 1
 	}
-	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1, limit: DefaultScrollback}
+	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1}
+	t.hist.setLimit(DefaultScrollback)
 	t.cur.Visible = true
 	t.cells = make([][]vt.Cell, rows)
 	for r := range t.cells {
@@ -456,19 +456,10 @@ func blank(row []vt.Cell) {
 // against and the one its users already have in their fingers. scrollregion and scrollregion-low
 // are those two cases, kept because they are the evidence.
 func (t *Term) remember(line []vt.Cell, wrapped bool, used int) {
-	if t.onAlt || t.limit <= 0 {
+	if t.onAlt {
 		return
 	}
-	kept := make([]vt.Cell, len(line))
-	copy(kept, line)
-	t.history = append(t.history, histLine{cells: kept, wrapped: wrapped, used: used})
-	if len(t.history) > t.limit {
-		// Drop from the front. Copying the slice header forward would keep the whole backing
-		// array alive for as long as the pane exists, which for a long-running login shell is
-		// the difference between a bounded scrollback and a leak wearing its costume.
-		drop := len(t.history) - t.limit
-		t.history = append(t.history[:0], t.history[drop:]...)
-	}
+	t.hist.push(line, wrapped, used)
 }
 
 // Scrollback is what has scrolled off the top, oldest first.
@@ -476,8 +467,9 @@ func (t *Term) remember(line []vt.Cell, wrapped bool, used int) {
 // A copy: the caller is a renderer or a test, and handing out the live slices would let either of
 // them edit a user's history by accident.
 func (t *Term) Scrollback() [][]vt.Cell {
-	out := make([][]vt.Cell, len(t.history))
-	for i, line := range t.history {
+	out := make([][]vt.Cell, t.hist.len())
+	for i := range out {
+		line := t.hist.at(i)
 		out[i] = make([]vt.Cell, len(line.cells))
 		copy(out[i], line.cells)
 	}
@@ -486,13 +478,7 @@ func (t *Term) Scrollback() [][]vt.Cell {
 
 // SetScrollback changes how many lines are kept, dropping the oldest if that is fewer.
 func (t *Term) SetScrollback(n int) {
-	if n < 0 {
-		n = 0
-	}
-	t.limit = n
-	if len(t.history) > n {
-		t.history = append(t.history[:0], t.history[len(t.history)-n:]...)
-	}
+	t.hist.setLimit(n)
 }
 
 func (t *Term) scrollDown(n int) {
@@ -692,14 +678,14 @@ func (t *Term) Scrolled(offset int) vt.Grid {
 	if offset < 0 {
 		offset = 0
 	}
-	if offset > len(t.history) {
-		offset = len(t.history)
+	if offset > t.hist.len() {
+		offset = t.hist.len()
 	}
 	return &view{term: t, offset: offset}
 }
 
 // MaxScroll is how far back this terminal can be scrolled.
-func (t *Term) MaxScroll() int { return len(t.history) }
+func (t *Term) MaxScroll() int { return t.hist.len() }
 
 type view struct {
 	term   *Term
@@ -723,11 +709,12 @@ func (v *view) Snapshot() [][]vt.Cell {
 	}
 	out := make([][]vt.Cell, 0, v.term.rows)
 	// The tail of the scrollback first, then as much of the live screen as still fits.
-	start := len(v.term.history) - v.offset
-	for i := start; i < len(v.term.history) && len(out) < v.term.rows; i++ {
+	start := v.term.hist.len() - v.offset
+	for i := start; i < v.term.hist.len() && len(out) < v.term.rows; i++ {
+		cells := v.term.hist.at(i).cells
 		row := make([]vt.Cell, v.term.cols)
-		copy(row, v.term.history[i].cells[:min(v.term.cols, len(v.term.history[i].cells))])
-		for c := len(v.term.history[i].cells); c < v.term.cols; c++ {
+		copy(row, cells[:min(v.term.cols, len(cells))])
+		for c := len(cells); c < v.term.cols; c++ {
 			row[c] = vt.Cell{Content: " ", Width: 1}
 		}
 		out = append(out, row)

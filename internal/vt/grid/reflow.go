@@ -85,12 +85,10 @@ func (t *Term) reflowTo(cols, rows int) {
 	}
 
 	// Everything above the screen is scrollback again.
-	t.history = t.history[:0]
+	t.hist.reset()
 	for i := 0; i < start && i < len(out); i++ {
-		t.history = append(t.history, histLine{cells: fitRow(out[i], cols), wrapped: outWrap[i], used: min(outUsed[i], cols)})
-	}
-	if len(t.history) > t.limit {
-		t.history = append(t.history[:0], t.history[len(t.history)-t.limit:]...)
+		// No trim afterwards: the ring drops the oldest as it goes, which is the same answer.
+		t.hist.push(fitRow(out[i], cols), outWrap[i], min(outUsed[i], cols))
 	}
 
 	t.cur.Row = clamp(curRow-start, 0, rows-1)
@@ -125,7 +123,8 @@ func (t *Term) logicalLines() []logical {
 		open = false
 	}
 
-	for _, h := range t.history {
+	for i := 0; i < t.hist.len(); i++ {
+		h := t.hist.at(i)
 		add(h.cells, h.used, h.wrapped, -1)
 	}
 	// Only as far as the screen has content. The blank rows below the cursor are not text - they

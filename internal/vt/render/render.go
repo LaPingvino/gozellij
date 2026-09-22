@@ -20,6 +20,19 @@
 // way for the whole flood, which is three or four whole-screen paints. Whatever the two-to-three
 // times is, it is not screens being drawn needlessly, and damage tracking would therefore not fix
 // it. That is worth knowing before writing it.
+//
+// Where a good part of it *was*: the scrollback. BenchmarkFloodEmulate here pushes the same twenty
+// thousand lines through the grid alone, with no client, no socket and no drawing. It took about
+// 1.2-2.5s before the scrollback became a ring and about 0.3-0.7s after - the same machine, the
+// same run, ranges that do not overlap. Dropping a line from the front of a slice moved the whole
+// scrollback one place left for every line that scrolled off; see history.go in internal/vt/grid.
+// BenchmarkFloodPaint, for comparison, is well under a millisecond, which is the earlier finding
+// about repaints arriving from a second direction.
+//
+// This does not yet close the two-to-three times. Measured again end to end afterwards, through a
+// real pty in both modes, a rendered attach was still several times the byte pipe - so the
+// emulator's inner loop was not the whole of it, and where the rest goes is not yet known. What
+// changed here is a number that was measured, not the headline one.
 package render
 
 import (
