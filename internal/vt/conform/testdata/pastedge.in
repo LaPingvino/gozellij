@@ -1,0 +1,3 @@
+# size 40x8
+# A cursor placed past the right edge, then a character, then a delete. Found by the generator.
+\e[;41HB\e[P

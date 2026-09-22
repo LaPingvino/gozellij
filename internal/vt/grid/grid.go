@@ -453,6 +453,22 @@ func (t *Term) moveVertically(delta int) {
 	t.pend = false
 }
 
+// effCol is where the cursor really is for operations that act on columns.
+//
+// One past the last column while a wrap is pending, because that is where it is: the character
+// that filled the last column has been drawn and the next one belongs on the line below. Delete,
+// insert and erase all then act on a range that is empty, which is what a terminal does - measured
+// on all four: with a full row, `\e[P`, `\e[@`, `\e[X` and `\e[K` each leave it untouched.
+//
+// Using cur.Col directly made them act on the last column instead, so `\e[P` after filling a row
+// deleted the character that had just been written there.
+func (t *Term) effCol() int {
+	if t.pend {
+		return t.cols
+	}
+	return t.cur.Col
+}
+
 func (t *Term) moveTo(row, col int) {
 	t.cur.Row = clamp(row, 0, t.rows-1)
 	t.cur.Col = clamp(col, 0, t.cols-1)

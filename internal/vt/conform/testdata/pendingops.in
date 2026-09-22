@@ -1,0 +1,7 @@
+# size 8x2
+# With a wrap pending, the cursor is past the last column and the operations that act on columns
+# act on nothing. All four measured against tmux: a full row followed by any of them is untouched.
+#
+# Row 1: fill the row, then delete a character.   Row 2: fill it, then erase to end of line.
+12345678\e[P
+\e[2;1H12345678\e[K

@@ -377,9 +377,9 @@ func (p *parser) dispatch(t *Term, final byte) {
 	case 'K': // erase in line
 		switch arg(0, 0) {
 		case 0:
-			t.eraseInRow(t.cur.Row, t.cur.Col, t.cols-1)
+			t.eraseInRow(t.cur.Row, t.effCol(), t.cols-1)
 		case 1:
-			t.eraseInRow(t.cur.Row, 0, t.cur.Col)
+			t.eraseInRow(t.cur.Row, 0, t.effCol())
 		default:
 			t.eraseInRow(t.cur.Row, 0, t.cols-1)
 		}
@@ -392,7 +392,7 @@ func (p *parser) dispatch(t *Term, final byte) {
 	case '@': // insert characters
 		p.insertChars(t, arg(0, 1))
 	case 'X': // erase characters
-		t.eraseInRow(t.cur.Row, t.cur.Col, t.cur.Col+arg(0, 1)-1)
+		t.eraseInRow(t.cur.Row, t.effCol(), t.effCol()+arg(0, 1)-1)
 	case 'S': // scroll up
 		t.scrollUp(arg(0, 1))
 	case 'T': // scroll down
@@ -470,20 +470,28 @@ func (p *parser) deleteLines(t *Term, n int) {
 }
 
 func (p *parser) deleteChars(t *Term, n int) {
+	col := t.effCol()
+	if col >= t.cols {
+		return
+	}
 	row := t.cells[t.cur.Row]
-	copy(row[t.cur.Col:], row[min(t.cur.Col+n, t.cols):])
+	copy(row[col:], row[min(col+n, t.cols):])
 	// The blanks go at the end of what moved, never before the cursor. Erasing from cols-n
 	// started before the cursor whenever n was larger than the tail, so `\e[40P` on a forty-column
 	// screen erased the whole row including the character to the left of the cursor - which a
 	// terminal leaves alone, because deleting characters at the cursor cannot touch what is
 	// behind it.
-	t.eraseInRow(t.cur.Row, max(t.cols-n, t.cur.Col), t.cols-1)
+	t.eraseInRow(t.cur.Row, max(t.cols-n, col), t.cols-1)
 }
 
 func (p *parser) insertChars(t *Term, n int) {
+	col := t.effCol()
+	if col >= t.cols {
+		return
+	}
 	row := t.cells[t.cur.Row]
-	copy(row[min(t.cur.Col+n, t.cols):], row[t.cur.Col:])
-	t.eraseInRow(t.cur.Row, t.cur.Col, t.cur.Col+n-1)
+	copy(row[min(col+n, t.cols):], row[col:])
+	t.eraseInRow(t.cur.Row, col, col+n-1)
 }
 
 // sgr sets the style for cells written from now on. It is stored and never compared by the
