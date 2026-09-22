@@ -1272,6 +1272,45 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm vimmy >/dev/null 2>&1
 
+    # --------------------------------- output reaches the screen without waiting for the clock
+    #
+    # A rendered attach paints at a rate rather than once per frame, because painting once per
+    # frame was four fifths of the cost of a flood (see minRepaint, and the measurement in
+    # internal/vt/render). The risk that comes with a rate is latency: a limit set too high is a
+    # terminal that feels slow, and nothing here could see it. Setting the interval to ten minutes
+    # and running this whole script left all sixty-five promises passing.
+    #
+    # The reason is the status line's own clock, which repaints everything every two seconds, so
+    # any check that sleeps for two seconds is reading a screen the clock redrew. This one turns
+    # that clock down to thirty seconds first, so the only thing that can put the marker on screen
+    # is the output path being prompt.
+    only
+    mkfifo "$home/latch" 2>/dev/null || true
+    printf 'every=30s\n' > "$home/slowstatus"
+    "$gz" add latchy -start -- sh -c "cat $home/latch >/dev/null; printf 'ZZLATEZZ\r\n'; sleep 60" >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_STATUS_CONFIG="$home/slowstatus" -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render latchy'"
+    sleep 3
+    if pane | grep -q 'ZZLATEZZ'; then
+        bad "the marker was on screen before it was asked for, so this check proves nothing"
+    else
+        echo go > "$home/latch"
+        # Well inside the status clock's thirty seconds, and forty times the repaint interval.
+        sleep 2
+        if pane | grep -q 'ZZLATEZZ'; then
+            ok "a service's output is drawn without waiting for the status line's clock"
+        else
+            bad "two seconds after the service spoke, the screen still says: $(pane | head -2 | tr '\n' '|')"
+        fi
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm latchy >/dev/null 2>&1
+    rm -f "$home/latch" "$home/slowstatus"
+
     # ------------------------------------------- you come back to the arrangement you left
     #
     # The point of a login multiplexer is that it holds your session while you are away. Panes
