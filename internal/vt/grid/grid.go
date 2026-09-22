@@ -77,6 +77,9 @@ type Term struct {
 	// means owning this too, and not doing it is how pasting into vim breaks in a mode that
 	// otherwise looks right.
 	modes map[int]bool
+	// title is what the program asked the window to be called, for the same reason as modes: a
+	// byte pipe hands OSC 2 to the real terminal and a client that interprets it has to carry it.
+	title string
 
 	// history is what has scrolled off the top of the primary screen, oldest first.
 	history []histLine
@@ -500,6 +503,9 @@ var PassthroughModes = []int{
 	1004, // focus in and out
 	2004, // bracketed paste
 }
+
+// Title is what the program running here asked the window to be called, empty if it has not said.
+func (t *Term) Title() string { return t.title }
 
 // Modes returns the terminal-level modes currently asked for, so a renderer can match them.
 func (t *Term) Modes() map[int]bool {

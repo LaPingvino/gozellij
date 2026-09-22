@@ -19,6 +19,8 @@ type parser struct {
 	params []byte
 	inter  []byte
 	utf8   []byte
+	// oscBuf collects an operating-system command until its terminator.
+	oscBuf []byte
 	// invalid marks bytes that turned out not to be a character. The replacement is drawn at the
 	// next opportunity rather than immediately, so that an escape sequence arriving in between is
 	// obeyed first - see the comment where it is set.
@@ -53,7 +55,7 @@ func (p *parser) feed(t *Term, b []byte) {
 		case csi:
 			p.csi(t, c)
 		case osc:
-			p.osc(c)
+			p.osc(t, c)
 		}
 	}
 }
@@ -595,16 +597,45 @@ func params(s string) []int {
 // Nothing here acts on one - the title is the daemon's business, not the grid's - but they must be
 // consumed rather than printed. An OSC 8 hyperlink carries a URL, and a terminal that prints it
 // instead of absorbing it puts the URL on the user's screen.
-func (p *parser) osc(c byte) {
+func (p *parser) osc(t *Term, c byte) {
 	switch c {
 	case 0x07: // BEL terminates
-		p.state = ground
+		p.finishOSC(t)
 	case 0x1b:
 		// ESC \ terminates. Treating the ESC as the end is close enough here: the backslash that
 		// follows is consumed by the ground state as an ordinary character only if the stream is
 		// malformed, and a malformed stream printing one backslash is not the failure to worry
 		// about.
-		p.state = ground
+		p.finishOSC(t)
+	default:
+		// The command and its argument, kept only as far as a title can be. A cap, because this
+		// is a buffer filled by whatever a service chooses to send: an OSC that never terminates
+		// would otherwise grow until the process died, which is a denial of service written by
+		// accident.
+		if len(p.oscBuf) < 1024 {
+			p.oscBuf = append(p.oscBuf, c)
+		}
+	}
+}
+
+// finishOSC acts on a completed operating-system command.
+//
+// Only the title, and only because somebody is looking at it: a byte pipe passes OSC 2 straight
+// through, so a shell's title tracks what it is running. A client that interprets the stream has
+// to carry that itself or the title freezes at whatever it said when the attach started.
+func (p *parser) finishOSC(t *Term) {
+	p.state = ground
+	cmd := string(p.oscBuf)
+	p.oscBuf = p.oscBuf[:0]
+	num, arg, ok := strings.Cut(cmd, ";")
+	if !ok {
+		return
+	}
+	switch num {
+	case "0", "2":
+		// 0 sets the icon name and the title, 2 sets the title. Nothing here distinguishes them,
+		// because nothing downstream of it does either.
+		t.title = arg
 	}
 }
 

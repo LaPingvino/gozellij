@@ -53,6 +53,9 @@ type renderedScreen struct {
 	// hand them on deliberately, and not doing it is how pasting into vim breaks in a mode that
 	// otherwise looks right.
 	applied map[int]bool
+	// title is what the terminal has been told to call itself, so that it is only told when it
+	// changes rather than on every repaint.
+	title string
 
 	// suspended stops painting while something else owns the screen - the service picker, which
 	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
@@ -260,6 +263,7 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	// one pane at a time.
 	if focus < len(panes) {
 		s.applyModes(panes[focus].Modes())
+		s.applyTitle(panes[focus].Title())
 	}
 	frame := layout.Compose(s.cols, s.rows, ps)
 	if s.reserved > 0 && s.line != nil {
@@ -291,6 +295,8 @@ type layoutPane interface {
 	Service() string
 	// Modes are the terminal-level modes this pane's program has asked for.
 	Modes() map[int]bool
+	// Title is what this pane's program asked the window to be called.
+	Title() string
 }
 
 // applyModes puts the real terminal into the state a pane asked for, changing only what differs.
@@ -317,6 +323,22 @@ func (s *renderedScreen) applyModes(want map[int]bool) {
 	if b.Len() > 0 {
 		_, _ = io.WriteString(s.out, b.String())
 	}
+}
+
+// applyTitle tells the terminal what to call itself, when that has changed.
+//
+// The focused pane's, because a window has one title and the keyboard is in one pane. Falls back
+// to the service's name: a shell that has not set a title should still leave something useful in
+// the window, and "gozellij" alone would be worse than useless with two of them open.
+func (s *renderedScreen) applyTitle(title string) {
+	if title == "" {
+		return
+	}
+	if title == s.title {
+		return
+	}
+	s.title = title
+	fmt.Fprintf(s.out, "\x1b]2;%s\x07", title)
 }
 
 // releaseModes puts back everything this client switched on.

@@ -47,6 +47,15 @@ func (p *livePane) Service() string   { return p.service }
 // Modes are the terminal-level modes this pane's program has asked for.
 func (p *livePane) Modes() map[int]bool { return p.term.Modes() }
 
+// Title is what this pane's program asked the window to be called, or the service's name when it
+// has not asked. A window with no title at all is worse than one named after what is in it.
+func (p *livePane) Title() string {
+	if t := p.term.Title(); t != "" {
+		return t
+	}
+	return p.service
+}
+
 // paneEvent is something a pane's connection had to say.
 type paneEvent struct {
 	pane     *livePane

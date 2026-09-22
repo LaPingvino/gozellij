@@ -702,6 +702,30 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ---------------------------------------------- the window title has to reach the terminal
+    #
+    # Same shape as the modes below: a byte pipe hands OSC 2 to the real terminal, so a shell's
+    # title tracks what it is running. A client that interprets the stream has to carry it, or the
+    # title freezes at whatever it said when the attach started.
+    only
+    "$gz" add titler -start -- sh -c 'printf "\033]2;MY-WINDOW-TITLE\007running\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 5 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render titler'"
+    sleep 3
+
+    if [ "$(ask '#{pane_title}')" = "MY-WINDOW-TITLE" ]; then
+        ok "a rendered attach passes the window title to the terminal"
+    else
+        bad "the terminal's title is [$(ask '#{pane_title}')], want MY-WINDOW-TITLE"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm titler >/dev/null 2>&1
+
     # --------------------------------- mouse and paste modes have to reach the real terminal
     #
     # A byte pipe passes these through for free. A client that interprets the output has to hand
