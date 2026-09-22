@@ -22,6 +22,8 @@
 package grid
 
 import (
+	"fmt"
+
 	"github.com/LaPingvino/gozellij/internal/vt"
 )
 
@@ -80,6 +82,11 @@ type Term struct {
 	// title is what the program asked the window to be called, for the same reason as modes: a
 	// byte pipe hands OSC 2 to the real terminal and a client that interprets it has to carry it.
 	title string
+	// replies are what this terminal owes the program: answers to the questions it asked, like
+	// where the cursor is. A byte pipe gets these for free because the user's real terminal
+	// answers them; a client that interprets the stream is the terminal, and a program that asks
+	// and is not answered waits.
+	replies []byte
 
 	// history is what has scrolled off the top of the primary screen, oldest first.
 	history []histLine
@@ -502,6 +509,21 @@ var PassthroughModes = []int{
 	1005, 1006, 1015, // how those reports are encoded
 	1004, // focus in and out
 	2004, // bracketed paste
+}
+
+// TakeReplies returns and clears what this terminal owes the program, to be written back to it as
+// input. Empty almost always: a program asks these questions when it starts and rarely again.
+func (t *Term) TakeReplies() []byte {
+	if len(t.replies) == 0 {
+		return nil
+	}
+	out := t.replies
+	t.replies = nil
+	return out
+}
+
+func (t *Term) reply(format string, args ...any) {
+	t.replies = append(t.replies, fmt.Sprintf(format, args...)...)
 }
 
 // Title is what the program running here asked the window to be called, empty if it has not said.

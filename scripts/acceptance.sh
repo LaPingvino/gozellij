@@ -702,6 +702,35 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------- a program that asks the terminal gets an answer
+    #
+    # A byte pipe gets this for free: the query reaches the user's real terminal and the reply
+    # comes back through the same pipe. A client that interprets the stream is the terminal, and a
+    # program that asks where the cursor is and is never told waits for an answer that is not
+    # coming - which is a hang, not a cosmetic difference.
+    #
+    # Checked through the service's own log rather than the screen: the service's pty echoes what
+    # it receives, so the reply lands in its output where it can be read back exactly.
+    only
+    "$gz" add asker -start -- sh -c 'sleep 3; printf "\033[2;1H\033[6n"; sleep 30' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 44 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render asker'"
+    sleep 7
+
+    # The service asked from row 2, column 1, so the answer has to say so.
+    if "$gz" logs asker 2>/dev/null | grep -q "$(printf '\033')\[2;1R"; then
+        ok "a rendered attach answers a program that asks where the cursor is"
+    else
+        bad "the service never received a cursor report: $("$gz" logs asker 2>/dev/null | tail -1 | cat -v)"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm asker >/dev/null 2>&1
+
     # ------------------------------------------------ the cursor shape has to reach the terminal
     #
     # The last item on the list of things nothing checked. A program that asks for a bar while

@@ -349,6 +349,13 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 	}
 	if len(ev.data) > 0 {
 		_, _ = ev.pane.term.Write(ev.data)
+		// Anything the terminal owes the program goes back to it as input. A byte pipe gets this
+		// for free because the user's real terminal answers; here the emulator is the terminal,
+		// and a program that asks where the cursor is and is never told waits for an answer that
+		// is not coming.
+		if replies := ev.pane.term.TakeReplies(); len(replies) > 0 {
+			_ = ev.pane.client.Writer().WriteFrame(ipc.KindData, replies)
+		}
 		if ev.pane.scroll > 0 {
 			// Output while somebody is reading back pushes the lines they are looking at further
 			// into the scrollback, so the offset grows with it and the view stays still. Capped,

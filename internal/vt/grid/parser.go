@@ -431,6 +431,27 @@ func (p *parser) dispatch(t *Term, final byte) {
 		t.restoreCursor()
 	case 'm':
 		t.sgr(ps)
+	case 'n': // device status report
+		switch arg(0, 0) {
+		case 5:
+			t.reply("\x1b[0n") // "I am fine", which is the only answer there is
+		case 6:
+			// Where the cursor is, counted from one. A program that asks this is usually working
+			// out how wide something it just printed turned out to be, and a wrong answer is
+			// worse than none: it will lay out the rest of its screen from it.
+			t.reply("\x1b[%d;%dR", t.cur.Row+1, min(t.cur.Col, t.cols-1)+1)
+		}
+	case 'c': // device attributes
+		if len(p.params) > 0 && p.params[0] == '>' {
+			// Secondary: what kind of terminal and which version. Not tmux's answer, which is
+			// what this was recorded against - claiming to be tmux is a lie a program can act on.
+			// Zero is "unknown", which is true.
+			t.reply("\x1b[>0;1;0c")
+			return
+		}
+		// Primary: the same answer tmux gives, because programs are tested against it and this
+		// emulator is in the same class - a VT100 with an advanced video option.
+		t.reply("\x1b[?1;2;4c")
 	case 'q':
 		// DECSCUSR: the shape of the cursor, written `CSI Ps SP q`. The space is what tells it
 		// apart from other sequences ending in q, so the intermediate byte has to be checked -
