@@ -582,6 +582,36 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # -------------------------------------- a split screen survives the daemon being replaced
+    #
+    # `gozellij upgrade` keeps every process running, and that promise is worth less than it sounds
+    # if the screen showing them has to be rebuilt afterwards. Both panes must still be live: the
+    # failure this catches was silent, because two frozen panes look exactly like two idle shells.
+    "$gz" add tickone -start -- sh -c 'i=0; while :; do printf "one-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    "$gz" add ticktwo -start -- sh -c 'i=0; while :; do printf "two-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render tickone'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 3
+
+    beforeUpgrade=$(pane | head -1)
+    "$gz" upgrade >/dev/null 2>&1
+    sleep 6
+    afterUpgrade=$(pane | head -1)
+    if printf '%s' "$beforeUpgrade" | grep -q 'one-' && [ "$beforeUpgrade" != "$afterUpgrade" ] \
+       && printf '%s' "$afterUpgrade" | grep -q 'two-'; then
+        ok "both panes of a split screen stay live across a daemon upgrade"
+    else
+        bad "after the upgrade the panes read [$afterUpgrade], before [$beforeUpgrade]"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm tickone ticktwo >/dev/null 2>&1
+
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm renderdemo rendertwo >/dev/null 2>&1
 

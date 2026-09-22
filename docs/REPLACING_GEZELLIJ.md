@@ -128,6 +128,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **A split screen survives the daemon being replaced.** `gozellij upgrade` keeps every process
+  running, which is worth less than it sounds if the screen showing them has to be rebuilt
+  afterwards. Each pane reconnects where it stands, keeping its grid - no replay, so nothing
+  redraws over what is already there. **Verified:** a split screen with two chattering services,
+  upgraded mid-session, with both panes still advancing afterwards. The failure this replaced was
+  silent: both panes froze at the instant of the upgrade and stayed frozen, which looks exactly
+  like two idle shells.
+
 - **Scrollback in a rendered attach.** Painting the whole screen stops the user's own terminal
   history from filling up, so the lines that scrolled past live in the emulator's grid and nowhere
   the terminal can show them. `Ctrl-] b` goes back half a screen, `Ctrl-] f` forward, `Ctrl-] g`

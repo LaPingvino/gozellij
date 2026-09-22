@@ -3,8 +3,6 @@ package daemon
 import (
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,8 +49,11 @@ type paneEvent struct {
 	pane     *livePane
 	data     []byte
 	finished bool
-	err      error
-	message  string
+	// gone means this pane's connection ended. Distinct from finished, which is the service
+	// itself ending: a daemon being replaced ends every connection and no service has stopped.
+	gone    bool
+	err     error
+	message string
 }
 
 // renderedSession shows one or more services at once and returns why it ended.
@@ -186,13 +187,29 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			if ev.finished {
 				ev.pane.finished = true
 			}
-			if ev.err != nil || ev.finished {
-				if allDone(panes) {
-					if ev.finished {
-						return outcomeFinished, nil
-					}
-					return outcomeDisconnected, ev.err
+			if ev.gone && !ev.pane.finished {
+				// The connection went away without the service ending, which is what a daemon
+				// upgrade looks like from here. Reconnect this pane where it stands rather than
+				// ending the session: `gozellij upgrade` keeps every process running, and a split
+				// screen that has to be rebuilt afterwards makes that promise worth less than it
+				// sounds.
+				//
+				// Before this, a pane whose connection ended simply stopped updating and nothing
+				// said so: both halves of a split froze at the instant of the upgrade and stayed
+				// frozen, which looked exactly like two idle shells.
+				if err := reopenPane(socket, ev.pane); err != nil {
+					note(fmt.Sprintf("%s: %v", ev.pane.service, err))
+					ev.pane.finished = true
+				} else {
+					go readFrames(ev.pane, events)
 				}
+				paint()
+			}
+			if allDone(panes) {
+				if ev.finished {
+					return outcomeFinished, nil
+				}
+				return outcomeDisconnected, ev.err
 			}
 
 		case <-winch:
@@ -275,6 +292,26 @@ func openPane(socket, service string, screen *renderedScreen, count int) (*liveP
 	return &livePane{service: service, client: c, term: grid.New(cols, rows)}, nil
 }
 
+// reopenPane reconnects a pane to its service after the connection went away.
+//
+// The grid is kept, not rebuilt. The screen this pane was showing is still the screen the service
+// has, and asking for a replay would redraw a screenful of scrollback over it. What is asked for is
+// the same size it already had, so the service never learns that anything happened.
+func reopenPane(socket string, p *livePane) error {
+	c, err := waitForDaemonClient(socket, ReattachWindow)
+	if err != nil {
+		return err
+	}
+	cols, rows := p.term.Size()
+	if _, err := c.Call(ipc.OpAttach, p.service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: false}); err != nil {
+		c.Close()
+		return err
+	}
+	p.client.Close()
+	p.client = c
+	return nil
+}
+
 // nextUnshown finds the next service that is not already on the screen.
 //
 // Next in the same rotation Ctrl-] n walks, starting from the focused pane, rather than first in
@@ -312,11 +349,9 @@ func readFrames(p *livePane, events chan<- paneEvent) {
 	for {
 		kind, payload, err := p.client.Reader().ReadFrame()
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				events <- paneEvent{pane: p, err: nil, finished: false}
-				return
-			}
-			events <- paneEvent{pane: p, err: err}
+			// The connection ended. Whether that is the daemon being replaced or something worse
+			// is not knowable from here, so it is reported as what it is and the session decides.
+			events <- paneEvent{pane: p, gone: true, err: err}
 			return
 		}
 		switch kind {
