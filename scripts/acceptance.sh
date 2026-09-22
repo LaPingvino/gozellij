@@ -39,7 +39,22 @@ ok()   { pass=$((pass + 1)); printf '  PASS  %s\n' "$*"; }
 bad()  { fail=$((fail + 1)); printf '  FAIL  %s\n' "$*"; }
 
 # tmuxSock is a private tmux server, so nothing here can touch a session you are using.
-tmuxSock="gozellij-acceptance-$$"
+#
+# A new one per screen section, not one for the whole run. Sections used to share a server and rely
+# on kill-server having taken effect before the next new-session; when it had not, a check read the
+# previous section's window. That produced a check reporting a pane as stalled when a run by hand
+# showed it live three times out of three, and before that a check that asked the wrong pane for
+# its scrolling region. Shared state between checks has now caused three separate false results,
+# and a socket name costs nothing.
+tmuxSockSeq=0
+tmuxSock="gozellij-acceptance-$$-0"
+
+# newscreen starts a fresh tmux server for the next section and leaves the old one killed.
+newscreen() {
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    tmuxSockSeq=$((tmuxSockSeq + 1))
+    tmuxSock="gozellij-acceptance-$$-$tmuxSockSeq"
+}
 
 cleanup() {
     # By recorded pid, never by pattern: a pattern matches this script's own command line, which
@@ -429,6 +444,7 @@ else
     ask()  { tmux -L "$tmuxSock" display -p "$1"; }
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e SHELL=/bin/sh -e TERM=xterm-256color \
@@ -528,6 +544,7 @@ else
     only
     "$gz" add renderdemo -start -- sh -c 'printf "RENDERED-OUTPUT-HERE\r\n"; sleep 120' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -623,6 +640,7 @@ else
     only
     "$gz" add helpy -start -- sh -c 'printf "HELP-DEMO\r\n"; sleep 120' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 80 -y 8 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -657,6 +675,7 @@ else
         "$gz" add "$n" -start -- sh -c "i=0; while :; do printf '$n-%d\r\n' \$i; i=\$((i+1)); sleep 1; done" >/dev/null 2>&1
     done
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -693,6 +712,7 @@ else
         "$gz" add "$n" -start -- sh -c "i=0; while :; do printf '$n-%d\r\n' \$i; i=\$((i+1)); sleep 1; done" >/dev/null 2>&1
     done
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 70 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -737,6 +757,7 @@ else
     "$gz" add sh1 -start -- sh -c 'PS1="one$ "; export PS1; exec /bin/sh -i' >/dev/null 2>&1
     "$gz" add sh2 -start -- sh -c 'PS1="two$ "; export PS1; exec /bin/sh -i' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 70 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e SHELL=/bin/sh -e TERM=xterm-256color \
@@ -786,6 +807,7 @@ else
     "$gz" add msg1 -start -- sh -c 'printf "STILL-HERE\r\n"; sleep 120' >/dev/null 2>&1
     "$gz" add msg2 -start -- sh -c 'printf "ABOUT-TO-FAIL\r\n"; sleep 5; exit 3' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -812,6 +834,7 @@ else
     "$gz" add tickone -start -- sh -c 'i=0; while :; do printf "one-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
     "$gz" add ticktwo -start -- sh -c 'i=0; while :; do printf "two-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e TERM=xterm-256color \
@@ -844,6 +867,7 @@ else
     # Giving them back is not a nicety, it is repairing something the mode broke.
     "$gz" add scroller -start -- sh -c 'i=1; while [ $i -le 60 ]; do printf "row-%02d\r\n" $i; i=$((i+1)); done; sleep 120' >/dev/null 2>&1
     sleep 1
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 40 -y 10 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
@@ -896,6 +920,7 @@ else
     "$gz" add vimmy -start -- sh -c "TERM=xterm-256color LANG=C.UTF-8 exec vim -u NONE -N -n $home/wide-one.txt" >/dev/null 2>&1
     sleep 1
     plain="${tmuxSock}-plain"
+    newscreen
     tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
         -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \

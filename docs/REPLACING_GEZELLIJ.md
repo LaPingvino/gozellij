@@ -128,6 +128,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **The help key answers where you are looking.** `Ctrl-] ?` lists the keys and `Ctrl-] <anything
+  else>` says that key does nothing. Both wrote to standard error, which a rendered attach covers
+  within milliseconds - a help key that helps nobody, and a prefix key that eats a keystroke in
+  silence, which this project's own comment calls indistinguishable from a dropped one. Both go to
+  the status line now. **Verified** on a real screen.
+
 - **The picker is visible.** `Ctrl-] l` prints the services and waits for a keystroke. In a
   rendered attach the repaint that keeps the status clock moving drew the last frame over it within
   two seconds, so the question was invisible and the answer still worked - a menu answered by
