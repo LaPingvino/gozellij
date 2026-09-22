@@ -116,6 +116,34 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Off by default: it interprets every escape sequence the service emits, so a sequence the emulator
   gets wrong is a screen `Ctrl-L` cannot fix, whereas a byte pipe's failures are the terminal's own.
 
+## What would have to be true for the rendered attach to be the default
+
+It is off by default because it interprets every escape sequence a service emits, where the byte
+pipe cannot corrupt a screen it never reads. Turning that around is a judgement about evidence, so
+here is the evidence and what is still missing from it.
+
+What is true now: thirty-odd screens recorded from a real tmux agree with this emulator cell by
+cell, including styles and scrollback; the same screens agree when the bytes arrive one at a time;
+a generator produces streams nobody wrote and the disagreements it finds are down to four named
+tmux quirks; a real `vim` on a file of wide characters draws identically through gozellij and
+through tmux, colours included; and everything that belongs to the terminal rather than the grid -
+mouse reporting, bracketed paste, the title, the cursor shape, and the answers a program waits for -
+is carried through.
+
+What is missing:
+
+- **Use.** None of the above is a week of somebody's actual work. The failures that matter now are
+  the ones that need a person to notice, and five of the last ten bugs were exactly that: a message
+  written where it could not be read, a menu drawn and then painted over, a mode silently dropped.
+- **A reason to think an unknown sequence is harmless.** Anything the emulator does not implement is
+  dropped rather than passed on. For a byte pipe that question does not arise.
+- **The cost.** Two to three times the byte pipe on a flood of output, measured, for reasons that
+  are not repaint count. Irrelevant for a shell, visible for `cat` of something large.
+
+`Ctrl-] r` repaints from the grid and `-no-render` gets the byte pipe back for one command, so
+neither failure needs a restart to escape - which is the least a mode should offer before it is
+the one you get without asking.
+
 - **A split screen, and an emulator checked against another one.** In a rendered attach,
   `Ctrl-] |` opens the next service as a second pane, `Ctrl-] o` moves the keyboard and `Ctrl-] x`
   closes a pane. Two services drawing on one terminal is the thing a byte pipe cannot do at all.

@@ -239,6 +239,21 @@ func (s *renderedScreen) Resume() {
 	_ = s.Repaint()
 }
 
+// Forget drops what this client believes the terminal already has, so that the next paint sends
+// everything again.
+//
+// The modes, the title and the cursor shape are only sent when they change, which means a terminal
+// that lost them - a program that reset it, a serial line that dropped bytes - would not get them
+// back until something changed again. A redraw is somebody saying the screen is wrong, and the
+// honest response is to stop assuming anything about it.
+func (s *renderedScreen) Forget() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.applied = nil
+	s.title = ""
+	s.shape = 0
+}
+
 // Say puts a message on the status line for a few seconds.
 func (s *renderedScreen) Say(msg string) {
 	if msg == "" {

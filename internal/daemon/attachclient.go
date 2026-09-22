@@ -66,11 +66,14 @@ const (
 	// outcomeGrow and outcomeShrink change the focused pane's share of the screen.
 	outcomeGrow
 	outcomeShrink
+	// outcomeRedraw paints everything again from the grid. The recovery for a screen that looks
+	// wrong, which is the first thing anybody reaches for.
+	outcomeRedraw
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · < > resize · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · < > resize · o switch pane · x close pane · b/f scroll back/forward · g live · r redraw · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -678,6 +681,10 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case 'x', 'X':
 					if !command(outcomeClosePane) {
+						return
+					}
+				case 'r', 'R', 0x0c:
+					if !command(outcomeRedraw) {
 						return
 					}
 				case '>', '+', '=':

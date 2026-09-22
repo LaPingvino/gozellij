@@ -702,6 +702,38 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------------------------ a way to fix a wrong screen
+    #
+    # The first thing anybody reaches for when a screen looks wrong. It repaints from the grid and
+    # forgets what this client assumed the terminal already had - the modes, the title and the
+    # cursor shape are otherwise only sent when they change, so a terminal that lost them would
+    # not get them back until something changed again.
+    only
+    "$gz" add drawn -start -- sh -c 'printf "\033]2;TITLE-HERE\007\033[?2004hCONTENT\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render drawn > $home/redraw.bin'"
+    sleep 3
+
+    # Occurrences, not lines: the output is one binary blob, so grep -c counts it as one however
+    # many times the string is in it. That misread a working redraw as a broken one once.
+    occurrences() { grep -ao "$1" "$home/redraw.bin" | wc -l; }
+    titleBefore=$(occurrences 'TITLE-HERE')
+    tmux -L "$tmuxSock" send-keys C-] 'r'
+    sleep 2
+    if [ "$(occurrences 'TITLE-HERE')" -gt "$titleBefore" ] \
+       && [ "$(occurrences "$(printf '\033')\[?2004h")" -gt 1 ]; then
+        ok "Ctrl-] r repaints and re-sends what the terminal was assumed to have"
+    else
+        bad "after a redraw the title was sent $(occurrences 'TITLE-HERE') times, want more than $titleBefore"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm drawn >/dev/null 2>&1
+
     # ------------------------------------------------------- panes that are not the same size
     #
     # An even split is not always the right split. Ctrl-] > gives the focused pane more of the

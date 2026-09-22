@@ -143,11 +143,17 @@ the attach into one that owns the screen: `Ctrl-] |` splits, `Ctrl-] o` moves th
 `Ctrl-] x` closes a pane, `Ctrl-] b`/`f`/`g` read the scrollback the mode would otherwise take
 away.
 
-What is missing, so that this does not read as finished: panes are equal columns and cannot be
-resized or stacked, there are no layouts to save or restore, there is no mouse, and the status line
-is the only chrome. The rendered attach costs two to three times the byte pipe on a flood of output
-and the reason is not repaint count (measured; see `internal/vt/render`). It is not the default,
-and `docs/REPLACING_GEZELLIJ.md` says what would have to be true for it to become one.
+Panes can be beside each other or stacked, and resized with `Ctrl-] <` and `Ctrl-] >`. The things
+that belong to the terminal rather than the grid are carried through to it - mouse reporting,
+bracketed paste, the window title, the cursor shape - and the questions a program asks the terminal
+are answered, which a client that interprets the stream has to do itself or the program waits.
+
+What is missing, so that this does not read as finished: one orientation for the whole screen
+rather than a tree of splits, no layouts to save or restore, no mouse handling of gozellij's own
+(clicks go to the program in the pane, not to gozellij), and the status line is the only chrome.
+The rendered attach costs two to three times the byte pipe on a flood of output and the reason is
+not repaint count (measured; see `internal/vt/render`). It is not the default, and
+`docs/REPLACING_GEZELLIJ.md` says what would have to be true for it to become one.
 
 **Phase 4 — plugins, if wanted.** The cheapest part, surprisingly: Zellij's entire plugin ABI is
 **one** wasm host function (`host_run_plugin_command`) with everything else carried as protobuf

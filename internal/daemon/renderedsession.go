@@ -214,6 +214,14 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				resizePanes(panes)
 				paint()
 
+			case outcomeRedraw:
+				// Everything again, from the grid rather than from the service: the grid is what
+				// this client believes the screen to be, and a redraw is asking it to say so
+				// again. If the grid itself is wrong, the service has to be asked - which is what
+				// detaching and attaching again does, and what -no-render is for.
+				screen.Forget()
+				paint()
+
 			case outcomeFocus:
 				focus = (focus + 1) % len(panes)
 				paint()
