@@ -84,6 +84,14 @@ type Term struct {
 	// title is what the program asked the window to be called, for the same reason as modes: a
 	// byte pipe hands OSC 2 to the real terminal and a client that interprets it has to carry it.
 	title string
+	// titles is the title stack of CSI 22 t / CSI 23 t.
+	titles []string
+	// irm is insert/replace mode, CSI 4 h and CSI 4 l.
+	irm bool
+	// awm is autowrap, DECAWM, on by default. Off means the last column overwrites itself.
+	awm bool
+	// keypad is application keypad mode, ESC = and ESC >.
+	keypad bool
 	// replies are what this terminal owes the program: answers to the questions it asked, like
 	// where the cursor is. A byte pipe gets these for free because the user's real terminal
 	// answers them; a client that interprets the stream is the terminal, and a program that asks
@@ -135,7 +143,7 @@ func New(cols, rows int) *Term {
 	if rows < 1 {
 		rows = 1
 	}
-	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1}
+	t := &Term{cols: cols, rows: rows, top: 0, bottom: rows - 1, awm: true}
 	t.hist.setLimit(DefaultScrollback)
 	t.cur.Visible = true
 	t.cells = make([][]vt.Cell, rows)
@@ -349,9 +357,23 @@ func (t *Term) putString(content string, width int) {
 		t.wrap()
 	}
 	if t.cur.Col+width > t.cols {
-		// A wide character that does not fit does not straddle the margin: it moves to the next
-		// line whole, which is what a terminal does and what half of one is not.
-		t.wrap()
+		if !t.awm {
+			// Autowrap off: the character stays on this line and overwrites the end of it. Never
+			// a new line, which is the whole point of switching it off.
+			t.cur.Col = max(t.cols-width, 0)
+		} else {
+			// A wide character that does not fit does not straddle the margin: it moves to the
+			// next line whole, which is what a terminal does and what half of one is not.
+			t.wrap()
+		}
+	}
+	if t.irm {
+		// Insert mode: the character pushes the rest of the row right rather than replacing what
+		// is there, and whatever falls off the end is gone. The same thing ICH does, one
+		// character at a time. Programs that use it are rare - everything on this machine sends
+		// only the sequence that switches it *off* - but a terminal that ignores the switch and
+		// then overwrites is worse than one that never claimed to have it.
+		t.shiftRight(t.cur.Row, t.cur.Col, width)
 	}
 	t.cells[t.cur.Row][t.cur.Col] = vt.Cell{Content: content, Width: width, Style: t.style}
 	if end := t.cur.Col + width; end > t.used[t.cur.Row] {
@@ -366,9 +388,10 @@ func (t *Term) putString(content string, width int) {
 	if t.cur.Col >= t.cols {
 		// Deferred wrap. The cursor stays in the last column until another character arrives,
 		// because a program that writes exactly to the margin and then moves the cursor must not
-		// have scrolled the screen in between.
+		// have scrolled the screen in between. With autowrap off there is nothing pending: the
+		// next character overwrites this one where it stands.
 		t.cur.Col = t.cols - 1
-		t.pend = true
+		t.pend = t.awm
 	}
 }
 
@@ -561,6 +584,8 @@ func (t *Term) moveTo(row, col int) {
 // DECTCEM and the alternate screen are handled here and must not also be handed on. These are the
 // ones that only mean something to the terminal a person is actually looking at.
 var PassthroughModes = []int{
+	1,                // application cursor keys: what the arrow keys send
+	12,               // a blinking cursor
 	1000, 1002, 1003, // mouse reporting: clicks, drags, all motion
 	1005, 1006, 1015, // how those reports are encoded
 	1004, // focus in and out
@@ -582,6 +607,54 @@ func (t *Term) noteUnknown(name string) {
 	}
 	t.unknown[name]++
 }
+
+// shiftRight pushes a row's cells right from a column, dropping what falls off the end. What ICH
+// does, and what a character written in insert mode does.
+func (t *Term) shiftRight(row, col, n int) {
+	if n <= 0 || col >= t.cols {
+		return
+	}
+	line := t.cells[row]
+	for c := t.cols - 1; c >= col+n; c-- {
+		line[c] = line[c-n]
+	}
+	for c := col; c < min(col+n, t.cols); c++ {
+		line[c] = vt.Cell{Content: " ", Width: 1, Style: t.style}
+	}
+	if t.used[row] > 0 {
+		t.used[row] = min(t.used[row]+n, t.cols)
+	}
+}
+
+// titleStackLimit caps the title stack. A program that pushes and never pops - or a stream of junk
+// doing it on purpose - must not be able to grow this without bound. Ten is more nesting than any
+// real program does; xterm's own limit is the same order.
+const titleStackLimit = 10
+
+// pushTitle and popTitle are CSI 22 t and CSI 23 t: save and restore the window title.
+//
+// less, vim, htop and nano all do this, and without it the title a program set on its way in is
+// the title you are left with after it exits - the shell's own title never comes back.
+func (t *Term) pushTitle() {
+	if len(t.titles) >= titleStackLimit {
+		// Drop the oldest rather than refusing: the newest is the one a pop is about to want.
+		t.titles = append(t.titles[:0], t.titles[1:]...)
+	}
+	t.titles = append(t.titles, t.title)
+}
+
+func (t *Term) popTitle() {
+	if len(t.titles) == 0 {
+		// Nothing to restore. Not an error and not a reason to blank the title: a pop without a
+		// push leaves the title alone, which is what the program that sent it will have meant.
+		return
+	}
+	t.title = t.titles[len(t.titles)-1]
+	t.titles = t.titles[:len(t.titles)-1]
+}
+
+// Keypad reports whether this pane's program asked for application keypad mode.
+func (t *Term) Keypad() bool { return t.keypad }
 
 // Unknown is what this terminal was sent and did not implement, by name and count.
 func (t *Term) Unknown() map[string]int {

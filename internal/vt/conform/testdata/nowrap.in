@@ -1,0 +1,9 @@
+# size 10x4
+# Autowrap off: the last column overwrites itself instead of moving to the next line.
+#
+# htop and nano both send CSI ?7 h on the way in, so the mode was reaching this emulator and being
+# dropped - which only ever agreed with a terminal because the value they set is the default. This
+# is the other direction, which nothing on this machine sends and which would therefore have gone
+# on being wrong indefinitely.
+\e[?7labcdefghijklmn
+\r\n\e[?7habcdefghijklmn

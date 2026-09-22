@@ -59,6 +59,8 @@ type renderedScreen struct {
 	// shape is the cursor shape the terminal has been told to use, so that it is told only when
 	// it changes.
 	shape int
+	// keypad is whether the terminal has been put into application keypad mode.
+	keypad bool
 
 	// suspended stops painting while something else owns the screen - the service picker, which
 	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
@@ -163,6 +165,12 @@ func (s *renderedScreen) Close() error {
 		// that asked for it.
 		s.shape = 0
 		fmt.Fprint(s.out, "\x1b[0 q")
+	}
+	if s.keypad {
+		// The same again for the keypad: left in application mode, the shell that comes back
+		// gets \eOq where it expects a 1.
+		s.keypad = false
+		fmt.Fprint(s.out, "\x1b>")
 	}
 	var b strings.Builder
 	b.WriteString("\x1b[0m")
@@ -290,6 +298,7 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 		s.applyModes(panes[focus].Modes())
 		s.applyTitle(panes[focus].Title())
 		s.applyShape(panes[focus].CursorShape())
+		s.applyKeypad(panes[focus].Keypad())
 	}
 	frame := layout.Compose(s.cols, s.rows, ps)
 	if s.reserved > 0 && s.line != nil {
@@ -325,6 +334,8 @@ type layoutPane interface {
 	Title() string
 	// CursorShape is the shape that program asked for, zero for the terminal's default.
 	CursorShape() int
+	// Keypad is whether that program asked for application keypad mode.
+	Keypad() bool
 }
 
 // applyModes puts the real terminal into the state a pane asked for, changing only what differs.
@@ -381,6 +392,23 @@ func (s *renderedScreen) applyShape(shape int) {
 	}
 	s.shape = shape
 	fmt.Fprintf(s.out, "\x1b[%d q", shape)
+}
+
+// applyKeypad puts the real terminal's keypad into the mode the focused pane's program asked for.
+//
+// The same reasoning as the modes and the cursor shape, and the same risk on the way out: a
+// terminal left in application keypad mode after a detach sends the wrong thing to the shell that
+// comes back. Close resets it.
+func (s *renderedScreen) applyKeypad(on bool) {
+	if on == s.keypad {
+		return
+	}
+	s.keypad = on
+	if on {
+		_, _ = io.WriteString(s.out, "\x1b=")
+		return
+	}
+	_, _ = io.WriteString(s.out, "\x1b>")
 }
 
 // releaseModes puts back everything this client switched on.

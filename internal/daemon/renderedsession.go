@@ -58,6 +58,9 @@ func (p *livePane) Modes() map[int]bool { return p.term.Modes() }
 // CursorShape is the shape this pane's program asked for, zero for the terminal's default.
 func (p *livePane) CursorShape() int { return p.term.Cursor().Shape }
 
+// Keypad is whether this pane's program asked for application keypad mode.
+func (p *livePane) Keypad() bool { return p.term.Keypad() }
+
 // Title is what this pane's program asked the window to be called, or the service's name when it
 // has not asked. A window with no title at all is worse than one named after what is in it.
 func (p *livePane) Title() string {

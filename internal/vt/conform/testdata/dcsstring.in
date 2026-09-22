@@ -1,0 +1,10 @@
+# size 20x4
+# A control string this emulator does not act on, followed by text.
+#
+# vim sends "\eP$qm\e\\" on startup to ask what the current attributes are. The body of one of
+# these is ordinary printable text, so a parser that gives up at the ESC P draws it: this put
+# "$qm" in the top left corner of a real screen. The terminal has to read it to its end and throw
+# it away, which is what "after" arriving in column 1 proves.
+\eP$qm\e\\after
+\r\n\e_G payload here \e\\apc
+\r\n\eX sos body \x07seven

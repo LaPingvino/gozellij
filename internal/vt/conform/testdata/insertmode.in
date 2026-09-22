@@ -1,0 +1,9 @@
+# size 20x4
+# Insert mode: CSI 4 h, then a character pushes the rest of the row right.
+#
+# Everything on this machine sends only the sequence that switches it off, which is a no-op on a
+# terminal that never had it on - so this case is the one that says what happens if a program
+# switches it on. The second line leaves it off again and overwrites instead, which is the
+# difference being measured.
+abcdef\e[5D\e[4hXY
+\r\nabcdef\e[5D\e[4lXY

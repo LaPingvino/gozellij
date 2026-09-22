@@ -16,7 +16,10 @@ import (
 // routinely arrives as "\x1b[1" and ";4r", and a parser that only recognises whole sequences
 // silently prints half of one as text. The state lives here, between calls.
 type parser struct {
-	state  state
+	state state
+	// strEsc marks an ESC seen inside a control string, so that the backslash after it ends the
+	// string rather than being part of it.
+	strEsc bool
 	params []byte
 	inter  []byte
 	utf8   []byte
@@ -46,6 +49,11 @@ const (
 	csi
 	osc
 	charsetSelect
+	// str is a control string this emulator does not act on - DCS, SOS, PM, APC - being read to
+	// its terminator and thrown away. It has to be a state of its own: the body of one is
+	// ordinary printable text, and a parser that returns to ground at the ESC P draws it. vim
+	// sends "\eP$qm\e\\" on startup and this put "$qm" in the corner of the screen.
+	str
 )
 
 func (p *parser) feed(t *Term, b []byte) {
@@ -63,6 +71,8 @@ func (p *parser) feed(t *Term, b []byte) {
 		case charsetSelect:
 			t.selectCharset(p.charsetSlot, c)
 			p.state = ground
+		case str:
+			p.str(c)
 		}
 	}
 }
@@ -227,6 +237,14 @@ func (p *parser) escape(t *Term, c byte) {
 		p.inter = p.inter[:0]
 	case ']':
 		p.state = osc
+	case 'P', 'X', '^', '_':
+		// DCS, SOS, PM and APC: a command with a body, ending at ST. Read and dropped. What is in
+		// them is a terminal's own business - vim asks for the current SGR with a DCS, ncurses
+		// asks for terminfo strings - and a program that is not answered does without. What it
+		// must not do is print the body, which is what happened before this state existed.
+		p.state = str
+		p.strEsc = false
+		t.noteUnknown(fmt.Sprintf("ESC %c string", c))
 	case '7':
 		t.saveCursor()
 		p.state = ground
@@ -249,6 +267,14 @@ func (p *parser) escape(t *Term, c byte) {
 		p.state = ground
 	case 'H': // a tab stop here
 		t.setTab()
+		p.state = ground
+	case '=', '>':
+		// Application and numeric keypad, DECKPAM and DECKPNM. The terminal's rather than the
+		// grid's: it changes what the keypad sends, and in a rendered attach the keys come from
+		// the user's real terminal. Every interactive program on this machine sends one of these
+		// and both were being dropped, so a program in application keypad mode was reading the
+		// numeric one's bytes.
+		t.keypad = c == '='
 		p.state = ground
 	case 'c': // reset
 		*t = *New(t.cols, t.rows)
@@ -333,6 +359,18 @@ func (p *parser) dispatch(t *Term, final byte) {
 						t.cur = t.altSaved
 						t.pend = false
 					}
+				case 7:
+					// Autowrap. Off means a character written in the last column overwrites it
+					// rather than moving to the next line - what a program drawing a table in the
+					// rightmost column relies on, and what makes writing there not scroll.
+					t.awm = set
+				case 1, 12:
+					// DECCKM and cursor blink: the terminal's, not the grid's. A program in
+					// application cursor-key mode expects the arrow keys to send \eOA rather than
+					// \e[A, and in a rendered attach the keys come from the user's real terminal
+					// - which sends what it was last told to send, and was never told. Every
+					// interactive program on this machine sets DECCKM; it was being dropped.
+					t.setMode(n, set)
 				case 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004:
 					// Not ours to act on: mouse reporting, its encoding, focus events and
 					// bracketed paste all belong to the terminal a person is looking at. Kept so
@@ -348,6 +386,12 @@ func (p *parser) dispatch(t *Term, final byte) {
 					} else {
 						t.leaveAlt(true)
 					}
+				default:
+					// Counted, like every other sequence that goes nowhere. This branch had no
+					// default at all, so a private mode this emulator does not implement was
+					// dropped *and* invisible - the one place in the parser where the survey of
+					// what real programs send could not see anything.
+					t.noteUnknown(fmt.Sprintf("CSI ?%d %c", n, final))
 				}
 			}
 		}
@@ -448,6 +492,30 @@ func (p *parser) dispatch(t *Term, final byte) {
 		// DECSTBM homes the cursor. Forgetting this is how a status line ends up putting the
 		// cursor at the top of the screen on every detach - measured, in this project.
 		t.moveTo(0, 0)
+	case 'h', 'l': // ANSI modes, as opposed to the private ones handled above
+		set := final == 'h'
+		for _, n := range ps {
+			switch n {
+			case 4:
+				t.irm = set
+			default:
+				t.noteUnknown(fmt.Sprintf("CSI %d %c", n, final))
+			}
+		}
+	case 't': // window manipulation
+		// Only the title stack, which is the part of this a person sees. A program that is about
+		// to change the window title pushes the old one and pops it on the way out, so that
+		// leaving `less` gives you back the title your shell had set. Everything else in this
+		// sequence asks to move, resize, raise or report the window, and a multiplexer's pane is
+		// not a window - those are counted rather than obeyed.
+		switch arg(0, 0) {
+		case 22:
+			t.pushTitle()
+		case 23:
+			t.popTitle()
+		default:
+			t.noteUnknown(fmt.Sprintf("CSI %d t", arg(0, 0)))
+		}
 	case 's':
 		t.saveCursor()
 	case 'u':
@@ -672,6 +740,30 @@ func (p *parser) osc(t *Term, c byte) {
 		if len(p.oscBuf) < 1024 {
 			p.oscBuf = append(p.oscBuf, c)
 		}
+	}
+}
+
+// str reads a control string to its end and throws it away.
+//
+// Terminated by ST - ESC followed by a backslash - and by nothing else. BEL ends an *OSC*, and
+// this was written to accept it here too; the oracle disagreed. tmux sent "\eX sos body \aseven"
+// and drew nothing at all, where accepting the BEL puts "seven" on the screen. So the body runs to
+// ST however long that takes, and a program that opens one of these and never closes it has turned
+// its own output off - which is what a real terminal does to it.
+//
+// An ESC followed by anything else stays inside the string: a stray ESC is not a terminator, and
+// abandoning on it would put the rest of the body on the screen, which is the bug this state
+// exists to prevent.
+func (p *parser) str(c byte) {
+	if p.strEsc {
+		p.strEsc = false
+		if c == '\\' {
+			p.state = ground
+		}
+		return
+	}
+	if c == 0x1b {
+		p.strEsc = true
 	}
 }
 
