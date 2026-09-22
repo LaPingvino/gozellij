@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -61,6 +62,12 @@ type renderedScreen struct {
 	shape int
 	// keypad is whether the terminal has been put into application keypad mode.
 	keypad bool
+	// asked, askUntil and askBuf are the colour query and the wait for its answer; colours is
+	// what the terminal said. See AskColours.
+	asked    bool
+	askUntil time.Time
+	askBuf   []byte
+	colours  map[int]string
 
 	// suspended stops painting while something else owns the screen - the service picker, which
 	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
@@ -449,4 +456,131 @@ func trimToWidth(s string, cols int) string {
 		return s
 	}
 	return vt.TruncateToWidth(s, cols)
+}
+
+// Asking the real terminal what colour it is, so that a pane can be told.
+//
+// vim asks the terminal for its background with OSC 11 and picks a light or a dark colour scheme
+// from the answer. A byte pipe gets this for free: the question reaches the user's terminal and
+// the answer comes back the same way. A rendered attach *is* the terminal from the program's side
+// and knew nothing, so vim guessed - and guessed wrong on half the terminals in the world.
+//
+// Inventing an answer was the obvious shortcut and is the wrong one: a confident "black" makes vim
+// choose a dark scheme on a light terminal, which is worse than the guess it was already making.
+// So this asks the real terminal the same question, once, when the attach starts.
+//
+// It does not wait for the answer. The link to the machine this runs on is somebody's ssh
+// connection, and a window long enough for that is a pause on every attach; a window short enough
+// not to be noticed is a window the answer misses. So the query goes out, the attach carries on,
+// and the reply is recognised whenever it turns up in the user's input - which is where it
+// arrives, because to a terminal a reply and a keystroke are the same thing.
+const (
+	// colourReplyWindow is how long an answer is watched for. Past this the bytes held back are
+	// given to the pane as what they would otherwise have been, which is typing.
+	colourReplyWindow = 2 * time.Second
+	// colourReplyLimit bounds what is held back while an answer is incomplete. A terminal that
+	// starts a reply and never finishes it must not be able to swallow a session's keystrokes.
+	colourReplyLimit = 1024
+)
+
+// AskColours sends the queries. Once per attach, from the rendered path only.
+func (s *renderedScreen) AskColours() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.asked {
+		return
+	}
+	s.asked = true
+	s.askUntil = time.Now().Add(colourReplyWindow)
+	_, _ = io.WriteString(s.out, "\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
+}
+
+// ColourAnswer is what the terminal said its foreground (10) or background (11) is, if it said.
+func (s *renderedScreen) ColourAnswer(which int) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.colours[which]
+	return v, ok
+}
+
+// TakeColourReplies pulls any OSC 10 or OSC 11 answer out of the user's input and returns what is
+// left, which is typing and goes to the pane.
+//
+// The recogniser is here rather than in the terminal reader because it is a property of a rendered
+// attach: the byte pipe never asks, so it never has to catch an answer. Three things have to be
+// true of it and each is a test: an answer never reaches the pane, everything that is not an
+// answer does, and a half-finished answer cannot hold keystrokes for ever.
+func (s *renderedScreen) TakeColourReplies(chunk []byte) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.asked || (len(s.askBuf) == 0 && !s.watching(chunk)) {
+		return chunk
+	}
+	if time.Now().After(s.askUntil) {
+		// The window has closed. Whatever was held back was not an answer after all, and it is
+		// the user's typing: it goes first, in the order it was typed.
+		out := append(s.askBuf, chunk...)
+		s.askBuf, s.asked = nil, false
+		return out
+	}
+	buf := append(s.askBuf, chunk...)
+	s.askBuf = nil
+	var out []byte
+	for {
+		i := oscColourStart(buf)
+		if i < 0 {
+			break
+		}
+		out = append(out, buf[:i]...)
+		rest := buf[i:]
+		end, body, which := oscColourEnd(rest)
+		if end < 0 {
+			// Started but not finished. Hold it, unless holding it would mean holding more than
+			// a keystroke's worth: a reply is short, and anything this long is not one.
+			if len(rest) > colourReplyLimit {
+				return append(out, rest...)
+			}
+			s.askBuf = rest
+			return out
+		}
+		if s.colours == nil {
+			s.colours = make(map[int]string, 2)
+		}
+		s.colours[which] = body
+		buf = rest[end:]
+	}
+	return append(out, buf...)
+}
+
+// watching reports whether a chunk could be the start of an answer, so that ordinary typing is not
+// copied through this at all.
+func (s *renderedScreen) watching(chunk []byte) bool {
+	return bytes.Contains(chunk, []byte("\x1b]1"))
+}
+
+// oscColourStart finds where an OSC 10 or OSC 11 reply begins, or -1.
+func oscColourStart(b []byte) int {
+	for _, pre := range [][]byte{[]byte("\x1b]10;"), []byte("\x1b]11;")} {
+		if i := bytes.Index(b, pre); i >= 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// oscColourEnd finds where one ends, and returns how many bytes it took, what it said and which
+// question it answers. A reply ends at ST or at BEL, both of which terminals use here.
+func oscColourEnd(b []byte) (n int, body string, which int) {
+	which = 10
+	if bytes.HasPrefix(b, []byte("\x1b]11;")) {
+		which = 11
+	}
+	rest := b[5:]
+	if i := bytes.IndexByte(rest, 0x07); i >= 0 {
+		return 5 + i + 1, string(rest[:i]), which
+	}
+	if i := bytes.Index(rest, []byte("\x1b\\")); i >= 0 {
+		return 5 + i + 2, string(rest[:i]), which
+	}
+	return -1, "", which
 }

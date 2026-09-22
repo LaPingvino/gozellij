@@ -785,6 +785,21 @@ func (p *parser) finishOSC(t *Term) {
 		// An operating-system command this does not act on - a hyperlink, a colour query, a
 		// clipboard write. A byte pipe would have passed it to the terminal.
 		t.noteUnknown("OSC " + num)
+	case "10", "11":
+		// The foreground and background colour. A query - the argument is "?" - is a question the
+		// program waits for an answer to: vim asks what colour the terminal is so that it can
+		// choose a light or a dark scheme, and guesses when nobody says. This grid does not know
+		// the answer, because it is a property of the terminal the user is actually looking at,
+		// so the query is recorded and whoever is drawing this grid answers it. Anything else is
+		// a program *setting* the colour, which is the terminal's business and not the grid's.
+		if arg != "?" {
+			t.noteUnknown("OSC " + num)
+			return
+		}
+		n, _ := strconv.Atoi(num)
+		if len(t.colourAsks) < colourAskLimit {
+			t.colourAsks = append(t.colourAsks, n)
+		}
 	case "0", "2":
 		// 0 sets the icon name and the title, 2 sets the title. Nothing here distinguishes them,
 		// because nothing downstream of it does either.

@@ -208,6 +208,13 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	for {
 		select {
 		case chunk := <-data:
+			// The terminal's answer to the colour question comes back this way, because to a
+			// terminal an answer and a keystroke are the same thing. Taken out before anything
+			// else looks at it; everything that is not an answer carries on as typing.
+			chunk = screen.TakeColourReplies(chunk)
+			if len(chunk) == 0 {
+				continue
+			}
 			// To the focused pane only. A keystroke that went to all of them would be typed
 			// into every shell on the screen at once, which is the kind of mistake that is
 			// discovered by running rm in the wrong one.
@@ -221,7 +228,9 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			for draining := true; draining; {
 				select {
 				case chunk := <-data:
-					_ = panes[focus].client.Writer().WriteFrame(ipc.KindData, chunk)
+					if chunk = screen.TakeColourReplies(chunk); len(chunk) > 0 {
+						_ = panes[focus].client.Writer().WriteFrame(ipc.KindData, chunk)
+					}
 				default:
 					draining = false
 				}
@@ -345,7 +354,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			// removed: it changed neither the time nor the bytes written (see the measurement in
 			// internal/vt/render), and an optimisation that cannot be shown to optimise anything
 			// is a claim with code attached.
-			applyEvent(socket, ev, events, note)
+			applyEvent(socket, ev, events, note, screen.ColourAnswer)
 			paintSoon()
 			if allDone(panes) {
 				// On the way out, whatever is owed is drawn: the last thing a service said - an
@@ -478,7 +487,7 @@ func openPane(socket, service string, screen *renderedScreen, count int) (*liveP
 // applyEvent takes one thing a pane's connection said and does it, without drawing.
 //
 // Drawing is the caller's, once, after a whole batch: see the comment where these are gathered.
-func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string)) {
+func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string), colour func(int) (string, bool)) {
 	if ev.message != "" {
 		note(ev.message)
 	}
@@ -490,6 +499,23 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 		// is not coming.
 		if replies := ev.pane.term.TakeReplies(); len(replies) > 0 {
 			_ = ev.pane.client.Writer().WriteFrame(ipc.KindData, replies)
+		}
+		// The colour questions, answered from what the real terminal said when this attach
+		// started. Answered here, in one place, rather than by telling every pane the colours as
+		// it is opened: there are four places a pane is made and each of them would have had to
+		// remember.
+		for _, which := range ev.pane.term.TakeColourAsks() {
+			value, ok := colour(which)
+			if !ok {
+				// The terminal never said. Not answering is the honest outcome - a made-up
+				// colour is worse than the guess the program was already going to make - and the
+				// user hears about it, once, like any other sequence that went nowhere.
+				note(fmt.Sprintf("%s asked what colour this terminal is and it never said, so %s is guessing",
+					ev.pane.service, ev.pane.service))
+				continue
+			}
+			_ = ev.pane.client.Writer().WriteFrame(ipc.KindData,
+				[]byte(fmt.Sprintf("\x1b]%d;%s\x1b\\", which, value)))
 		}
 		if ev.pane.scroll > 0 {
 			// Output while somebody is reading back pushes the lines they are looking at further

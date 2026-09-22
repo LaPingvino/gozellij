@@ -935,6 +935,35 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm titler >/dev/null 2>&1
 
+    # ----------------------------- the terminal is asked what colour it is, on the way in
+    #
+    # vim asks the terminal for its background colour and picks a light or a dark scheme from the
+    # answer. A byte pipe passes the question through; a rendered attach is the terminal from the
+    # program's side and knew nothing, so vim guessed. Inventing an answer would be worse than the
+    # guess, so the client asks the real terminal the same question when it starts.
+    #
+    # Only that the question is asked is checked here. tmux answers it by asking *its* terminal,
+    # and a detached tmux server has none - measured, before this check was written, by sending
+    # the query into a tmux pane and reading nothing back. What happens to an answer when one
+    # arrives is in internal/daemon/colourreply_test.go, where a pipe stands in for a terminal
+    # that replies.
+    only
+    "$gz" add colourer -start -- sh -c 'printf "COLOUR-DEMO\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render colourer > $home/colour.bin'"
+    sleep 3
+    if grep -q "$(printf '\033')\]11;?" "$home/colour.bin" && grep -q "$(printf '\033')\]10;?" "$home/colour.bin"; then
+        ok "a rendered attach asks the terminal what colour it is"
+    else
+        bad "the client never asked: $(cat -v "$home/colour.bin" | head -c 200)"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm colourer >/dev/null 2>&1
+
     # ------------------------- the arrow keys and the title stack have to reach the terminal
     #
     # Two things the survey in internal/vt/grid/probe_test.go found, both invisible on the screen.

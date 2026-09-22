@@ -163,6 +163,9 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 			// will not erase it a moment later.
 			input.sayTo(rendered.Say)
 			say = rendered.Say
+			// Ask the terminal what colour it is, once, before any pane needs to know. The
+			// answer arrives whenever it arrives; see AskColours.
+			rendered.AskColours()
 		}
 	}
 	if rendered == nil {

@@ -92,6 +92,8 @@ type Term struct {
 	awm bool
 	// keypad is application keypad mode, ESC = and ESC >.
 	keypad bool
+	// colourAsks are OSC 10 and OSC 11 queries this grid cannot answer by itself.
+	colourAsks []int
 	// replies are what this terminal owes the program: answers to the questions it asked, like
 	// where the cursor is. A byte pipe gets these for free because the user's real terminal
 	// answers them; a client that interprets the stream is the terminal, and a program that asks
@@ -651,6 +653,25 @@ func (t *Term) popTitle() {
 	}
 	t.title = t.titles[len(t.titles)-1]
 	t.titles = t.titles[:len(t.titles)-1]
+}
+
+// colourAskLimit caps the outstanding colour queries. A program that asks and never reads the
+// answer must not be able to grow this; two is the number a real one sends and ten is room to
+// spare.
+const colourAskLimit = 10
+
+// TakeColourAsks returns and clears the OSC 10 and OSC 11 queries this grid was sent.
+//
+// They are handed up rather than answered here because the answer is a property of the terminal
+// the user is looking at, which a grid has no way to know. Whoever is drawing it does - it asked
+// that terminal the same question when it started - and answers on the grid's behalf.
+func (t *Term) TakeColourAsks() []int {
+	if len(t.colourAsks) == 0 {
+		return nil
+	}
+	out := t.colourAsks
+	t.colourAsks = nil
+	return out
 }
 
 // Keypad reports whether this pane's program asked for application keypad mode.
