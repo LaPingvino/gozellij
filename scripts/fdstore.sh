@@ -47,15 +47,20 @@ gz="$work/bin/gozellij"
 # The settings under test, and the ones the packaged unit carries. KillMode=process is the one the
 # whole idea turns on; see docs/USER_STORIES.md C3.
 systemctl --user reset-failed "$unit" 2>/dev/null
+# TimeoutStartSec above is why this reports rather than hangs: a daemon that never sends READY=1
+# leaves Type=notify waiting for ninety seconds by default, and a check that takes a minute and a
+# half to say "it did not start" is a check nobody runs twice.
 if ! systemd-run --user --unit="$unit" --collect \
     -p Type=notify -p NotifyAccess=main \
+    -p TimeoutStartSec=10 \
     -p Restart=on-failure -p RestartSec=1 \
     -p FileDescriptorStoreMax=64 -p KillMode=process \
     -p Environment="GOZELLIJ_RUNTIME_DIR=$work/run" \
     -p Environment="GOZELLIJ_STATE_DIR=$work/state" \
     -p Environment="HOME=$work/home" \
     "$work/bin/gozellijd" >/dev/null 2>&1; then
-    say "could not start the transient unit"
+    say "  FAIL  the unit never started: $(systemctl --user show "$unit" -p Result --value)"
+    journalctl --user -u "$unit" --no-pager -o cat --since "-30s" | tail -5
     exit 1
 fi
 
