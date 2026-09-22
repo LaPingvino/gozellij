@@ -128,6 +128,13 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **A split that stacks.** `Ctrl-] -` puts the new pane underneath instead of beside: three panes
+  in columns on an eighty-column terminal give twenty-six each, which is not a pane but a margin.
+  One orientation for the whole screen, not a tree of splits - a tree means resizing, moving panes
+  between branches and layouts to save, which is a different piece of work. **Verified** on a
+  forty-column screen: the first service's output in the top half, the second's below it, checked
+  by which rows each lands in rather than by both appearing somewhere.
+
 - **Everything gozellij says goes through one sink.** Standard error while the byte pipe owns the
   terminal, the status line once something is painting over it. Five separate messages had been
   written to a screen that erased them: a service's exit, the picker's menu, the help key, the
