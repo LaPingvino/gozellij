@@ -83,11 +83,63 @@ func TestAFollowerIsCountedAsAViewer(t *testing.T) {
 		}
 		got = st.Viewers
 		if got == 1 {
+			// And counted as one that cannot type. Not a policy: a follower has no way to send
+			// anything, so it is what `attach -r` asks to be, arrived at from the other
+			// direction. Without this, `ls` says somebody could be typing into a service when
+			// what is actually attached is a log tail.
+			if st.Watchers != 1 {
+				t.Errorf("Watchers = %d while a `logs -f` client is following, want 1 - a follower cannot type",
+					st.Watchers)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("Viewers = %d while a `logs -f` client is following, want 1", got)
+}
+
+// A read-only attach is counted apart from one that can type, which is the whole point of counting
+// it: "two terminals attached" and "two terminals that can restart your build by leaning on the
+// keyboard" are different facts.
+func TestAReadOnlyAttachIsCountedApartFromOneThatCanType(t *testing.T) {
+	_, _, sock, _ := newLoggedTestDaemon(t)
+	c := dial(t, sock)
+
+	if _, err := c.Add("watchme", ipc.AddRequest{
+		Command: "sh", Args: []string{"-c", "sleep 30"}, Start: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	open := func(readOnly bool) *Client {
+		a, err := Dial(sock)
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		a.SetReadOnly(readOnly)
+		if _, err := a.Call(ipc.OpAttach, "watchme", ipc.AttachRequest{Cols: 80, Rows: 24, ReadOnly: readOnly}); err != nil {
+			t.Fatalf("attach(readOnly=%v): %v", readOnly, err)
+		}
+		t.Cleanup(func() { a.Close() })
+		return a
+	}
+	open(true)
+	open(false)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var v, w int
+	for time.Now().Before(deadline) {
+		st, err := c.Status("watchme")
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		v, w = st.Viewers, st.Watchers
+		if v == 2 && w == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("with one read-only attach and one ordinary one: Viewers = %d, Watchers = %d, want 2 and 1", v, w)
 }
 
 // Fabric.Logs refuses to answer from a file when the service has logging off, naming exactly the
