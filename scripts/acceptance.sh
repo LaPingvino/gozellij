@@ -935,6 +935,57 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm titler >/dev/null 2>&1
 
+    # ------------------------- the arrow keys and the title stack have to reach the terminal
+    #
+    # Two things the survey in internal/vt/grid/probe_test.go found, both invisible on the screen.
+    #
+    # Every interactive program on this machine sets application cursor keys, which changes what
+    # the arrow keys send. In a rendered attach the keys come from the user's real terminal, so
+    # not passing it on means a program in that mode reads the other mode's bytes. It was being
+    # dropped by the one branch of the parser that counted nothing, so nothing said so either.
+    #
+    # And less, vim, htop and nano all push the window title on the way in and pop it on the way
+    # out. Without the stack the title a program set is the one you are left with afterwards.
+    only
+    "$gz" add keypadder -start -- sh -c 'printf "\033[?1h\033=KEYS-ON\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render keypadder > $home/keys.bin'"
+    sleep 3
+    if grep -q "$(printf '\033')\[?1h" "$home/keys.bin" && grep -q "$(printf '\033')=" "$home/keys.bin"; then
+        ok "application cursor keys and keypad reach the terminal"
+    else
+        bad "the client never passed them on: $(cat -v "$home/keys.bin" | head -c 200)"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm keypadder >/dev/null 2>&1
+
+    only
+    # The waits are relative to the service starting, and the attach is up about a second and a
+    # half after that. An earlier version of this check had the service run through all three
+    # stages before the attach existed, and read FIRST-TITLE twice - a check that passes for the
+    # wrong reason in the one direction that matters.
+    "$gz" add stacker -start -- sh -c 'sleep 4; printf "\033]2;FIRST-TITLE\007"; sleep 2; printf "\033[22t\033]2;SECOND-TITLE\007"; sleep 3; printf "\033[23t"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render stacker'"
+    sleep 6
+    mid=$(ask '#{pane_title}')
+    sleep 4
+    if [ "$mid" = "SECOND-TITLE" ] && [ "$(ask '#{pane_title}')" = "FIRST-TITLE" ]; then
+        ok "a popped title is the one that was pushed, not the one that replaced it"
+    else
+        bad "the title went [$mid] then [$(ask '#{pane_title}')], want SECOND-TITLE then FIRST-TITLE"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm stacker >/dev/null 2>&1
+
     # --------------------------------- mouse and paste modes have to reach the real terminal
     #
     # A byte pipe passes these through for free. A client that interprets the output has to hand
