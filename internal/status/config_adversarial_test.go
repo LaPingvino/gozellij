@@ -6,7 +6,13 @@ import (
 	"time"
 )
 
-// Adversarial review of 61e5256.
+// Adversarial reading of the status configuration parser, from the review of 61e5256.
+//
+// The parser's promise is that a setting it cannot use is reported rather than obeyed or ignored,
+// and that `every` is clamped rather than accepted and disregarded - each redraw asks the daemon,
+// so a fast enough refresh makes the status line the load it is reporting. These are the ways
+// round that: the exact boundary, the same key twice in both orders, a duration written six
+// different ways, and a widget list emptied by accident rather than on purpose.
 
 func TestAdversarialEveryExactlyMinIsAccepted(t *testing.T) {
 	cfg := parse(strings.NewReader("every=250ms\n"), DefaultConfig(), "test")
@@ -34,7 +40,6 @@ func TestAdversarialOnlyUnknownWidgetsReportsBoth(t *testing.T) {
 	if cfg.Where != Off {
 		t.Errorf("where = %q, want off", cfg.Where)
 	}
-	t.Logf("problems: %q", cfg.Problems)
 	if len(cfg.Problems) != 3 {
 		t.Errorf("want 2 unknown-widget problems + 1 off problem, got %d", len(cfg.Problems))
 	}
@@ -54,9 +59,18 @@ func TestAdversarialWhereOffWithWidgets(t *testing.T) {
 	}
 }
 
-func TestAdversarialTitleWithNoWidgetsMessage(t *testing.T) {
+func TestAdversarialTitleWithNoWidgetsIsOffAndSaysSo(t *testing.T) {
+	// A title bar with nothing in it is not a title bar, so this becomes off like the bottom
+	// row does - and says which, because a setting that was silently changed is worse than one
+	// that was refused. This test asserted nothing at all when it was written, which makes it a
+	// claim rather than a check.
 	cfg := parse(strings.NewReader("where=title\nleft=\"\"\nright=\"\"\n"), DefaultConfig(), "test")
-	t.Logf("where=%q problems=%q", cfg.Where, cfg.Problems)
+	if cfg.Where != Off {
+		t.Errorf("where = %q, want off", cfg.Where)
+	}
+	if len(cfg.Problems) != 1 || !strings.Contains(cfg.Problems[0], "nothing to show") {
+		t.Errorf("problems = %q, want one saying there is nothing to show", cfg.Problems)
+	}
 }
 
 func TestAdversarialClampBypassAttempts(t *testing.T) {
