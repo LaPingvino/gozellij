@@ -27,6 +27,8 @@ type attachSession struct {
 	w       *ipc.Writer
 	r       *ipc.Reader
 	service string
+	// readOnly drops this connection's keystrokes and resizes. See ipc.AttachRequest.
+	readOnly bool
 }
 
 // attach turns this connection into a stream until the client hangs up.
@@ -47,8 +49,9 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	}
 
 	// Size the pty to the attaching client before replaying anything, so a full-screen program
-	// repaints at the right size rather than at whatever the last client used.
-	if ar.Cols > 0 && ar.Rows > 0 {
+	// repaints at the right size rather than at whatever the last client used. Not for a
+	// read-only attach: somebody watching must not reshape the screen of the person working.
+	if ar.Cols > 0 && ar.Rows > 0 && !ar.ReadOnly {
 		if p, perr := s.fab.Process(req.Service); perr == nil && p != nil {
 			if rerr := p.Resize(ar.Cols, ar.Rows); rerr != nil && !errors.Is(rerr, fabric.ErrProcessGone) {
 				s.log.Debug("resize on attach failed", "service", req.Service, "err", rerr)
@@ -80,7 +83,7 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// subscription exists, and once the count is zero none do.
 	defer sub.Detach()
 
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service, readOnly: ar.ReadOnly}
 
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
@@ -267,6 +270,14 @@ func (a *attachSession) readInput() error {
 
 		switch kind {
 		case ipc.KindData:
+			if a.readOnly {
+				// Dropped here rather than trusted not to arrive. The client does not send
+				// either, so this is quiet in normal use - but the story is "my Ctrl-C does not
+				// reach it", which is a claim about this end, and a claim this end does not
+				// check is a claim about the client's good manners.
+				a.notify(ipc.EventNotice, "this attach is read-only, so your keystrokes went nowhere")
+				continue
+			}
 			p, perr := a.srv.fab.Process(a.service)
 			if perr != nil {
 				return perr
@@ -326,6 +337,12 @@ func (a *attachSession) readUntilHangup() error {
 func (a *attachSession) handleInStream(req ipc.Request) {
 	switch req.Op {
 	case ipc.OpResize:
+		if a.readOnly {
+			// Answered rather than ignored, because the client asked. A watcher resizing their
+			// own window must not reshape the screen of whoever is working in the service.
+			_ = a.w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil))
+			return
+		}
 		var rr ipc.ResizeRequest
 		if err := json.Unmarshal(req.Payload, &rr); err != nil {
 			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, fmt.Errorf("malformed resize: %w", err)))

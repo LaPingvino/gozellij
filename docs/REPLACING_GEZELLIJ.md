@@ -91,6 +91,17 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   terminal emulator DESIGN.md defers. `gozellij doctor` says which placement is configured, and
   names anything in the config it could not understand, so the first time you see it is not the
   first time you hear about it.
+- **Watching without being able to touch.** `gozellij attach -r <name>` puts eyes on a service's
+  live output with your keystrokes and your window size going nowhere near it - user story B3. The
+  *daemon* drops that connection's input and its resizes rather than the client promising not to
+  send them, because "my Ctrl-C does not reach it" is a claim about the far end. Resizes too: two
+  people attached, one watching, and the watcher's terminal must not reshape the screen of the one
+  working. **Verified** on a real screen: the output arrives, `Ctrl-C` produces nothing in the
+  service's own log where the same service traps and prints on `INT`, the first swallowed keystroke
+  says so on screen, and `Ctrl-] d` still leaves. Removing the *client's* half leaves all of it
+  passing, which is what says the daemon is the thing enforcing it; removing both makes the `Ctrl-C`
+  check fail.
+
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.

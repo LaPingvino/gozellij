@@ -192,7 +192,7 @@ func restorePanes(socket, service string, first *Client, screen *renderedScreen,
 			panes = append(panes, p)
 			continue
 		}
-		p, err := openPane(socket, sp.Service, screen, len(want))
+		p, err := openPane(socket, sp.Service, screen, len(want), first.ReadOnly())
 		if err != nil {
 			// A service in the layout that no longer exists is said out loud rather than
 			// silently skipped: the arrangement you come back to is then different from the one

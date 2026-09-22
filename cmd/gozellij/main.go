@@ -538,6 +538,7 @@ func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	sock := socketFlag(fs)
 	noReplay := fs.Bool("no-replay", false, "do not replay the recent output before the live stream")
+	readOnly := fs.Bool("r", false, "watch without touching: your keystrokes and your window size do not reach the service")
 	render := renderFlags(fs)
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
@@ -552,7 +553,9 @@ func cmdAttach(args []string) error {
 	// AttachLoop rather than a single attach: a daemon upgrade takes the socket with it, and a
 	// terminal that silently returns to a shell prompt cannot tell you whether your service died
 	// or the daemon was replaced.
-	return daemon.AttachLoopMode(path, fs.Arg(0), os.Stdin, os.Stdout, !*noReplay, renderMode(render))
+	return daemon.AttachLoopWith(path, fs.Arg(0), os.Stdin, os.Stdout, daemon.AttachOptions{
+		Replay: !*noReplay, Mode: renderMode(render), ReadOnly: *readOnly,
+	})
 }
 
 func cmdLogs(args []string) error {

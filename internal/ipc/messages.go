@@ -119,6 +119,10 @@ const (
 	// one is over" from "that one is busy being born", and one event kind carrying both meanings
 	// would make it guess from the wording.
 	EventFinished = "finished"
+	// EventNotice is something the daemon wants the person at the other end to read, with no
+	// change of state behind it. A read-only attach swallowing a keystroke is one: rule 1 says
+	// an action that did nothing must not look like it worked.
+	EventNotice = "notice"
 )
 
 // AddRequest is the payload of OpServiceAdd.
@@ -140,6 +144,11 @@ type AttachRequest struct {
 	// Replay asks for the retained output before the live stream, so an attaching client sees
 	// what is already on screen rather than a blank pane until something moves.
 	Replay bool `json:"replay"`
+	// ReadOnly asks to watch without being able to touch: the daemon drops this connection's
+	// keystrokes and its resizes. Asked for by the client and enforced by the server, because
+	// "my Ctrl-C does not reach it" is a claim about the far end and a client that promises not
+	// to send is only a promise.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ResizeRequest is the payload of OpResize.

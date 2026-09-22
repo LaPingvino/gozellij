@@ -105,7 +105,9 @@ const minRepaint = 50 * time.Millisecond
 // renderedSession shows one or more services at once and returns why it ended.
 func renderedSession(socket string, first *Client, service string, input *terminalInput, in *os.File, screen *renderedScreen, replay bool) (attachOutcome, error) {
 	cols, rows := screen.ServiceSize()
-	if _, err := first.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay}); err != nil {
+	if _, err := first.Call(ipc.OpAttach, service, ipc.AttachRequest{
+		Cols: cols, Rows: rows, Replay: replay, ReadOnly: first.ReadOnly(),
+	}); err != nil {
 		return outcomeDisconnected, err
 	}
 
@@ -123,6 +125,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	// arrangement back, or a service that was stopped for an afternoon is forgotten forever. Only
 	// something the user did changes the file.
 	written := ""
+	saidReadOnly := false
 	if l, ok, err := loadLayout(service); err != nil {
 		restored = append(restored, err.Error())
 	} else if ok {
@@ -215,6 +218,16 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			if len(chunk) == 0 {
 				continue
 			}
+			if panes[focus].client.ReadOnly() {
+				// Said once, on the status line. Splitting and scrolling still work - this is a
+				// keyboard that cannot type, not a client that cannot be used.
+				if !saidReadOnly {
+					saidReadOnly = true
+					note("read-only: your keystrokes go nowhere here. Ctrl-] d to leave")
+					paint()
+				}
+				continue
+			}
 			// To the focused pane only. A keystroke that went to all of them would be typed
 			// into every shell on the screen at once, which is the kind of mistake that is
 			// discovered by running rm in the wrong one.
@@ -243,7 +256,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 					paint()
 					continue
 				}
-				p, err := openPane(socket, next, screen, len(panes)+1)
+				p, err := openPane(socket, next, screen, len(panes)+1, first.ReadOnly())
 				if err != nil {
 					note(err.Error())
 					paint()
@@ -467,17 +480,18 @@ func allDone(panes []*livePane) bool {
 }
 
 // openPane attaches to another service for a new pane.
-func openPane(socket, service string, screen *renderedScreen, count int) (*livePane, error) {
+func openPane(socket, service string, screen *renderedScreen, count int, readOnly bool) (*livePane, error) {
 	c, err := Dial(socket)
 	if err != nil {
 		return nil, err
 	}
+	c.SetReadOnly(readOnly)
 	cols, rows := screen.ServiceSize()
 	// A first guess at the size; layoutPanes and resizePanes correct it immediately. Attaching at
 	// the full width for an instant is better than attaching at zero, which some programs read as
 	// "no terminal" and never redraw from.
 	cols = max(cols/max(count, 1), 1)
-	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true}); err != nil {
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true, ReadOnly: readOnly}); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -576,8 +590,11 @@ func swapPane(socket string, p *livePane, service string) error {
 	if err != nil {
 		return err
 	}
+	// The new connection is the old one's replacement, so it watches on the same terms. A pane
+	// that quietly became writable when you pressed n would be the worst possible surprise.
+	c.SetReadOnly(p.client.ReadOnly())
 	cols, rows := p.rect.Cols, p.rect.Rows
-	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true}); err != nil {
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true, ReadOnly: c.ReadOnly()}); err != nil {
 		c.Close()
 		return err
 	}
@@ -597,8 +614,10 @@ func reopenPane(socket string, p *livePane) error {
 	if err != nil {
 		return err
 	}
+	// A reconnection after the daemon was replaced, so it comes back on the same terms.
+	c.SetReadOnly(p.client.ReadOnly())
 	cols, rows := p.term.Size()
-	if _, err := c.Call(ipc.OpAttach, p.service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: false}); err != nil {
+	if _, err := c.Call(ipc.OpAttach, p.service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: false, ReadOnly: c.ReadOnly()}); err != nil {
 		c.Close()
 		return err
 	}

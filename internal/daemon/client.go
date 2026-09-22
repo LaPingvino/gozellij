@@ -35,7 +35,19 @@ type Client struct {
 	// mu serialises request/response pairs. The protocol carries ids so it could multiplex,
 	// but nothing needs that yet and a single in-flight request is far easier to reason about.
 	mu sync.Mutex
+
+	// readOnly is carried on the connection rather than passed to each session, because that is
+	// what it is: a property of this attachment, not of one screenful of it. A rendered attach
+	// opens a connection per pane and each of them inherits it.
+	readOnly bool
 }
+
+// ReadOnly reports whether this connection watches without touching.
+func (c *Client) ReadOnly() bool { return c.readOnly }
+
+// SetReadOnly marks this connection as a watcher. Before attaching: the daemon is told at attach
+// time and is the thing that actually enforces it.
+func (c *Client) SetReadOnly(ro bool) { c.readOnly = ro }
 
 // ErrNoDaemon is returned when nothing is listening on the socket.
 var ErrNoDaemon = errors.New("no gozellij daemon is running")

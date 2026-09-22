@@ -263,10 +263,15 @@ gozellij rm b2
 
 **Story.** I want eyes on the live output. I do not want my Ctrl-C to reach Synapse.
 
-**Today.** `attach` is the only live view and it is read-write. There is no `-r`/read-only
-flag on `cmdAttach` (`cmd/gozellij/main.go`), and no way to see who else is attached. Detach is
-`Ctrl-]` (`attachclient.go: DetachKey`), which is a good choice and is printed nowhere except
-`-h`.
+**Today.** Half built. `gozellij attach -r <name>` watches without touching: the daemon drops that
+connection's keystrokes and its resizes, so "my Ctrl-C does not reach Synapse" is a property of the
+far end rather than a promise the client makes to itself. It also does not resize the service -
+somebody watching must not reshape the screen of the person working - and a swallowed keystroke
+says so on the status line, once, because a key that quietly goes nowhere is rule 1 with a terminal
+attached. The prefix key still works, which is how you leave.
+
+What is still not there is the second half: no way to see *who else* is attached. `gozellij ls`
+counts viewers but does not distinguish a watcher from someone typing.
 
 **Acceptance.**
 ```sh

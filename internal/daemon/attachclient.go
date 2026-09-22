@@ -105,6 +105,24 @@ func AttachLoop(socket, service string, in *os.File, out io.Writer, replay bool)
 
 // AttachLoopMode attaches, choosing explicitly whether the client owns the screen.
 func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay bool, mode RenderMode) error {
+	return AttachLoopWith(socket, service, in, out, AttachOptions{Replay: replay, Mode: mode})
+}
+
+// AttachOptions is how an attach differs from the ordinary one. A struct rather than a fourth and
+// fifth boolean parameter: the third one was already one too many to read at a call site.
+type AttachOptions struct {
+	// Replay asks for the output already on screen before the live stream.
+	Replay bool
+	// Mode is whether this client owns the screen.
+	Mode RenderMode
+	// ReadOnly watches without touching. The daemon enforces it; this stops the keystrokes
+	// leaving in the first place and says so when one does.
+	ReadOnly bool
+}
+
+// AttachLoopWith attaches with the options given.
+func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts AttachOptions) error {
+	replay, mode := opts.Replay, opts.Mode
 	// Raw mode and the terminal reader belong to the loop, not to one session: keystrokes go to
 	// the far end untouched (including Ctrl-C, which belongs to the program you are attached to
 	// and not to us), and switching services must not hand the terminal back and forth.
@@ -223,6 +241,9 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 	first := true
 	for {
 		c, err := Dial(socket)
+		if err == nil {
+			c.SetReadOnly(opts.ReadOnly)
+		}
 		if err != nil {
 			if first {
 				return err
@@ -235,6 +256,7 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 			if werr != nil {
 				return fmt.Errorf("lost the daemon and could not get back: %w", err)
 			}
+			back.SetReadOnly(opts.ReadOnly)
 			c = back
 		}
 
@@ -761,7 +783,9 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 		}
 	}
 
-	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: replay}); err != nil {
+	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{
+		Cols: cols, Rows: rows, Replay: replay, ReadOnly: c.readOnly,
+	}); err != nil {
 		return outcomeDisconnected, err
 	}
 
@@ -786,9 +810,19 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 	// `gozellij attach web </dev/null` and for every test that does the same.
 	data, cmds, ended := input.data, input.cmds, input.ended
 
+	said := false
 	for {
 		select {
 		case chunk := <-data:
+			if c.readOnly {
+				// Not sent, and said once. A keystroke that quietly goes nowhere is rule 1's
+				// silent success; saying it on every key would mean a paste filling the line.
+				if !said {
+					said = true
+					input.tell("read-only: your keystrokes go nowhere here. Ctrl-] d to leave")
+				}
+				continue
+			}
 			if err := c.Writer().WriteFrame(ipc.KindData, chunk); err != nil {
 				// The connection is gone; let the output pump report why.
 				c.Close()

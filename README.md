@@ -150,6 +150,10 @@ to. Because gozellij owns the screen rather than borrowing it, the status line n
 terminal's cursor-save slot or a scrolling region - the two things it could not do properly from a
 byte pipe.
 
+`gozellij attach -r <name>` watches without touching: your keystrokes and your window size do not
+reach the service, so you can put eyes on something without your Ctrl-C ending it. The daemon
+enforces it, not the client.
+
 The arrangement is remembered. Attach to the same service again - after a detach, or after your
 connection dropped - and the panes, their orientation and their sizes come back. It is kept in
 `$XDG_STATE_HOME/gozellij/layouts/<service>.json`, which you can read and edit.

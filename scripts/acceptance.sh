@@ -935,6 +935,58 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm titler >/dev/null 2>&1
 
+    # ----------------------------------------- watching without being able to touch
+    #
+    # Story B3: eyes on the live output, and my Ctrl-C does not reach the service. `attach -r`.
+    #
+    # The daemon drops this connection's keystrokes rather than the client promising not to send
+    # them, because "cannot hurt it" is a claim about the far end. The check below passes either
+    # way, which is the point of the sabotage rather than a hole in it: removing the *client's*
+    # drop must leave this passing, and that is what says the daemon is doing the work.
+    #
+    # And a keystroke that goes nowhere has to say so, or it is rule 1's silent success with a
+    # terminal attached.
+    only
+    "$gz" add watched -start -restart always -- sh -c 'trap "printf \"GOT-THE-INTERRUPT\r\n\"" INT; printf "WATCHED-IS-UP\r\n"; while :; do sleep 1; done' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 50 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -r watched'"
+    sleep 3
+    if ! pane | grep -q 'WATCHED-IS-UP'; then
+        bad "a read-only attach shows nothing, so there is nothing to watch"
+    else
+        ok "a read-only attach still shows the service's output"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-c
+    sleep 2
+    if "$gz" logs watched 2>/dev/null | grep -q 'GOT-THE-INTERRUPT'; then
+        bad "Ctrl-C reached the service through a read-only attach"
+    else
+        ok "Ctrl-C does not reach the service through a read-only attach"
+    fi
+
+    if pane | grep -q 'read-only'; then
+        ok "a swallowed keystroke says so rather than going quiet"
+    else
+        bad "the screen never mentioned it was read-only: $(pane | tail -2 | tr '\n' '|')"
+    fi
+
+    # And it is still a usable client: the prefix key is how you leave.
+    tmux -L "$tmuxSock" send-keys C-] 'd'
+    sleep 2
+    if tmux -L "$tmuxSock" list-panes -F '#{pane_dead}' 2>/dev/null | grep -q 1 ||
+       ! tmux -L "$tmuxSock" capture-pane -p 2>/dev/null | grep -q 'WATCHED-IS-UP'; then
+        ok "Ctrl-] d still detaches a read-only attach"
+    else
+        bad "the read-only attach would not detach"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm watched >/dev/null 2>&1
+
     # ----------------------------- the terminal is asked what colour it is, on the way in
     #
     # vim asks the terminal for its background colour and picks a light or a dark scheme from the
