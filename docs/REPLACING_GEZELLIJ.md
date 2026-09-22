@@ -128,6 +128,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **The cursor shape reaches the terminal.** A program that asks for a bar while editing and a
+  block otherwise is doing something the user can see. A rendered attach kept it to itself, so the
+  shape stayed whatever the last program had set. **Verified** by the bytes the client writes, both
+  that the shape is passed on and that it is reset on the way out - a cursor left as a blinking bar
+  after a detach outlives the program that asked for it.
+
 - **The window title reaches the terminal.** The same gap as the modes below, found on the same
   list: a byte pipe hands `OSC 2` to the real terminal so a shell's title tracks what it is
   running, and a rendered attach swallowed it - the title froze at whatever it said when the attach

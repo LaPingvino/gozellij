@@ -21,15 +21,18 @@
 // Also cursor visibility, which was on the list below until a case was written for it and found a
 // bug in the first run: a lone restore-cursor was hiding it.
 //
-// Not compared here: cursor shape, the title, mouse modes and bracketed paste. The last three are
-// no longer unchecked - they are checked in scripts/acceptance.sh instead, by reading the bytes
-// the client sends to the terminal, because they are not on the screen and no screen comparison
-// could ever see them. Working down this list is what found that a rendered attach was swallowing
-// all of them, which is worse than an untested feature: a missing one.
+// Not compared here: cursor shape, the title, mouse modes and bracketed paste. None of those are
+// on a screen, so no screen comparison could see them; they are checked in scripts/acceptance.sh
+// instead, by reading the bytes the client sends to the terminal.
 //
-// An emulator can still get cursor shape wrong and pass every case here. That is written down
-// rather than left to be discovered, because a harness that quietly checks less than it appears
-// to is worse than no harness.
+// Working down that list found that a rendered attach was swallowing every one of them - missing
+// features rather than untested ones, passing every screen check there was and set to keep passing
+// for ever. A list of what a harness does not check is worth keeping for that reason, and worth
+// treating as a list of unexamined behaviour rather than a list of tests to write.
+//
+// What remains genuinely unchecked anywhere: character sets, tab stops other than every eighth
+// column, and anything a program asks the terminal to report back. An emulator can get those wrong
+// and pass everything here.
 //
 // # Two things the format has to decide, and does
 //
