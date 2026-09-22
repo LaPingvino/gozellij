@@ -30,8 +30,13 @@
 // for ever. A list of what a harness does not check is worth keeping for that reason, and worth
 // treating as a list of unexamined behaviour rather than a list of tests to write.
 //
-// What remains genuinely unchecked anywhere: character sets and tab stops other than every eighth
-// column. An emulator can get those wrong and pass everything here.
+// What remains genuinely unchecked anywhere: tab stops other than every eighth column, which no
+// case sets and the emulator does not implement.
+//
+// Character sets came off this list by being implemented and checked on a real screen instead -
+// the corpus is blind to them, because capture-pane reports the letter underneath rather than the
+// glyph. That is worth noticing as a pattern: when the oracle cannot see something, the answer has
+// been to check it where a person would look, not to leave it unchecked.
 //
 // Replies to what a program asks the terminal were on that list until a check was written for
 // them, and they turned out not to be implemented at all - a program asking where the cursor is

@@ -128,6 +128,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **The set that draws boxes draws boxes.** A program selects the DEC line-drawing set and sends
+  `lqqqk`, which is the top of a frame rather than five letters; ncurses uses it whenever the
+  terminal description says to. **Verified** on a real screen, because the corpus cannot see it:
+  tmux's `capture-pane` reports the underlying letter whether or not the set was applied, so a
+  recording of a terminal that draws boxes and one that ignores it entirely are identical.
+
 - **A program that asks the terminal gets an answer.** A cursor-position query is a question a
   program waits for. A byte pipe gets this for free - the query reaches the real terminal and the
   reply comes back the same way - but a rendered attach *is* the terminal and answered nothing at
