@@ -1,0 +1,10 @@
+# size 20x4
+# Things that must not erase more than they are asked to.
+#
+# Row 1: erase-in-display with a parameter it does not have. A terminal discards the sequence;
+#        this used to fall through to "erase everything" and wipe the screen.
+# Row 3: delete forty characters on a twenty-column screen, with the cursor at column one. The
+#        character behind the cursor survives: deleting at the cursor cannot touch what is behind
+#        it, and the blanks go at the end of what moved.
+keep-me\e[4J
+\e[3;1HXYZ\e[3;2H\e[40P

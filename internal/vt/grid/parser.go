@@ -340,6 +340,12 @@ func (p *parser) dispatch(t *Term, final byte) {
 	case 'H', 'f': // cursor position
 		t.moveTo(arg(0, 1)-1, arg(1, 1)-1)
 	case 'J': // erase in display
+		if n := arg(0, 0); n > 3 {
+			// ED takes 0 to 3. Anything else is discarded rather than falling through to "erase
+			// everything", which is what this did: `\e[4J` wiped the screen where a terminal
+			// ignores it.
+			return
+		}
 		switch arg(0, 0) {
 		case 0:
 			t.eraseInRow(t.cur.Row, t.cur.Col, t.cols-1)
@@ -454,7 +460,12 @@ func (p *parser) deleteLines(t *Term, n int) {
 func (p *parser) deleteChars(t *Term, n int) {
 	row := t.cells[t.cur.Row]
 	copy(row[t.cur.Col:], row[min(t.cur.Col+n, t.cols):])
-	t.eraseInRow(t.cur.Row, t.cols-n, t.cols-1)
+	// The blanks go at the end of what moved, never before the cursor. Erasing from cols-n
+	// started before the cursor whenever n was larger than the tail, so `\e[40P` on a forty-column
+	// screen erased the whole row including the character to the left of the cursor - which a
+	// terminal leaves alone, because deleting characters at the cursor cannot touch what is
+	// behind it.
+	t.eraseInRow(t.cur.Row, max(t.cols-n, t.cur.Col), t.cols-1)
 }
 
 func (p *parser) insertChars(t *Term, n int) {

@@ -96,6 +96,16 @@ func styledColumns(line string, carried *vt.Style) []string {
 	style := *carried
 	defer func() { *carried = style }()
 	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			// A captured tab stands for the cells the cursor skipped, and they are cells: eight
+			// of them, in whatever style is in force at this point in the capture. Counting it as
+			// one column shifted every style after it seven columns left, and the emulator was
+			// blamed for the difference.
+			for next := (len(out)/8 + 1) * 8; len(out) < next; {
+				out = append(out, styleSig(style))
+			}
+			continue
+		}
 		if line[i] != 0x1b {
 			r, size := decodeRune(line[i:])
 			w := vt.RuneWidth(r)
