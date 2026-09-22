@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -152,6 +153,13 @@ func loginInstall(home, target, service, binary string, doIt bool) error {
 	already := strings.Contains(string(existing), loginStartMarker)
 
 	fmt.Printf("startup file:  %s\n", short(target))
+	// Which binary, always. The block names one by absolute path, and until this line said so
+	// there was no way to see that `./bin/gozellij login-setup` had baked in a path that
+	// `make clean` deletes.
+	fmt.Printf("binary:        %s\n", binary)
+	for _, w := range binaryWarnings(binary) {
+		fmt.Printf("  note:        %s\n", w)
+	}
 	if already {
 		fmt.Println("gozellij:      already set up here; it will be replaced with the current version")
 	} else {
@@ -193,6 +201,41 @@ func loginInstall(home, target, service, binary string, doIt bool) error {
 	fmt.Printf("\ndone. Check it with:  gozellij doctor\n")
 	fmt.Printf("Open a new login shell to try it; if anything is wrong:  gozellij login-setup -undo -install\n")
 	return nil
+}
+
+// binaryWarnings is what is worth saying about the binary the block will name.
+//
+// Not a refusal. Somebody may deliberately be running a copy from a checkout, and a command that
+// argues with you about a path you chose is worse than one that tells you what it did. But naming
+// a binary inside a build directory is a foot-gun with a delay on it: everything works until the
+// next `make clean`, and then a login lands in a plain shell for a reason nobody will connect to a
+// build they ran last week.
+func binaryWarnings(binary string) []string {
+	var out []string
+	onPath, err := exec.LookPath("gozellij")
+	if err != nil {
+		out = append(out, "gozellij is not on your PATH, so the block depends on this exact path "+
+			"and typing `gozellij` by hand will not work")
+	} else if resolved, rerr := filepath.EvalSymlinks(onPath); rerr == nil && resolved != binary {
+		out = append(out, fmt.Sprintf("a different gozellij is on your PATH (%s); "+
+			"run that one instead if you want the block to name it", resolved))
+	}
+	if looksLikeABuildDir(binary) {
+		out = append(out, "this looks like a build directory - `make clean` would delete it, "+
+			"and the block would fall back to whatever is on PATH")
+	}
+	return out
+}
+
+// looksLikeABuildDir reports whether a path is inside a source checkout rather than installed.
+func looksLikeABuildDir(binary string) bool {
+	dir := filepath.Dir(binary)
+	if filepath.Base(dir) != "bin" {
+		return false
+	}
+	// A checkout has a .git beside its bin/. An installed ~/.local/bin does not.
+	_, err := os.Stat(filepath.Join(filepath.Dir(dir), ".git"))
+	return err == nil
 }
 
 // backedUp is the files already copied during this run.

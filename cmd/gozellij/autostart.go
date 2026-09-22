@@ -110,6 +110,70 @@ func scanAutostart(r io.Reader, path string) (string, []autostartFinding) {
 	return body.String(), out
 }
 
+// checkOwnLoginSetup reports whether this is what your login shell starts.
+//
+// The positive half of the check above. After `gozellij login-setup -install` the honest question
+// is not "is anything wrong" but "did it take", and silence is a poor way to answer that - it
+// reads the same as not having run the command at all.
+//
+// It also catches the thing that goes wrong later rather than now: the block names a binary by
+// absolute path, and if that path was inside a build directory, `make clean` removes it. Every
+// login after that lands in a plain shell, weeks after the build that caused it.
+func checkOwnLoginSetup() check {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return check{name: "login shell", level: levelNote, detail: "cannot find your home directory"}
+	}
+	for _, name := range autostartFiles {
+		path := filepath.Join(home, name)
+		body, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(body), loginStartMarker) {
+			continue
+		}
+		binary := namedBinaryIn(string(body))
+		switch {
+		case binary == "":
+			return check{name: "login shell", level: levelOK,
+				detail: fmt.Sprintf("%s starts gozellij", short(path))}
+		case fileIsThere(binary):
+			return check{name: "login shell", level: levelOK,
+				detail: fmt.Sprintf("%s starts gozellij, using %s", short(path), binary)}
+		default:
+			return check{
+				name:   "login shell",
+				level:  levelWarn,
+				detail: fmt.Sprintf("%s starts gozellij but names %s, which is not there any more", short(path), binary),
+				fix:    "gozellij login-setup -install    (run it from the gozellij you want it to use)",
+			}
+		}
+	}
+	return check{
+		name:   "login shell",
+		level:  levelNote,
+		detail: "nothing in your startup files starts gozellij, so you type it yourself",
+		fix:    "gozellij login-setup            (says what it would do; add -install to do it)",
+	}
+}
+
+// namedBinaryIn pulls the path out of the block's GOZELLIJ_BIN line.
+func namedBinaryIn(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "GOZELLIJ_BIN=\"")
+		if !ok {
+			continue
+		}
+		if end := strings.Index(rest, "\""); end >= 0 {
+			return rest[:end]
+		}
+	}
+	return ""
+}
+
+func fileIsThere(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
 // checkAutostart is the doctor check.
 func checkAutostart() check {
 	home, err := os.UserHomeDir()

@@ -293,3 +293,107 @@ func TestTheBlockWorksForAServiceThatIsNotCalledShell(t *testing.T) {
 		t.Fatalf("the block called gozellij in a way that does not attach to `work`:\n%s", out)
 	}
 }
+
+func TestTheBinaryItWillBakeInIsSaidOutLoud(t *testing.T) {
+	// The block names a binary by absolute path. Until this was printed there was no way to see
+	// that running it from a build directory had baked in a path `make clean` deletes.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	out := captureStdout(t, func() {
+		if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", "/somewhere/gozellij", false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "/somewhere/gozellij") {
+		t.Fatalf("the dry run did not say which binary it would name:\n%s", out)
+	}
+}
+
+func TestABuildDirectoryIsRecognised(t *testing.T) {
+	// A checkout has a .git beside its bin/. An installed ~/.local/bin does not, and warning
+	// about that one would be noise on every correct setup.
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !looksLikeABuildDir(filepath.Join(repo, "bin", "gozellij")) {
+		t.Error("a binary beside a .git was not recognised as a build copy")
+	}
+
+	installed := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(installed, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if looksLikeABuildDir(filepath.Join(installed, "bin", "gozellij")) {
+		t.Error("an installed path was called a build directory")
+	}
+	if looksLikeABuildDir("/usr/local/bin/gozellij") {
+		t.Error("/usr/local/bin was called a build directory")
+	}
+}
+
+func TestDoctorSaysWhetherTheLoginShellStartsGozellij(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte("export EDITOR=vim\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing set up: a note, not a warning. Typing `gozellij` yourself is a choice.
+	if c := checkOwnLoginSetup(); c.level != levelNote {
+		t.Errorf("with nothing set up: level %v, want a note (%v)", c.level, levelNote)
+	}
+
+	// Set up and pointing at something that exists.
+	here, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loginInstall(home, profile, "shell", here, true); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkOwnLoginSetup(); c.level != levelOK {
+		t.Errorf("after setup: level %v (%s), want ok", c.level, c.detail)
+	}
+
+	// The failure that arrives later: the binary the block names is gone.
+	body, _ := os.ReadFile(profile)
+	gone := strings.Replace(string(body), here, filepath.Join(home, "no-such-gozellij"), 1)
+	if err := os.WriteFile(profile, []byte(gone), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := checkOwnLoginSetup()
+	if c.level != levelWarn {
+		t.Errorf("with the named binary missing: level %v (%s), want a warning", c.level, c.detail)
+	}
+	if c.fix == "" {
+		t.Error("it says the binary is missing and does not say what to type")
+	}
+}
+
+// captureStdout runs f and returns what it printed.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64*1024)
+		n, _ := r.Read(buf)
+		done <- string(buf[:n])
+	}()
+	f()
+	w.Close()
+	os.Stdout = old
+	return <-done
+}
