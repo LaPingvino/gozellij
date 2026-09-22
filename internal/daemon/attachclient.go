@@ -52,6 +52,9 @@ const (
 	// mean anything in a rendered session - a byte pipe has one screen and no way to divide it -
 	// and the reader says so rather than letting the key do nothing.
 	outcomeSplit
+	// outcomeSplitRows is the same thing stacked: something underneath your shell rather than
+	// beside it, which is what you want when the terminal is narrow or the pane is a log.
+	outcomeSplitRows
 	outcomeFocus
 	outcomeClosePane
 	// outcomeScrollBack, outcomeScrollForward and outcomeScrollLive look through a pane's
@@ -64,7 +67,7 @@ const (
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
+const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · o switch pane · x close pane · b/f scroll back/forward · g live · ? this · Ctrl-] sends a literal Ctrl-]"
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -660,6 +663,10 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case '|', 's', 'S':
 					if !command(outcomeSplit) {
+						return
+					}
+				case '-', '_':
+					if !command(outcomeSplitRows) {
 						return
 					}
 				case 'o', 'O', '\t':

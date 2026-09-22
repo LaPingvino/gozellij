@@ -702,6 +702,39 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------------- a split that stacks instead of splitting
+    #
+    # Three panes in columns on an eighty-column terminal give twenty-six each, which is not a pane
+    # but a margin. Ctrl-] - puts the new one underneath instead, which is what a narrow terminal
+    # or a log pane wants.
+    only
+    for n in rowa rowb; do
+        "$gz" add "$n" -start -- sh -c "i=0; while :; do printf '$n-%d\r\n' \$i; i=\$((i+1)); sleep 1; done" >/dev/null 2>&1
+    done
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render rowa'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '-'
+    sleep 3
+
+    # One above the other, which is a statement about rows: the first service's output in the top
+    # half and the second's in the bottom. Checking that both appear somewhere would also pass for
+    # a side-by-side split.
+    topRow=$(pane | head -5 | grep -c 'rowa-')
+    lowRow=$(pane | sed -n '6,11p' | grep -c 'rowb-')
+    if [ "$topRow" -gt 0 ] && [ "$lowRow" -gt 0 ]; then
+        ok "Ctrl-] - stacks the new pane underneath instead of beside"
+    else
+        bad "the stacked split is not stacked: rowa in $topRow top lines, rowb in $lowRow lower ones"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm rowa rowb >/dev/null 2>&1
+
     # ----------------------------------- switching a service without throwing the layout away
     #
     # Ctrl-] n in a split used to end the session and start again with one pane: the other pane

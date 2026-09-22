@@ -142,7 +142,8 @@ there is a second mode where gozellij interprets the output itself and paints th
 gozellij attach -render web       # or: export GOZELLIJ_RENDER=1
 ```
 
-Then `Ctrl-] |` opens the next service beside the current one, `Ctrl-] o` moves the keyboard
+Then `Ctrl-] |` opens the next service beside the current one and `Ctrl-] -` opens it underneath,
+`Ctrl-] o` moves the keyboard
 between panes, and `Ctrl-] x` closes one. The status line says which pane your keystrokes are going
 to. Because gozellij owns the screen rather than borrowing it, the status line no longer needs the
 terminal's cursor-save slot or a scrolling region - the two things it could not do properly from a

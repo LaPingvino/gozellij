@@ -65,7 +65,9 @@ func renderedSession(socket string, first *Client, service string, input *termin
 
 	events := make(chan paneEvent, 64)
 	panes := []*livePane{{service: service, client: first, term: grid.New(cols, rows)}}
-	layoutPanes(panes, screen)
+	// How the panes are arranged, set by whichever split key was pressed last.
+	how := inColumns
+	layoutPanes(panes, screen, how)
 	go readFrames(panes[0], events)
 
 	defer func() {
@@ -114,7 +116,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 			}
 			switch want {
-			case outcomeSplit:
+			case outcomeSplit, outcomeSplitRows:
 				next, err := nextUnshown(socket, panes[focus].service, panes)
 				if err != nil {
 					note(err.Error())
@@ -129,7 +131,8 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				panes = append(panes, p)
 				focus = len(panes) - 1
-				layoutPanes(panes, screen)
+				how = want == outcomeSplitRows
+				layoutPanes(panes, screen, how)
 				resizePanes(panes)
 				go readFrames(p, events)
 				paint()
@@ -188,7 +191,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				panes[focus].client.Close()
 				panes = append(panes[:focus], panes[focus+1:]...)
 				focus = focus % len(panes)
-				layoutPanes(panes, screen)
+				layoutPanes(panes, screen, how)
 				resizePanes(panes)
 				paint()
 
@@ -221,7 +224,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			if err := screen.Resize(w, h); err != nil {
 				return outcomeDisconnected, err
 			}
-			layoutPanes(panes, screen)
+			layoutPanes(panes, screen, how)
 			resizePanes(panes)
 			paint()
 		}
@@ -233,10 +236,39 @@ func renderedSession(socket string, first *Client, service string, input *termin
 // Columns rather than rows because a terminal is wider than it is tall and a shell needs its
 // width more than its height. Equal rather than adjustable because a pane you cannot resize is a
 // limitation, and a resize handle nobody has built yet is a lie.
-func layoutPanes(panes []*livePane, screen *renderedScreen) {
+// stacked chooses between columns side by side and rows one above another.
+//
+// One orientation for the whole screen rather than a tree of splits. A tree is what a mature
+// multiplexer has and it is a different piece of work - resizing, moving a pane between branches,
+// a layout to save and restore. Two arrangements cover the case this is actually for: something
+// alongside your shell, or something underneath it. Three panes in columns on an eighty-column
+// terminal give twenty-six each, which is not a pane, it is a margin.
+type stacked bool
+
+const (
+	inColumns stacked = false
+	inRows    stacked = true
+)
+
+func layoutPanes(panes []*livePane, screen *renderedScreen, how stacked) {
 	cols, rows := screen.ServiceSize()
 	n := len(panes)
 	if n == 0 {
+		return
+	}
+	if how == inRows {
+		// No gap row between them: a screen is short and a blank line costs more of it than a
+		// blank column costs of a width. The change of content is the seam.
+		height := max(rows/n, 1)
+		y := 0
+		for i, p := range panes {
+			h := height
+			if i == n-1 {
+				h = rows - y
+			}
+			p.rect = layout.Rect{Col: 0, Row: y, Cols: cols, Rows: max(h, 1)}
+			y += h
+		}
 		return
 	}
 	// n-1 single-column gaps, so the panes do not run into each other with no visible seam.
