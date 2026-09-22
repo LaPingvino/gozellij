@@ -140,8 +140,16 @@ What is missing:
   rather than silent - a pane that emits something unimplemented says so on the status line, once,
   with the way back to the byte pipe - which turns it from a mystery into a limitation, but does not
   make it harmless.
-- **The cost.** Two to three times the byte pipe on a flood of output, measured, for reasons that
-  are not repaint count. Irrelevant for a shell, visible for `cat` of something large.
+- **The cost.** It was two to three times the byte pipe on a flood, and this entry said the reason
+  was not the number of repaints. Counting them said otherwise: twenty thousand lines arrived as
+  378 frames and drew 379 whole screens, which was 4.7 of the 5.9 seconds. The earlier experiment
+  had batched events that were ready at the same instant and found nothing to batch, because the
+  client painted between every pair of them - it measured its own premise. Two changes since: the
+  scrollback is a ring rather than a slice with its front dropped per line (1.2-2.5s of emulation
+  becomes 0.3-0.7s), and output paints at most twenty times a second (379 repaints become 11-22,
+  and 4.7s of painting becomes 0.15-0.9s). The end-to-end figure is not restated here, because
+  measuring it again spread from 0.5s to 4.7s on a machine where the byte pipe spread just as
+  wide; what is quoted is what could be counted.
 
 `Ctrl-] r` repaints from the grid and `-no-render` gets the byte pipe back for one command, so
 neither failure needs a restart to escape - which is the least a mode should offer before it is
