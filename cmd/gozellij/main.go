@@ -426,7 +426,10 @@ func printStatus(s ipc.StatusReply) {
 		fmt.Fprintf(w, "next try:\tin %s\n", time.Until(s.NextRestart).Round(time.Second))
 	}
 	if s.HasExited {
-		if s.ExitSignal != "" {
+		if s.ExitUnknown {
+			// Adopted after a daemon crash: watchable, not waitable. See internal/fabric/orphan.go.
+			fmt.Fprint(w, "last exit:\tended while this daemon was not its parent, so how is not known\n")
+		} else if s.ExitSignal != "" {
 			fmt.Fprintf(w, "last exit:\tkilled by %s\n", s.ExitSignal)
 		} else {
 			fmt.Fprintf(w, "last exit:\tcode %d\n", s.ExitCode)

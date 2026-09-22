@@ -169,6 +169,11 @@ type StatusReply struct {
 	TotalStarts int       `json:"total_starts,omitempty"`
 	ExitCode    int       `json:"exit_code,omitempty"`
 	ExitSignal  string    `json:"exit_signal,omitempty"`
+	// ExitUnknown means the service ended while this daemon was not its parent - adopted after a
+	// crash through systemd's file-descriptor store - so there is no code or signal to report.
+	// A separate field rather than a sentinel in the two above, because every reader of those
+	// would otherwise print "code -1" or "killed by unknown".
+	ExitUnknown bool      `json:"exit_unknown,omitempty"`
 	HasExited   bool      `json:"has_exited,omitempty"`
 	NextRestart time.Time `json:"next_restart,omitempty"`
 	LastError   string    `json:"last_error,omitempty"`

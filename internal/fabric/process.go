@@ -65,6 +65,10 @@ type Process struct {
 	// reaped is set the instant wait() returns, which is when the pid stops being ours. It is
 	// separate from exited, which is published later, after the output has been drained.
 	reaped bool
+	// orphan marks a process adopted after a daemon crash: recovered through systemd's
+	// file-descriptor store, reparented away from us, and so watchable but not waitable. See
+	// orphan.go.
+	orphan bool
 
 	// stopMu serialises Stop. See the note there.
 	stopMu sync.Mutex
@@ -253,10 +257,17 @@ func (p *Process) drain() {
 // reap waits for the child, gives its remaining output a moment to arrive, and records the exit.
 func (p *Process) reap() {
 	var exit Exit
-	if p.cmd != nil {
+	p.mu.Lock()
+	orphan := p.orphan
+	p.mu.Unlock()
+	switch {
+	case orphan:
+		// Not our child: there is no status to collect, only a moment to notice.
+		exit = waitOrphan(p.pid)
+	case p.cmd != nil:
 		err := p.cmd.Wait()
 		exit = exitFrom(err, p.cmd.ProcessState)
-	} else {
+	default:
 		exit = waitAdopted(p.pid)
 	}
 

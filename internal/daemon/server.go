@@ -467,6 +467,15 @@ func (s *Server) watching(service string, readOnly bool) func() {
 }
 
 // viewerCount reports how many clients are attached to a service.
+// exitSignalOf is the signal that ended a service, and nothing for one nobody could observe: the
+// marker fabric uses for that is not a signal name and must not be printed as one.
+func exitSignalOf(e fabric.Exit) string {
+	if e.IsUnknown() {
+		return ""
+	}
+	return e.Signal
+}
+
 // watcherCount reports how many of a service's viewers are read-only.
 func (s *Server) watcherCount(service string) int {
 	s.mu.Lock()
@@ -673,7 +682,8 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		Restarts:    st.Restarts,
 		TotalStarts: st.TotalStarts,
 		ExitCode:    st.LastExit.Code,
-		ExitSignal:  st.LastExit.Signal,
+		ExitSignal:  exitSignalOf(st.LastExit),
+		ExitUnknown: st.LastExit.IsUnknown(),
 		HasExited:   st.HasExited,
 		NextRestart: st.NextRestart,
 		LastError:   st.LastError,
