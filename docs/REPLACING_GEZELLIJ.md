@@ -136,7 +136,10 @@ What is missing:
   the ones that need a person to notice, and five of the last ten bugs were exactly that: a message
   written where it could not be read, a menu drawn and then painted over, a mode silently dropped.
 - **A reason to think an unknown sequence is harmless.** Anything the emulator does not implement is
-  dropped rather than passed on. For a byte pipe that question does not arise.
+  dropped rather than passed on. For a byte pipe that question does not arise. This is now *visible*
+  rather than silent - a pane that emits something unimplemented says so on the status line, once,
+  with the way back to the byte pipe - which turns it from a mystery into a limitation, but does not
+  make it harmless.
 - **The cost.** Two to three times the byte pipe on a flood of output, measured, for reasons that
   are not repaint count. Irrelevant for a shell, visible for `cat` of something large.
 
