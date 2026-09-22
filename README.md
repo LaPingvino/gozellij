@@ -235,6 +235,7 @@ make build        # bin/gozellij and bin/gozellijd, version stamped from git
 make test         # go test ./...
 make race         # go test -race ./...
 make acceptance   # scripts/acceptance.sh: every promise, on this machine, now
+make fuzz         # generate terminal streams nobody wrote and diff them against tmux
 make check        # fmt, vet, test, race, acceptance - what to run before pushing
 ```
 
