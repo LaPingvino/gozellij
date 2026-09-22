@@ -16,7 +16,11 @@ Documentation=https://github.com/LaPingvino/gozellij
 After=default.target
 
 [Service]
-Type=simple
+# notify, not simple, because the file-descriptor store below only works for a unit that talks to
+# the service manager. The daemon sends READY=1 once it is listening, so `systemctl --user start`
+# returns when the socket is actually there rather than when the process has been forked.
+Type=notify
+NotifyAccess=main
 ExecStart=%h/.local/bin/gozellijd
 
 # An upgrade is a signal, not a restart. `systemctl --user reload gozellijd` replaces the binary
@@ -24,12 +28,35 @@ ExecStart=%h/.local/bin/gozellijd
 # program. Using restart here instead would kill exactly what we promise to keep.
 ExecReload=/bin/kill -USR1 $MAINPID
 
-# Restart if the daemon dies. Worth being honest about what this does and does not buy: the
-# services do NOT survive a daemon crash (their pty masters die with it), so this brings the
-# daemon back and it then starts the enabled services fresh. It is a recovery, not a continuation.
-# See "Restarting the daemon" in DESIGN.md.
+# Restart if the daemon dies. Worth being honest about what this does and does not buy: today the
+# services do NOT survive a daemon crash (their pty masters die with it), so this brings the daemon
+# back and it then starts the enabled services fresh. It is a recovery, not a continuation. See
+# "Restarting the daemon" in DESIGN.md.
 Restart=on-failure
 RestartSec=2
+
+# Hold descriptors across an automatic restart. So far this is the daemon's own listening socket,
+# which closes the window where `systemctl --user restart gozellijd` makes every gozellij command
+# say "no daemon is running" - connections queue in the socket's backlog instead. The services'
+# pty masters are what this is really for and are not stored yet.
+#
+# The default FileDescriptorStorePreserve=restart is deliberate and not written out: the store is
+# kept across a restart and dropped on an explicit stop, where losing the descriptors is correct.
+# Setting it to yes instead leaves a stopped unit in dead-resources-pinned until somebody runs
+# `systemctl --user clean --what=fdstore`. Measured; see docs/USER_STORIES.md C3.
+FileDescriptorStoreMax=64
+
+# Signal the daemon, not everything it runs.
+#
+# This is the setting the whole crash-survival idea turns on, and it is not obvious. With the
+# default control-group, systemd kills every process in the cgroup when the unit restarts - so the
+# services die on the restart the file-descriptor store exists to survive, and the store hands back
+# descriptors to nothing. Measured, with a transient unit, in docs/USER_STORIES.md C3. Do not
+# "tidy" this back to the default.
+#
+# KillMode=mixed with SendSIGKILL=no looks like the same fix and deadlocks instead: the unit waits
+# in auto-restart for orphans that never exit.
+KillMode=process
 
 # Delegate a cgroup subtree so the daemon can freeze and thaw individual services later without
 # root. This must be on the user@.service slice, not a session scope: session scopes are

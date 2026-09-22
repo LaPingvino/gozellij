@@ -78,19 +78,28 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
 
-	if err := clearStaleSocket(path); err != nil {
-		return nil, err
-	}
-
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("listening on %s: %w", path, err)
-	}
-	// Belt and braces: the directory is already 0700, but a socket inheriting a permissive
-	// umask would be reachable by anyone who can reach the directory.
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("securing %s: %w", path, err)
+	// Before anything touches the socket file: systemd may be holding the listening socket from
+	// the last run. Adopting it means a client that connects while the daemon is being restarted
+	// is queued rather than refused - and the stale-socket check below would get in the way,
+	// because a socket with nobody accepting on it still completes a connect into its backlog and
+	// so reads as a live daemon.
+	ln, adopted := adoptListener(path, log)
+	if !adopted {
+		if err := clearStaleSocket(path); err != nil {
+			return nil, err
+		}
+		var err error
+		ln, err = net.Listen("unix", path)
+		if err != nil {
+			return nil, fmt.Errorf("listening on %s: %w", path, err)
+		}
+		// Belt and braces: the directory is already 0700, but a socket inheriting a permissive
+		// umask would be reachable by anyone who can reach the directory.
+		if err := os.Chmod(path, 0o600); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("securing %s: %w", path, err)
+		}
+		storeListener(ln, log)
 	}
 
 	return &Server{

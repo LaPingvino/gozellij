@@ -10,7 +10,7 @@ PREFIX  ?= $(HOME)/.local
 BIN     ?= $(PREFIX)/bin
 LDFLAGS  = -X main.Version=$(VERSION)
 
-.PHONY: all build test race vet fmt conform record fuzz acceptance install clean check
+.PHONY: all build test race vet fmt conform record fuzz acceptance fdstore install clean check
 
 all: build
 
@@ -35,6 +35,13 @@ fmt:
 # could see, because they were about what the terminal ends up showing.
 acceptance:
 	bash scripts/acceptance.sh
+
+# fdstore checks that the daemon keeps its listening socket across a crash, against a real systemd
+# user manager. Deliberately not in `check` and not in `acceptance`: that script runs the daemon
+# itself under `env -i` with no service manager anywhere, which is how TERM=dumb was found, and
+# this one needs the opposite. It is a no-op with nothing to say on a machine without systemd.
+fdstore:
+	bash scripts/fdstore.sh
 
 # conform runs the corpus against tmux: every case is driven through a real terminal emulator and
 # compared with the recording checked in beside it. It is separate from `test` because it needs

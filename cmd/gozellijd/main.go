@@ -129,6 +129,18 @@ func run(socket, state, logs string, verbose bool) error {
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 
+	// Nothing else is going to claim a descriptor systemd handed back, so whatever is left is
+	// closed and dropped from the store. A store quietly accumulating things nothing will ever
+	// use is a leak wearing a feature's clothes.
+	daemon.ReleaseUnadoptedFDs(log)
+
+	// Type=notify waits for this before it calls the unit started, and the unit has to be
+	// Type=notify for the file-descriptor store to be usable at all. Outside systemd there is
+	// nowhere to send it, which is not a failure.
+	if err := daemon.NotifyReady(); err != nil && err != daemon.ErrNoNotifySocket {
+		log.Warn("could not tell systemd we are up", "err", err)
+	}
+
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve() }()
 
