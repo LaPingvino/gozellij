@@ -36,7 +36,13 @@ const (
 	disabledEnd      = "# <<< disabled by gozellij login-setup <<<"
 )
 
-// loginBlock is what gets written. %s is the service to land in.
+// loginBlock is what gets written.
+//
+// `gozellij shell -name <service>`, not `gozellij <service>`. The second one appears to work and
+// only does for one value: "shell" happens to be both a subcommand and the default service name,
+// so `gozellij shell` lands in the service called shell by coincidence. Any other name is an
+// unknown command, and the login block for a named session printed the usage text on every login
+// before falling through to "could not start".
 func loginBlock(service string) string {
 	return loginStartMarker + `
 # Added by ` + "`gozellij login-setup`" + `. Remove with: gozellij login-setup -undo
@@ -50,7 +56,7 @@ if [ -n "${PS1:-}" ] && case "$-" in *i*) true;; *) false;; esac \
    && [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/gozellij/no-autostart" ] \
    && [ -n "${TERM:-}" ] && [ "$TERM" != "dumb" ] && [ "$TERM" != "linux" ] \
    && command -v gozellij >/dev/null 2>&1; then
-    gozellij ` + service + ` || printf '%s\n' "gozellij: could not start; you are in a plain shell (opt out: touch ~/.config/gozellij/no-autostart)"
+    gozellij shell -name ` + service + ` || printf '%s\n' "gozellij: could not start; you are in a plain shell (opt out: touch ~/.config/gozellij/no-autostart)"
 fi
 ` + loginEndMarker + "\n"
 }

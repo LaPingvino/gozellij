@@ -262,3 +262,34 @@ func TestTheOriginalIsCopiedBeforeItIsTouched(t *testing.T) {
 		t.Fatal("the copy is not what the file said before")
 	}
 }
+
+func TestTheBlockWorksForAServiceThatIsNotCalledShell(t *testing.T) {
+	// `gozellij <name>` is not a way to attach to anything: it is an unknown command. It looked
+	// like one because the default service is called "shell" and `gozellij shell` is a subcommand
+	// that lands there, so the generated block worked for exactly one value of -name and printed
+	// the usage text on every login for any other.
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	if err := loginInstall(home, profile, "work", true); err != nil {
+		t.Fatal(err)
+	}
+	// A gozellij that reports how it was called, so the test reads the real invocation rather
+	// than the text of the block.
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho \"CALLED-AS: $*\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "gozellij"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := runLoginShell(t, home, bin)
+	if !strings.Contains(out, "CALLED-AS: shell -name work") {
+		t.Fatalf("the block called gozellij in a way that does not attach to `work`:\n%s", out)
+	}
+}

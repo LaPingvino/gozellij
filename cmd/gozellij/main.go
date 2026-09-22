@@ -132,6 +132,15 @@ func run(args []string) error {
 	default:
 		usage()
 		// Name it. "Unknown command" without saying which is a small unkindness that adds up.
+		//
+		// And guess what they meant, because there is only one thing it can be. A service name
+		// is the obvious thing to type after the program's own name - every other multiplexer
+		// takes one there - and `gozellij work` is a whole login session that did not happen.
+		if looksLikeAServiceName(cmd) {
+			return fmt.Errorf("unknown command %q\n"+
+				"if you meant a service:  gozellij attach %s\n"+
+				"or to land in it as a shell, creating it if needed:  gozellij shell -name %s", cmd, cmd, cmd)
+		}
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 }
@@ -178,6 +187,15 @@ func captureShellEnv() []string {
 // that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
 // you end up with a vim that draws garbage. Keep a shell you have customised under another name and
 // attach to it by name.
+// looksLikeAServiceName reports whether an unknown first argument is plausibly one, so that the
+// error can guess. Not a flag, not a path, not empty: those are somebody mistyping a command.
+func looksLikeAServiceName(s string) bool {
+	if s == "" || strings.HasPrefix(s, "-") || strings.ContainsAny(s, "/ \t") {
+		return false
+	}
+	return true
+}
+
 func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sock := socketFlag(fs)

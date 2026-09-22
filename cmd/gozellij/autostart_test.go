@@ -131,3 +131,21 @@ func TestTheInteractiveFilesAreReadToo(t *testing.T) {
 		}
 	}
 }
+
+func TestAnUnknownFirstArgumentGuessesAServiceOnlyWhenItCouldBeOne(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool
+	}{
+		{"work", true},
+		{"my-shell", true},
+		{"", false},
+		{"-render", false},    // a flag in the wrong place
+		{"./script", false},   // a path
+		{"some thing", false}, // two words
+	} {
+		if got := looksLikeAServiceName(c.in); got != c.want {
+			t.Errorf("looksLikeAServiceName(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
