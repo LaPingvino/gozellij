@@ -122,12 +122,12 @@ func RecoveredPTYs(log *slog.Logger) []fabric.Handover {
 	return out
 }
 
-// noteNoStore says once, at startup, that nothing is holding the terminals - rather than once per
+// NoteIfNothingIsHolding says once, at startup, that nothing is holding the terminals - rather than once per
 // service, and rather than not at all. A promise this program makes in its own documentation is
 // not being kept on this machine, and silence about that is the failure this project is built to
 // avoid.
-func noteNoStore(log *slog.Logger, services int) {
-	if services == 0 {
+func NoteIfNothingIsHolding(log *slog.Logger, services int) {
+	if services == 0 || os.Getenv(NotifyEnv) != "" {
 		return
 	}
 	log.Info("nothing is holding the services' terminals, so a daemon crash will still take them with it; "+

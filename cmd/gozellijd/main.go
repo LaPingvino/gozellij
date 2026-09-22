@@ -136,6 +136,11 @@ func run(socket, state, logs string, verbose bool) error {
 		log.Error("problem while loading services", "err", err)
 	}
 
+	// Said once, here, if there is nowhere to keep the terminals: the promise in this program's
+	// own README is not being kept on this machine, and silence about that is exactly the
+	// failure the design rules are about.
+	daemon.NoteIfNothingIsHolding(log, len(fab.List()))
+
 	srv, err := daemon.Listen(socket, fab, log)
 	if err != nil {
 		return err

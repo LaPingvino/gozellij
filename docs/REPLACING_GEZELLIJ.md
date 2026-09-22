@@ -107,6 +107,17 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   has no way to send anything. **Verified** with one of each attached at once. What it does not say
   is *whose* they are: the daemon knows a connection, not a person.
 
+- **Survives a daemon crash, not only an upgrade.** `kill -9` the daemon and the services keep
+  running with their pids unchanged: each service's terminal is held by systemd's file-descriptor
+  store while the daemon is gone, and the one that comes back takes it out and adopts the process
+  on the other end. This was the last thing in this program that could lose your work without
+  anybody doing anything wrong. **Verified** against a real transient user unit by
+  `scripts/fdstore.sh`: the terminal is in the store beside the socket, the pid is the same
+  afterwards, the newest line of output carries the pid of the process that was there before the
+  crash, and stop still works on a process this daemon is not the parent of. Only under the systemd
+  unit - started by hand from a shell there is nowhere to keep the descriptors, and the daemon says
+  so at startup.
+
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.

@@ -224,14 +224,22 @@ uptime: 29s   starts: 1               <- never restarted
 
 What this does *not* cover, stated plainly so nobody discovers it the hard way:
 
-- **A daemon that crashes** takes its services with it. Exec-in-place is a planned upgrade, not a
-  safety net. Surviving a crash needs the descriptors held somewhere else — `SCM_RIGHTS` to a
-  keeper process, or systemd's `FDSTORE`.
+- **A daemon that crashes** used to take its services with it. It no longer does, when it is run
+  from the systemd user unit: each service's pty master is handed to systemd's file-descriptor
+  store as the process starts, and the daemon that comes back takes them out again and adopts the
+  processes on the other end. They kept running throughout — a service is a child of the daemon,
+  not a part of it, and what died with the daemon was the terminal that made it reachable.
 
-  The `FDSTORE` route has now been measured rather than assumed, and `docs/USER_STORIES.md` C3 has
-  the transcript. It works for a user unit; it needs `KillMode=process` in the unit or systemd kills
-  the services on the restart the store exists to survive; and an adopted process can be watched and
-  signalled but not reaped, so its exit arrives without an exit code.
+  Everything about it was measured before it was written, and `docs/USER_STORIES.md` C3 has the
+  transcript. It works for a user unit; it needs `KillMode=process` in the unit or systemd kills the
+  services on the very restart the store exists to survive; and an adopted process can be watched
+  with a pidfd but not reaped, so its eventual exit arrives without an exit code, which `status`
+  says rather than inventing one.
+
+  Two things it does not cover. Started by hand from a shell there is no store to put anything in,
+  so a crash is still a crash — the daemon says so once at startup rather than leaving you to find
+  out. And a service that was *backing off* when the daemon died has no process to adopt, so it is
+  started fresh like any other.
 - **Only running processes are handed over.** A service that is backing off or stopped is started
   from its definition by the successor, like any other.
 - **A manifest from a version the successor does not speak is refused**, and the services are

@@ -9,8 +9,11 @@ daemon upgraded: v1 -> v2
 1 process(es) kept their pid     # same process; it never noticed
 ```
 
-> A daemon that *crashes* still takes its services with it — exec-in-place is a planned upgrade,
-> not a safety net. [DESIGN.md](DESIGN.md) says what that would take.
+> A daemon that *crashes* no longer takes its services with it, when it is run from the systemd
+> user unit in [packaging/](packaging/): each service's terminal is held by systemd, and the daemon
+> that comes back picks the processes up with their pids unchanged. Started by hand from a shell
+> there is nowhere to keep the descriptors, and a crash is still a crash. `scripts/fdstore.sh`
+> checks it; [DESIGN.md](DESIGN.md) says how it works.
 
 A host-native process fabric with a terminal UI on top — aiming to be lighter than Docker, and
 easier to live with, for the job most people actually use Docker for on one server: run a handful

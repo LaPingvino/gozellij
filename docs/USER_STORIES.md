@@ -355,11 +355,25 @@ gozellij upgrade | grep -q 'kept their pid'
 
 **Story.** The daemon hits a nil pointer, or the OOM killer. Synapse should not care.
 
-**Today.** Not covered, and the README and DESIGN both say so plainly ("a daemon that crashes
-takes its services with it"). Credit for honesty. But this is the one failure that breaks the
-headline promise in normal life, and it is the reason Docker has `containerd-shim` and
-`live-restore`. The systemd unit's `Restart=on-failure` turns a crash into "everything
-restarted from scratch", which for Postgres is a crash recovery on every daemon bug.
+**Today. Covered, when the daemon runs from the systemd user unit.** `kill -9` the daemon and the
+services keep running, keep their pids, and keep talking through the same terminals; the
+replacement takes the descriptors back out of systemd's file-descriptor store and adopts the
+processes. `scripts/fdstore.sh` checks it against a real transient unit - twelve checks, including
+that the newest line in a recovered service's output carries the pid of the process that was there
+before the crash.
+
+Started by hand from a shell there is nowhere to keep the descriptors, so a crash is still a crash.
+The daemon says that once at startup rather than leaving anyone to find out at the worst moment.
+
+What it does not recover: the exit code of a service that ends after being adopted. It is not this
+daemon's child, so `wait4` cannot say how it went, and `status` says that instead of a number it
+made up. Nor a service that was *backing off* when the daemon died - there is no process to adopt,
+so it starts fresh.
+
+The original note, kept because it is the argument for having done this: "this is the one failure
+that breaks the headline promise in normal life, and it is the reason Docker has `containerd-shim`
+and `live-restore`. The systemd unit's `Restart=on-failure` turns a crash into everything restarted
+from scratch, which for Postgres is a crash recovery on every daemon bug." 
 
 DESIGN.md names the two fixes: a keeper process, or systemd's fd store. The unit file already
 exists, so `FileDescriptorStoreMax=` plus `sd_pid_notify_with_fds` for each pty master is the
