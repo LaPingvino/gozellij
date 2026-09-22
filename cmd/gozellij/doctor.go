@@ -91,6 +91,7 @@ func cmdDoctor(args []string) error {
 	checks = append(checks, checkStateDir())
 	checks = append(checks, checkLinger())
 	checks = append(checks, checkUnit())
+	checks = append(checks, checkAutostart())
 	checks = append(checks, checkShellEnvironment(c, dialErr)...)
 	checks = append(checks, checkServiceLogs(c, dialErr)...)
 	checks = append(checks, checkLogDisk(c, dialErr))
