@@ -36,6 +36,17 @@ type Cell struct {
 // Style is the presentation of a cell. Colours are kept as an opaque 32-bit value plus a tag so
 // that indexed, 256-colour and truecolour all round-trip without loss.
 type Style struct {
+	// Link is the URL of the hyperlink this cell is part of, from OSC 8, and empty for the
+	// ordinary case. It lives on the style rather than beside it because that is how it behaves:
+	// a program opens one, writes some text, and closes it, exactly the way it turns bold on and
+	// off again. Carrying it here means every place that already copies a style - writing a
+	// character, composing panes, reflowing a resize - carries the link with no further thought.
+	//
+	// Deliberately not part of the signature the conformance oracle compares, because tmux's
+	// capture-pane does not report hyperlinks at all: a recording of a terminal that keeps them
+	// and one that drops them are the same bytes. What checks this is the renderer's own test and
+	// the survey in internal/vt/grid/probe_test.go.
+	Link          string
 	Fg, Bg        Color
 	Bold          bool
 	Faint         bool

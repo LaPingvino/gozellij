@@ -86,6 +86,13 @@ func Screen(t vt.Grid) []byte {
 				// The continuation column of a wide character: drawn by the character itself.
 				continue
 			}
+			if cell.Style.Link != style.Link {
+				// A hyperlink opens and closes with its own sequence rather than an SGR, and an
+				// empty URL is the close. Written before the character it applies to, like every
+				// other attribute here.
+				fmt.Fprintf(&b, "\x1b]8;;%s\x1b\\", cell.Style.Link)
+				style.Link = cell.Style.Link
+			}
 			if cell.Style != style {
 				b.WriteString(sgr(style, cell.Style))
 				style = cell.Style
@@ -122,6 +129,12 @@ func Screen(t vt.Grid) []byte {
 				b.WriteString(cell.Content)
 			}
 		}
+		if style.Link != "" {
+			// Close it, or everything the terminal draws after this frame is part of the last
+			// link on it - including the shell prompt after a detach.
+			b.WriteString("\x1b]8;;\x1b\\")
+			style.Link = ""
+		}
 		if style != (vt.Style{}) {
 			b.WriteString("\x1b[0m")
 		}
@@ -131,6 +144,9 @@ func Screen(t vt.Grid) []byte {
 			b.WriteString("\x1b[?25h")
 		}
 		return []byte(b.String())
+	}
+	if style.Link != "" {
+		b.WriteString("\x1b]8;;\x1b\\")
 	}
 	fmt.Fprintf(&b, "\x1b[%d;%dH", cur.Row+1, cur.Col+1)
 	if !cur.Visible {

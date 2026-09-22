@@ -800,6 +800,21 @@ func (p *parser) finishOSC(t *Term) {
 		if len(t.colourAsks) < colourAskLimit {
 			t.colourAsks = append(t.colourAsks, n)
 		}
+	case "8":
+		// A hyperlink: OSC 8 ; params ; URI. An empty URI closes the one that was open. The
+		// parameters are an optional id for joining split runs together, which nothing here
+		// needs - the cells remember the URL and that is what a renderer has to emit.
+		//
+		// man emits thirty-odd of these on a single page. Dropping them was the largest thing
+		// left on the list of what this emulator does not implement.
+		_, uri, ok := strings.Cut(arg, ";")
+		if !ok {
+			// No second semicolon at all: malformed, and closing whatever was open is the
+			// conservative reading - a link that never ends swallows the rest of the screen.
+			t.style.Link = ""
+			return
+		}
+		t.style.Link = uri
 	case "0", "2":
 		// 0 sets the icon name and the title, 2 sets the title. Nothing here distinguishes them,
 		// because nothing downstream of it does either.
