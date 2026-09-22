@@ -39,7 +39,7 @@ func TestWhatItWritesIsValidShell(t *testing.T) {
 		t.Skip("no bash to check the syntax with")
 	}
 	f := filepath.Join(t.TempDir(), "profile")
-	if err := os.WriteFile(f, []byte(loginBlockWith("shell", "/usr/bin/gozellij")), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte(loginBlockWith("shell", "/usr/bin/gozellij", false)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// A login file that does not parse is the lockout this command exists to avoid.
@@ -129,7 +129,7 @@ func setUpHome(t *testing.T) (home, bin string) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
-	if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", filepath.Join(bin, "gozellij"), true); err != nil {
+	if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", filepath.Join(bin, "gozellij"), false, true); err != nil {
 		t.Fatal(err)
 	}
 	return home, bin
@@ -178,7 +178,7 @@ func TestSetupIsUndoneExactly(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
 
-	if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", false, true); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(profile)
@@ -207,7 +207,7 @@ func TestSettingItUpTwiceLeavesOneBlock(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
 	for range 3 {
-		if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
+		if err := loginInstall(home, profile, "shell", "/bin/true", false, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -227,7 +227,7 @@ func TestNothingIsChangedWithoutBeingAskedTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	if err := loginInstall(home, profile, "shell", "/bin/true", false); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", false, false); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(profile)
@@ -245,7 +245,7 @@ func TestTheOriginalIsCopiedBeforeItIsTouched(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
-	if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", false, true); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(home)
@@ -282,7 +282,7 @@ func TestTheBlockWorksForAServiceThatIsNotCalledShell(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := loginInstall(home, profile, "work", filepath.Join(bin, "gozellij"), true); err != nil {
+	if err := loginInstall(home, profile, "work", filepath.Join(bin, "gozellij"), false, true); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\necho \"CALLED-AS: $*\"\n"
@@ -302,7 +302,7 @@ func TestTheBinaryItWillBakeInIsSaidOutLoud(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
 	out := captureStdout(t, func() {
-		if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", "/somewhere/gozellij", false); err != nil {
+		if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", "/somewhere/gozellij", false, false); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -356,7 +356,7 @@ func TestDoctorSaysWhetherTheLoginShellStartsGozellij(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := loginInstall(home, profile, "shell", here, true); err != nil {
+	if err := loginInstall(home, profile, "shell", here, false, true); err != nil {
 		t.Fatal(err)
 	}
 	if c := checkOwnLoginSetup(); c.level != levelOK {
@@ -405,4 +405,57 @@ func captureStdout(t *testing.T, f func()) string {
 	out := <-done
 	_ = r.Close()
 	return out
+}
+
+func TestRenderedLoginAsksForTheAttachThatOwnsTheScreen(t *testing.T) {
+	// The whole reason to want this: panes. A byte-pipe attach cannot have them, and somebody
+	// coming from a multiplexer that does will want them on every login rather than by typing a
+	// flag each time.
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	profile := filepath.Join(home, ".profile")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	if err := loginInstall(home, profile, "shell", filepath.Join(bin, "gozellij"), true, true); err != nil {
+		t.Fatal(err)
+	}
+	// Read the invocation rather than the text of the block: what matters is how gozellij is
+	// called, not what the file looks like.
+	script := "#!/bin/sh\necho \"CALLED-AS: $*\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "gozellij"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := runLoginShell(t, home, bin)
+	if !strings.Contains(out, "CALLED-AS: shell -render -name shell") {
+		t.Fatalf("the block did not ask for the rendered attach:\n%s", out)
+	}
+}
+
+func TestWithoutTheFlagTheLoginIsTheBytePipe(t *testing.T) {
+	// The default stays the byte pipe, because a sequence the emulator gets wrong is a screen
+	// Ctrl-L cannot fix, where a byte pipe's failures are the terminal's own.
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	profile := filepath.Join(home, ".profile")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	if err := loginInstall(home, profile, "shell", filepath.Join(bin, "gozellij"), false, true); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(profile)
+	if strings.Contains(string(body), "-render") {
+		t.Fatal("the default block asks for the rendered attach")
+	}
 }

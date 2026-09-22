@@ -163,6 +163,16 @@ through tmux, colours included; and everything that belongs to the terminal rath
 mouse reporting, bracketed paste, the title, the cursor shape, and the answers a program waits for -
 is carried through.
 
+How to give it the week it needs, which is the only thing left on this list:
+
+```sh
+gozellij login-setup -render -install
+```
+
+Every login then lands in the attach that owns the screen, with panes. `Ctrl-] r` repaints from the
+grid and `gozellij attach -no-render <name>` gets the byte pipe back for one command, so neither
+kind of failure needs a restart to escape.
+
 What is missing:
 
 - **Use.** None of the above is a week of somebody's actual work. The failures that matter now are

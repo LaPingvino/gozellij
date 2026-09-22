@@ -45,7 +45,7 @@ const (
 // unknown command, and the login block for a named session printed the usage text on every login
 // before falling through to "could not start".
 func loginBlock(service string) string {
-	return loginBlockWith(service, gozellijPath())
+	return loginBlockWith(service, gozellijPath(), false)
 }
 
 // gozellijPath is where the binary being run from lives, so the block can name it.
@@ -68,7 +68,13 @@ func gozellijPath() string {
 	return "gozellij"
 }
 
-func loginBlockWith(service, binary string) string {
+// loginBlockWith writes the block. rendered asks for the attach that owns the screen - the one
+// with panes in it - rather than the byte pipe.
+func loginBlockWith(service, binary string, rendered bool) string {
+	args := "shell -name " + service
+	if rendered {
+		args = "shell -render -name " + service
+	}
 	return loginStartMarker + `
 # Added by ` + "`gozellij login-setup`" + `. Remove with: gozellij login-setup -undo
 #
@@ -85,7 +91,7 @@ if [ -n "${PS1:-}" ] && case "$-" in *i*) true;; *) false;; esac \
    && [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/gozellij/no-autostart" ] \
    && [ -n "${TERM:-}" ] && [ "$TERM" != "dumb" ] && [ "$TERM" != "linux" ] \
    && [ -n "$GOZELLIJ_BIN" ] && [ -x "$GOZELLIJ_BIN" ]; then
-    "$GOZELLIJ_BIN" shell -name ` + service + ` || printf '%s\n' "gozellij: could not start; you are in a plain shell (opt out: touch ~/.config/gozellij/no-autostart)"
+    "$GOZELLIJ_BIN" ` + args + ` || printf '%s\n' "gozellij: could not start; you are in a plain shell (opt out: touch ~/.config/gozellij/no-autostart)"
 fi
 ` + loginEndMarker + "\n"
 }
@@ -95,6 +101,7 @@ func cmdLoginSetup(args []string) error {
 	file := fs.String("file", "", "the startup file to edit (default: the one your login shell reads)")
 	service := fs.String("name", DefaultShellService, "the service to land in")
 	install := fs.Bool("install", false, "actually make the changes (without this, it only says what it would do)")
+	rendered := fs.Bool("render", false, "land in the attach that owns the screen, which is the one with panes in it")
 	undo := fs.Bool("undo", false, "take the block out again and put back whatever it disabled")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -111,7 +118,7 @@ func cmdLoginSetup(args []string) error {
 	if *undo {
 		return loginUndo(target, *install)
 	}
-	return loginInstall(home, target, *service, "", *install)
+	return loginInstall(home, target, *service, "", *rendered, *install)
 }
 
 // loginFileFor picks the file this person's login shell actually reads.
@@ -136,7 +143,7 @@ func loginFileFor(shell, home string) string {
 // loginInstall writes the block. binary is what it should name; empty means "wherever this
 // program is", which is right in production and wrong in a test, where os.Executable() is the test
 // binary - a block that would run the test suite again on every login.
-func loginInstall(home, target, service, binary string, doIt bool) error {
+func loginInstall(home, target, service, binary string, rendered, doIt bool) error {
 	if binary == "" {
 		binary = gozellijPath()
 	}
@@ -164,6 +171,9 @@ func loginInstall(home, target, service, binary string, doIt bool) error {
 		fmt.Println("gozellij:      already set up here; it will be replaced with the current version")
 	} else {
 		fmt.Printf("gozellij:      a block will be added that runs `gozellij %s` on an interactive login\n", service)
+		if rendered {
+			fmt.Printf("               drawing the screen itself: panes, and no borrowed cursor state\n")
+		}
 	}
 	// One line per file, not per match: a block that launches a multiplexer mentions it on
 	// several lines, and listing each one reads like ten problems instead of one.
@@ -195,7 +205,7 @@ func loginInstall(home, target, service, binary string, doIt bool) error {
 			return err
 		}
 	}
-	if err := writeLoginBlock(target, service, binary); err != nil {
+	if err := writeLoginBlock(target, service, binary, rendered); err != nil {
 		return err
 	}
 	fmt.Printf("\ndone. Check it with:  gozellij doctor\n")
@@ -278,7 +288,7 @@ func backup(path string) (string, error) {
 	return to, nil
 }
 
-func writeLoginBlock(target, service, binary string) error {
+func writeLoginBlock(target, service, binary string, rendered bool) error {
 	to, err := backup(target)
 	if err != nil {
 		return err
@@ -292,7 +302,7 @@ func writeLoginBlock(target, service, binary string) error {
 	if out != "" && !strings.HasSuffix(out, "\n") {
 		out += "\n"
 	}
-	out += loginBlockWith(service, binary)
+	out += loginBlockWith(service, binary, rendered)
 	return os.WriteFile(target, []byte(out), 0o600)
 }
 
