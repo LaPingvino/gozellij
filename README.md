@@ -111,10 +111,10 @@ The files and their directory are 0600/0700, and `gozellij add <name> -log off -
 file off for one service, which then keeps the in-memory ring and nothing else. `gozellijd -logs
 off` turns it off for everything.
 
-What it does **not** do: split the screen. Several services in one terminal are *tabs* — `Ctrl-] n`
-switches — which needs no terminal emulator, because the attach is a byte pipe and replaying the
-bytes repaints the screen. Two things visible at once would need a grid, and that is a deliberate
-open question rather than a plan: see [the plan](#plan) and `docs/REPLACING_GEZELLIJ.md`.
+By default, several services in one terminal are *tabs* — `Ctrl-] n` switches — which needs no
+terminal emulator, because the attach is a byte pipe and replaying the bytes repaints the screen.
+Two things visible at once needs a grid, which is what `-render` is for; see [Splitting the
+screen](#splitting-the-screen).
 
 ### Commands
 

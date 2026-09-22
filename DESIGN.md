@@ -121,13 +121,33 @@ owns the grid keeps its own copy of the screen and never touches the real termin
 at all. That is the measured case for Phase 2 — not an argument about what might go wrong, but a
 list of what did.
 
-**Phase 2 — the oracle.** Before any emulator work: a `vt.Terminal` interface, a differential test
-harness, and the conformance corpus. Drive identical byte streams into two implementations, diff
-grid + cursor + attributes, and treat every disagreement as an auto-generated bug report. Replay
-captures from real programs (neovim, tmux, htop, CJK-heavy `ls`, resize mid-render). Build this
-*first* so that emulator work is machine-checked from its first line rather than eyeballed.
+**Phase 2 — the oracle. Built.** `internal/vt/conform`: a corpus of screens recorded from a real
+tmux, a differential runner, split-invariance (the same bytes in different-sized writes must give
+the same screen), and a generator that makes streams nobody thought of and shrinks any disagreement
+to something readable. The emulator in `internal/vt/grid` was written against it.
 
-**Phase 3 — multiplexing.** Panes, layouts, the UI. By now the grid has a safety net.
+What that has been worth, since the point of building it first was that it would be worth
+something: every claim the emulator makes is a file that fails when it stops being true, the
+generator found eleven bugs in the emulator that no hand-written case would have covered, and it
+found three in the oracle and its recorder - which is the part worth remembering. The thing used as
+ground truth is another program with its own mistakes.
+
+Two divergences from tmux are deliberate and named in the tests: an escape followed by a high byte
+(tmux discards the rest of the stream, which would let one garbled byte blank a pane and keep it
+blank), and inserting lines with the cursor outside a scrolling region (tmux rotates rows in a way
+that is not a shift of anything).
+
+**Phase 3 — multiplexing. Started.** `internal/vt/render` puts a grid on a terminal,
+`internal/vt/layout` puts several grids on one screen, and `GOZELLIJ_RENDER=1` or `-render` turns
+the attach into one that owns the screen: `Ctrl-] |` splits, `Ctrl-] o` moves the keyboard,
+`Ctrl-] x` closes a pane, `Ctrl-] b`/`f`/`g` read the scrollback the mode would otherwise take
+away.
+
+What is missing, so that this does not read as finished: panes are equal columns and cannot be
+resized or stacked, there are no layouts to save or restore, there is no mouse, and the status line
+is the only chrome. The rendered attach costs two to three times the byte pipe on a flood of output
+and the reason is not repaint count (measured; see `internal/vt/render`). It is not the default,
+and `docs/REPLACING_GEZELLIJ.md` says what would have to be true for it to become one.
 
 **Phase 4 — plugins, if wanted.** The cheapest part, surprisingly: Zellij's entire plugin ABI is
 **one** wasm host function (`host_run_plugin_command`) with everything else carried as protobuf
