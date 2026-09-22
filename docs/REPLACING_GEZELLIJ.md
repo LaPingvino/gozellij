@@ -128,6 +128,13 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **Switching a service does not throw the layout away.** `Ctrl-] n` in a split changes what the
+  focused pane is showing and leaves the other pane alone; with one pane it reattaches as before.
+  **Verified:** after switching, both panes are still there and the switched one is still receiving
+  output. That second check is the one that matters - removing the reader for the new connection
+  leaves a pane that draws its replay and then never moves again, and the first version of the
+  check missed it because it compared a whole row that the *other* pane was still updating.
+
 - **Two shells side by side, each getting its own keystrokes.** The core of what a multiplexer
   does, and for several commits only the drawing of it was checked. **Verified** with two real
   interactive shells in a split: a command typed after the split answers in the right-hand pane, and

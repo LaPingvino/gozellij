@@ -642,12 +642,15 @@ else
         bad "after switching, the top row is [$row]"
     fi
 
-    # And the pane that was switched has to be live, not showing a replay and then nothing. The
-    # first version of this forgot to start a reader for the new connection, which looked right
-    # for one frame.
-    first=$(pane | head -1)
+    # And the pane that was switched has to be live, not showing a replay and then nothing.
+    #
+    # Only its own columns. Comparing the whole row passed with the reader removed entirely,
+    # because the row holds both panes and the other one was still running - the check was reading
+    # the left pane and reporting on the right.
+    rightOf() { pane | head -1 | cut -c36-; }
+    first=$(rightOf)
     sleep 3
-    if [ "$(pane | head -1)" != "$first" ]; then
+    if [ "$(rightOf)" != "$first" ]; then
         ok "the switched pane keeps receiving output"
     else
         bad "the switched pane stopped at [$first]"
