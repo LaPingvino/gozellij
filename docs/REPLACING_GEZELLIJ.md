@@ -118,6 +118,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   unit - started by hand from a shell there is nowhere to keep the descriptors, and the daemon says
   so at startup.
 
+  Including the person who was attached when it happened, which is the scenario the rest of it is
+  for: an ssh session on a shell, the daemon killed under it, and the client noticing, waiting for
+  the replacement and attaching again by itself - to the same shell, which never stopped. **Verified**
+  by setting a variable in that shell before the crash and reading it back afterwards, because a
+  client that reattaches to a *fresh* shell looks identical from the outside.
+
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
   comparing pids.
