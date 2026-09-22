@@ -582,6 +582,38 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # ------------------------------------------- what gozellij says has to be readable
+    #
+    # In a rendered attach, standard error is covered by the next repaint within milliseconds: a
+    # service exiting wrote "exited with code 3" to a screen that erased it before anyone could
+    # read it. Messages go to the status line now, for a few seconds.
+    # Two services, because with one the attach ends the moment it exits and there is no screen
+    # left to say anything on. The first version of this check did exactly that and reported an
+    # empty status line, which was true and about the wrong thing.
+    # Named so that the second immediately follows the first in sorted order: a split opens the
+    # next service there is, and the services left behind by earlier checks are in that order too.
+    # Without this the split opened `stubborn` from the tree-kill section and the check reported a
+    # status line that was perfectly correct about something else.
+    "$gz" add msg1 -start -- sh -c 'printf "STILL-HERE\r\n"; sleep 120' >/dev/null 2>&1
+    "$gz" add msg2 -start -- sh -c 'printf "ABOUT-TO-FAIL\r\n"; sleep 5; exit 3' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render msg1; echo BACK-IN-SHELL; sleep 60'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 6
+
+    if pane | sed -n '10p' | grep -q 'exited with code 3'; then
+        ok "a service's exit is said on the status line, where it can be read"
+    else
+        bad "the status line does not mention the failure: $(pane | sed -n '10p')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm msg1 msg2 >/dev/null 2>&1
+
     # -------------------------------------- a split screen survives the daemon being replaced
     #
     # `gozellij upgrade` keeps every process running, and that promise is worth less than it sounds

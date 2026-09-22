@@ -128,6 +128,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **What gozellij says is readable.** In a rendered attach, standard error is covered by the next
+  repaint within milliseconds, so a service exiting wrote "exited with code 3" to a screen that
+  erased it before anyone could read it. Messages take the status line for six seconds - the whole
+  line, pane marker included, because a message truncated to make room for a marker is not worth
+  having - and then the widgets come back. Detaching clears the status row, so a bar left along the
+  bottom does not suggest gozellij is still running. **Verified** with a failing service in one
+  pane of a split, and shown to fail when the message is not drawn.
+
 - **A split screen survives the daemon being replaced.** `gozellij upgrade` keeps every process
   running, which is worth less than it sounds if the screen showing them has to be rebuilt
   afterwards. Each pane reconnects where it stands, keeping its grid - no replay, so nothing

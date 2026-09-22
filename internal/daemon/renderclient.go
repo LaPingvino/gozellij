@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/status"
 	"github.com/LaPingvino/gozellij/internal/vt"
@@ -36,6 +38,13 @@ type renderedScreen struct {
 	// rather than a different one.
 	lastPanes []layoutPane
 	lastFocus int
+
+	// message is the last thing gozellij had to say, and when it said it. It takes over the
+	// status line for a few seconds rather than going to standard error, which in a rendered
+	// session is covered by the next repaint within milliseconds - so "your service exited with
+	// code 1" was being written to a screen that erased it before anybody could read it.
+	message string
+	said    time.Time
 
 	cols, rows int
 	// reserved is how many rows at the bottom belong to the status line.
@@ -124,7 +133,16 @@ func (s *renderedScreen) Resize(cols, rows int) error {
 func (s *renderedScreen) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := io.WriteString(s.out, "\x1b[0m\x1b[?25h\r\n")
+	// Clear the status row on the way out. What the panes drew can stay - it is output, and a
+	// terminal keeps output - but a status bar left along the bottom says gozellij is still here
+	// when it is not, and the next shell prompt appears above it.
+	var b strings.Builder
+	b.WriteString("\x1b[0m")
+	if s.reserved > 0 && s.rows > 0 {
+		fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K", s.rows)
+	}
+	fmt.Fprintf(&b, "\x1b[%d;1H\x1b[?25h\r\n", max(s.rows-s.reserved, 1))
+	_, err := io.WriteString(s.out, b.String())
 	return err
 }
 
@@ -173,6 +191,20 @@ func statusLine(cfg status.Config, ctx func() status.Context) func(int) string {
 	}
 }
 
+// messageLinger is how long something gozellij says stays on the status line.
+const messageLinger = 6 * time.Second
+
+// Say puts a message on the status line for a few seconds.
+func (s *renderedScreen) Say(msg string) {
+	if msg == "" {
+		return
+	}
+	s.mu.Lock()
+	s.message, s.said = msg, time.Now()
+	s.mu.Unlock()
+	_ = s.Repaint()
+}
+
 // PaintPanes draws several panes and the status line as one screen.
 //
 // The whole picture in one composition: the panes, the blank seams between them, a marker on the
@@ -195,6 +227,13 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 			// to tell. In front of the rest of the line: it is the thing that changes what your
 			// next keystroke does.
 			text = trimToWidth(paneMarker(panes, focus)+" "+text, s.cols)
+		}
+		if s.message != "" && time.Since(s.said) < messageLinger {
+			// A message takes the whole line, marker included. It is transient and it is the
+			// thing to read right now - "your service exited with code 3" truncated to "exited
+			// with code" because a pane marker had the first fifteen columns is not worth having.
+			// The marker is back in a few seconds.
+			text = trimToWidth("gozellij: "+s.message, s.cols)
 		}
 		writeStatus(frame, s.rows-1, text)
 	}

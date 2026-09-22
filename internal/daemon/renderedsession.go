@@ -79,6 +79,9 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	defer signal.Stop(winch)
 
 	focus := 0
+	// Messages go to the status line, where they will be seen. note() writes to standard error,
+	// which in a rendered session the next repaint covers within milliseconds.
+	note := screen.Say
 	paint := func() {
 		ps := make([]layoutPane, len(panes))
 		for i, p := range panes {
@@ -373,18 +376,6 @@ func readFrames(p *livePane, events chan<- paneEvent) {
 			}
 		}
 	}
-}
-
-// note puts a message where a user will see it without disturbing the drawn screen.
-//
-// Standard error, which in a rendered session is not the screen: the next paint covers whatever it
-// printed. That is a real limitation and the honest place for it is here rather than in a silent
-// drop - a message nobody can read is worse than one that flashes.
-func note(msg string) {
-	if msg == "" {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
 }
 
 // countNewlines is how many lines a chunk of output is likely to have pushed onto the screen.
