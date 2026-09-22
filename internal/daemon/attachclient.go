@@ -269,7 +269,16 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 				// printed over whatever was on screen and the next keystroke chooses; the
 				// connection is already closed, so that keystroke cannot reach a service by
 				// mistake.
+				// Nothing else may draw while the menu is up. The repaint that keeps the status
+				// clock moving was covering it within two seconds, so the question was invisible
+				// and the answer still worked - a menu nobody could see, answered by guesswork.
+				if rendered != nil {
+					rendered.Suspend()
+				}
 				picked, instead, perr := pickService(socket, service, input, out)
+				if rendered != nil {
+					rendered.Resume()
+				}
 				if perr != nil {
 					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", perr)
 					first, replay = false, false

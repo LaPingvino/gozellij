@@ -615,6 +615,42 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # --------------------------------------------- the picker has to be visible to be a picker
+    #
+    # `Ctrl-] l` draws a menu and waits for a keystroke. In a rendered attach the repaint that
+    # keeps the status clock moving was drawing the last frame straight over it, so the question
+    # was invisible while the answer still worked - a menu answered by guesswork.
+    only
+    for n in pika pikb pikc; do
+        "$gz" add "$n" -start -- sh -c "i=0; while :; do printf '$n-%d\r\n' \$i; i=\$((i+1)); sleep 1; done" >/dev/null 2>&1
+    done
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render pika'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] 'l'
+    # Longer than one repaint interval, which is what used to erase it.
+    sleep 3
+
+    if pane | grep -q 'pick a service' && pane | grep -q '3 pikc'; then
+        ok "Ctrl-] l shows its menu in a rendered attach, and it stays up"
+    else
+        bad "the picker's menu is not on screen: $(pane | head -2 | tr '\n' '|')"
+    fi
+
+    tmux -L "$tmuxSock" send-keys '3'
+    sleep 3
+    if pane | grep -q 'pikc-'; then
+        ok "choosing from the menu switches to that service"
+    else
+        bad "after choosing, the screen shows $(pane | head -1)"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm pika pikb pikc >/dev/null 2>&1
+
     # ----------------------------------- switching a service without throwing the layout away
     #
     # Ctrl-] n in a split used to end the session and start again with one pane: the other pane

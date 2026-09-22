@@ -46,6 +46,12 @@ type renderedScreen struct {
 	message string
 	said    time.Time
 
+	// suspended stops painting while something else owns the screen - the service picker, which
+	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
+	// drew the last frame straight over the menu, so `Ctrl-] l` asked a question nobody could see
+	// and the answer still worked, which is the worst of both.
+	suspended bool
+
 	cols, rows int
 	// reserved is how many rows at the bottom belong to the status line.
 	reserved int
@@ -194,6 +200,23 @@ func statusLine(cfg status.Config, ctx func() status.Context) func(int) string {
 // messageLinger is how long something gozellij says stays on the status line.
 const messageLinger = 6 * time.Second
 
+// Suspend and Resume hand the screen to something else and take it back.
+//
+// Whatever drew while suspended is not cleared here: the caller drew it and the caller is the one
+// that knows when it is finished with it. Resuming paints the panes again, which covers it.
+func (s *renderedScreen) Suspend() {
+	s.mu.Lock()
+	s.suspended = true
+	s.mu.Unlock()
+}
+
+func (s *renderedScreen) Resume() {
+	s.mu.Lock()
+	s.suspended = false
+	s.mu.Unlock()
+	_ = s.Repaint()
+}
+
 // Say puts a message on the status line for a few seconds.
 func (s *renderedScreen) Say(msg string) {
 	if msg == "" {
@@ -214,6 +237,11 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastPanes, s.lastFocus = panes, focus
+	if s.suspended {
+		// Remembered but not drawn, so that resuming shows the current screen rather than a
+		// stale one.
+		return nil
+	}
 
 	ps := make([]layout.Pane, 0, len(panes))
 	for i, p := range panes {
