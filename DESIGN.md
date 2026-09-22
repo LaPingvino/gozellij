@@ -227,6 +227,11 @@ What this does *not* cover, stated plainly so nobody discovers it the hard way:
 - **A daemon that crashes** takes its services with it. Exec-in-place is a planned upgrade, not a
   safety net. Surviving a crash needs the descriptors held somewhere else — `SCM_RIGHTS` to a
   keeper process, or systemd's `FDSTORE`.
+
+  The `FDSTORE` route has now been measured rather than assumed, and `docs/USER_STORIES.md` C3 has
+  the transcript. It works for a user unit; it needs `KillMode=process` in the unit or systemd kills
+  the services on the restart the store exists to survive; and an adopted process can be watched and
+  signalled but not reaped, so its exit arrives without an exit code.
 - **Only running processes are handed over.** A service that is backing off or stopped is started
   from its definition by the successor, like any other.
 - **A manifest from a version the successor does not speak is refused**, and the services are

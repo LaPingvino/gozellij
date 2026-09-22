@@ -364,7 +364,36 @@ restarted from scratch", which for Postgres is a crash recovery on every daemon 
 DESIGN.md names the two fixes: a keeper process, or systemd's fd store. The unit file already
 exists, so `FileDescriptorStoreMax=` plus `sd_pid_notify_with_fds` for each pty master is the
 short path, and it also makes `systemctl restart` *safe*, which deletes the C2 footgun.
-*(To verify: fdstore behaviour for user units; not checked here.)*
+
+**Verified, on this machine, systemd 261, with a throwaway transient user unit.** The line that
+used to be here said "to verify: fdstore behaviour for user units; not checked here". It is checked
+now, and three of the four things it turned up were not what I expected:
+
+- **The fd store works for a user unit.** A descriptor handed over with `FDSTORE=1\nFDNAME=x`
+  comes back on the next start as `LISTEN_FDS=1 LISTEN_FDNAMES="x"`, with its contents intact,
+  after the process exited non-zero and `Restart=on-failure` started it again.
+- **`KillMode=process` is required, and this is the whole ball game.** With the default
+  `control-group`, systemd kills every process in the cgroup when the unit restarts - so the
+  services die anyway and the fd store rescues descriptors to nothing. The first run of the probe
+  showed exactly that and looked like the store not working at all.
+- **`SendSIGKILL=no` deadlocks it.** With `KillMode=mixed` the store *is* preserved, but the unit
+  sits in `auto-restart` for ever waiting for the orphaned services to exit, which they never do.
+  `KillMode=process` is the one that both keeps them and lets the unit come back.
+- **A stored descriptor is closed on POLLHUP.** The first version of the probe stashed the read end
+  of a pipe whose only writer was the crashing process, so systemd dropped it the instant it died -
+  a probe measuring its own mistake. For gozellij this is the behaviour we want: a pty master hangs
+  up when its last slave closes, so the store drops the descriptors of services that are gone.
+- **`FileDescriptorStorePreserve=yes` pins a stopped unit** in `dead-resources-pinned` until
+  `systemctl clean --what=fdstore`. The default, `restart`, is what is wanted: keep the store across
+  an automatic restart, drop it on an explicit `stop`, where losing the descriptors is correct.
+
+And the part that decides the shape of the code rather than the unit file: **the adopted processes
+cannot be reaped.** After a crash the services are reparented, so the new daemon is not their parent.
+Measured: `pidfd_open` on an orphan works, `poll` on it returns nothing while the process lives and
+`POLLIN` the moment it dies, and `wait4` from a non-parent fails with ECHILD. So an adopted service
+can be watched and signalled and its output is intact, but **"it exited" arrives without "with what
+code"**. That is a thing `status` has to be able to say, decided now rather than after the first
+report of a wrong exit code.
 
 **Acceptance.**
 ```sh
