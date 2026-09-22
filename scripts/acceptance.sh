@@ -1272,6 +1272,73 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm vimmy >/dev/null 2>&1
 
+    # ------------------------------------------- you come back to the arrangement you left
+    #
+    # The point of a login multiplexer is that it holds your session while you are away. Panes
+    # used to be rebuilt from nothing on every attach: you split your shell against your logs,
+    # your ssh dropped, you came back and had one pane with no word about where the other went.
+    #
+    # The client is killed rather than detached on purpose. The usual way a login multiplexer's
+    # client ends is the connection dropping, not somebody pressing Ctrl-] d, so a layout written
+    # on the way out would be missing in exactly the case the feature exists for. kill -9 by
+    # recorded pid, so nothing on the way out can run.
+    only
+    "$gz" add laya -start -- sh -c 'i=0; while :; do printf "LAYA-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    "$gz" add layb -start -- sh -c 'i=0; while :; do printf "LAYB-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    sleep 1
+    rm -f "$state/layouts/laya.json"
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render laya'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 2
+    if ! pane | grep -q 'LAYA-' || ! pane | grep -q 'LAYB-'; then
+        bad "the split this check depends on did not happen: $(pane | head -1)"
+    else
+        # The pane's command is exec'd, so the pane pid is the client itself.
+        clientPid=$(tmux -L "$tmuxSock" list-panes -F '#{pane_pid}' | head -1)
+        kill -9 "$clientPid" 2>/dev/null
+        sleep 2
+
+        if [ -f "$state/layouts/laya.json" ] &&
+           grep -q '"service": "laya"' "$state/layouts/laya.json" &&
+           grep -q '"service": "layb"' "$state/layouts/laya.json"; then
+            ok "the arrangement is written down while the attach is running, not on the way out"
+        else
+            bad "no layout on disk after a split: $(cat "$state/layouts/laya.json" 2>/dev/null | tr -d '\n' | head -c 120)"
+        fi
+
+        newscreen
+        tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+            -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+            -e TERM=xterm-256color \
+            "sh -c 'stty -echo; exec $gz attach -render laya'"
+        sleep 4
+        if pane | grep -q 'LAYA-' && pane | grep -q 'LAYB-'; then
+            ok "attaching again brings the second pane back without asking"
+        else
+            bad "the arrangement did not come back: $(pane | head -2 | tr '\n' '|')"
+        fi
+
+        # And both panes are live, not a replay painted once and then still. The check that
+        # matters is the restored pane, which is the one a reconnection has to set up from
+        # nothing rather than inherit.
+        before=$(pane | grep -o 'LAYB-[0-9]*' | tail -1)
+        sleep 3
+        after=$(pane | grep -o 'LAYB-[0-9]*' | tail -1)
+        if [ -n "$before" ] && [ "$before" != "$after" ]; then
+            ok "the pane that came back is connected, not a picture of one"
+        else
+            bad "the restored pane is not moving: $before then $after"
+        fi
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm laya layb >/dev/null 2>&1
+
     # Not checked here: that attaching does not overwrite the line you typed the command on.
     #
     # It is a real bug when it happens - reserving the bottom row used to land the cursor on the

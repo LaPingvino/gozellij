@@ -89,8 +89,32 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	panes := []*livePane{{service: service, client: first, term: grid.New(cols, rows)}}
 	// How the panes are arranged, set by whichever split key was pressed last.
 	how := inColumns
+	focus := 0
+	// What this attach last looked like, if it has been here before. Anything that goes wrong
+	// reading it is said on the status line once the status line exists, a few lines down: a
+	// layout file that cannot be read is a thing to hear about, not a reason to refuse to attach.
+	var restored []string
+	// What is already on disk. A restore that had to leave a pane out - a service that has since
+	// been removed, a terminal too narrow for all of them - must not then write the smaller
+	// arrangement back, or a service that was stopped for an afternoon is forgotten forever. Only
+	// something the user did changes the file.
+	written := ""
+	if l, ok, err := loadLayout(service); err != nil {
+		restored = append(restored, err.Error())
+	} else if ok {
+		var used bool
+		panes, how, focus, used, restored = restorePanes(socket, service, first, screen, l)
+		if used {
+			written = l.signature()
+		}
+	}
 	layoutPanes(panes, screen, how)
-	go readFrames(panes[0], events)
+	if len(panes) > 1 {
+		resizePanes(panes)
+	}
+	for _, p := range panes {
+		go readFrames(p, events)
+	}
 
 	defer func() {
 		for _, p := range panes {
@@ -102,7 +126,6 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
 
-	focus := 0
 	// Messages go to the status line, where they will be seen. note() writes to standard error,
 	// which in a rendered session the next repaint covers within milliseconds.
 	note := screen.Say
@@ -113,7 +136,27 @@ func renderedSession(socket string, first *Client, service string, input *termin
 		}
 		_ = screen.PaintPanes(ps, focus)
 	}
+	for _, m := range restored {
+		note(m)
+	}
 	paint()
+
+	// The arrangement is written down after every command that could have changed it, not on the
+	// way out. A login multiplexer's client usually ends by its connection dropping rather than by
+	// somebody pressing detach, and a layout saved only on a clean exit is missing in exactly the
+	// case it exists for. One site rather than one per command, because a mutating case added
+	// later would not think to call it: the signature is what keeps this from being a file write
+	// per keystroke.
+	remember := func() {
+		l := layoutOf(panes, how, focus)
+		if sig := l.signature(); sig != written {
+			if err := saveLayout(service, l); err != nil {
+				note(err.Error())
+			}
+			written = sig
+		}
+	}
+	remember()
 
 	data, cmds, ended := input.data, input.cmds, input.ended
 	for {
@@ -246,6 +289,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			default:
 				return want, nil
 			}
+			remember()
 
 		case <-ended:
 			data, cmds, ended = nil, nil, nil
