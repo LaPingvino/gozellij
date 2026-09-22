@@ -742,6 +742,22 @@ else
         bad "the seam did not move back right: $grown then $shrunk"
     fi
 
+    # And a pane cannot be grown until its neighbour has nothing.
+    #
+    # Thirty presses, and the neighbour must still be at least ten columns. Ten presses was not
+    # enough to tell anything: with the bound the focused pane reaches two thirds of the screen
+    # and without it three quarters, and both leave the neighbour perfectly visible. Unbounded,
+    # thirty presses take it to a seventh - about seven columns - which is a stripe that still
+    # takes keystrokes.
+    for _ in $(seq 1 30); do tmux -L "$tmuxSock" send-keys C-] '>'; done
+    sleep 2
+    squeezed=$(seam)
+    if [ -n "$squeezed" ] && [ "$squeezed" -ge 10 ]; then
+        ok "a pane cannot be grown until its neighbour is a stripe"
+    else
+        bad "after thirty presses the neighbour is ${squeezed:-no} columns wide"
+    fi
+
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm resa resb >/dev/null 2>&1
 
