@@ -722,10 +722,13 @@ else
     sleep 7
 
     # The service asked from row 2, column 1, so the answer has to say so.
-    if "$gz" logs asker 2>/dev/null | grep -q "$(printf '\033')\[2;1R"; then
+    # Through cat -v, so the pattern is plain text. Matching a raw escape byte against what grep
+    # treats as a binary file failed while the reply was demonstrably in the log - the failure
+    # message printed it.
+    if "$gz" logs asker 2>/dev/null | cat -v | grep -q '\^\[\[2;1R'; then
         ok "a rendered attach answers a program that asks where the cursor is"
     else
-        bad "the service never received a cursor report: $("$gz" logs asker 2>/dev/null | tail -1 | cat -v)"
+        bad "the service never received a cursor report: $("$gz" logs asker 2>/dev/null | cat -v | tail -1)"
     fi
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null

@@ -128,6 +128,13 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **A program that asks the terminal gets an answer.** A cursor-position query is a question a
+  program waits for. A byte pipe gets this for free - the query reaches the real terminal and the
+  reply comes back the same way - but a rendered attach *is* the terminal and answered nothing at
+  all, which is a hang rather than a cosmetic difference. Cursor position, device status and both
+  device-attribute forms are answered now, and the replies go back to that pane's service as input.
+  **Verified** through the service's own log, where its pty echoes what it received.
+
 - **The cursor shape reaches the terminal.** A program that asks for a bar while editing and a
   block otherwise is doing something the user can see. A rendered attach kept it to itself, so the
   shape stayed whatever the last program had set. **Verified** by the bytes the client writes, both

@@ -30,9 +30,13 @@
 // for ever. A list of what a harness does not check is worth keeping for that reason, and worth
 // treating as a list of unexamined behaviour rather than a list of tests to write.
 //
-// What remains genuinely unchecked anywhere: character sets, tab stops other than every eighth
-// column, and anything a program asks the terminal to report back. An emulator can get those wrong
-// and pass everything here.
+// What remains genuinely unchecked anywhere: character sets and tab stops other than every eighth
+// column. An emulator can get those wrong and pass everything here.
+//
+// Replies to what a program asks the terminal were on that list until a check was written for
+// them, and they turned out not to be implemented at all - a program asking where the cursor is
+// would have waited for ever. Which is the third time an item on this list was a missing feature
+// rather than a missing test.
 //
 // # Two things the format has to decide, and does
 //
