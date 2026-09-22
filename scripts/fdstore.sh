@@ -204,6 +204,40 @@ else
 fi
 "$gz" rm survivor >/dev/null 2>&1
 
+# ------------------------------------------- the store must not fill up with terminals of the dead
+#
+# FileDescriptorStoreMax is 64 in the packaged unit. A daemon that hands a terminal over on every
+# start and never takes one back reaches that after 64 restarts, and from then on every new service
+# is quietly unprotected - the exact failure this whole mechanism exists to prevent, arriving
+# silently after weeks of a service that flaps.
+#
+# The grandchild is what makes this a real case rather than a theoretical one. A plain service's pty
+# master hangs up when the service dies and systemd closes it by itself, so a simpler version of
+# this check passed with the drop removed and said nothing. Anything that spawns a detached helper -
+# setsid, a double fork, most things that daemonise - leaves the slave open, the master never hangs
+# up, and systemd holds it for ever.
+say
+"$gz" add flapper -start -restart always -- sh -c 'setsid sleep 30 & echo alive; sleep 1; exit 1' >/dev/null 2>&1
+sleep 12
+held=$(systemctl --user show "$unit" -p NFileDescriptorStore --value)
+restarts=$("$gz" status flapper 2>/dev/null | awk '/^restarts:/{print $2}')
+# The socket, plus at most the one terminal of whichever instance is alive right now.
+if [ -n "$held" ] && [ "$held" -le 2 ]; then
+    ok "a service that keeps restarting does not fill the store (${restarts:-0} restarts, $held held)"
+else
+    bad "after ${restarts:-0} restarts systemd is holding $held descriptors; want no more than 2"
+fi
+
+"$gz" stop flapper >/dev/null 2>&1
+sleep 2
+left=$(systemctl --user show "$unit" -p NFileDescriptorStore --value)
+if [ -n "$left" ] && [ "$left" -le 1 ]; then
+    ok "and stopping it leaves nothing of it behind"
+else
+    bad "after stopping it systemd still holds $left descriptors; want only the socket"
+fi
+"$gz" rm flapper >/dev/null 2>&1
+
 say
 if [ "$fail" -eq 0 ]; then
     say "all $pass held."
