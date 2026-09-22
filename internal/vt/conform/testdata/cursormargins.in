@@ -1,0 +1,11 @@
+# size 12x8
+# The scrolling margins are barriers to cursor movement, not a cage.
+#
+# Row 1: a region over rows 5-7, then nine rows down from the top. The cursor stops at the bottom
+#        margin it would have crossed, not at the bottom of the screen.
+# Row 2: the same region, then nine rows up from the bottom row - which is below the region - and
+#        the cursor stops at the top margin.
+# A cursor already past a margin is not dragged back to it, which is the third case below.
+\e[5;7r\e[1;1H\e[9BDOWN
+\e[5;7r\e[8;1H\e[9AUP
+\e[5;7r\e[8;1H\e[9BPAST

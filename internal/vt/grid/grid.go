@@ -430,16 +430,24 @@ func (t *Term) restoreCursor() {
 	t.pend = false
 }
 
-// moveVertically moves the cursor up or down, bounded by the scrolling region.
+// moveVertically moves the cursor up or down, stopping at a margin it would cross.
 //
-// A cursor inside the region cannot be moved out of it by CUU or CUD: it stops at the margin. This
-// stopped at the edge of the screen instead, so `\e[;6r` followed by `\e[9B` landed two rows
-// below where a terminal puts it. A cursor that starts outside the region is bounded by the screen,
-// because the region is not its cage.
+// The margins are barriers, not a cage: a cursor moving down stops at the bottom margin if it
+// started at or above it, and a cursor moving up stops at the top margin if it started at or below
+// it. A cursor already past a margin is not dragged back to it - moving down from below the bottom
+// margin is bounded by the screen.
+//
+// Measured, over six probes, because the obvious rule is wrong twice. "Bounded by the region only
+// when the cursor is inside it" - which this said a commit ago - let `\e[6;7r` then `\e[9B` run
+// from row 0 all the way to the bottom of the screen, where a terminal stops it at the bottom
+// margin it crossed on the way.
 func (t *Term) moveVertically(delta int) {
 	lo, hi := 0, t.rows-1
-	if t.cur.Row >= t.top && t.cur.Row <= t.bottom {
-		lo, hi = t.top, t.bottom
+	if delta > 0 && t.cur.Row <= t.bottom {
+		hi = t.bottom
+	}
+	if delta < 0 && t.cur.Row >= t.top {
+		lo = t.top
 	}
 	t.cur.Row = clamp(t.cur.Row+delta, lo, hi)
 	t.pend = false

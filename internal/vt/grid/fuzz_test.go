@@ -85,6 +85,43 @@ func knownDivergence(input []byte) bool {
 			return true
 		}
 	}
+	return setsRegion(input) && shiftsLines(input)
+}
+
+// setsRegion and shiftsLines spot the second known divergence: inserting or deleting lines with
+// the cursor outside a scrolling region.
+//
+// tmux has no rule there worth copying. On a six-row screen with a region over rows 3-6 and the
+// cursor at the top, inserting one, two or three lines shifts the whole screen down as you would
+// expect - and inserting four gives "||3C|4D|1A|2B|", which is not a shift of anything, while
+// inserting six leaves the screen untouched. Rows rotate. This emulator shifts what fits and
+// blanks the rest, which is coherent, and the corpus pins the in-region behaviour separately in
+// regiondelete.
+//
+// The test is coarse - a stream that sets a region anywhere and shifts lines anywhere is skipped -
+// and that costs real coverage. It is written this way because the alternative is teaching the
+// generator to avoid one combination, which would hide the combination from every future run
+// rather than from this one.
+func setsRegion(input []byte) bool { return hasFinal(input, 'r') }
+func shiftsLines(input []byte) bool {
+	return hasFinal(input, 'L') || hasFinal(input, 'M')
+}
+
+// hasFinal reports whether the stream contains a CSI ending in the given byte.
+func hasFinal(input []byte, final byte) bool {
+	for i := 0; i+1 < len(input); i++ {
+		if input[i] != 0x1b || input[i+1] != '[' {
+			continue
+		}
+		for j := i + 2; j < len(input); j++ {
+			if c := input[j]; c >= 0x40 && c <= 0x7e {
+				if c == final {
+					return true
+				}
+				break
+			}
+		}
+	}
 	return false
 }
 
