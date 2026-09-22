@@ -200,6 +200,26 @@ the one you get without asking.
   forty-column screen: the first service's output in the top half, the second's below it, checked
   by which rows each lands in rather than by both appearing somewhere.
 
+- **You come back to the arrangement you left.** A rendered attach used to rebuild its panes from
+  nothing every time: you split your shell against your logs, your ssh dropped, you came back and
+  had one pane with no word about where the other went. Which for a login multiplexer - the thing
+  that is supposed to hold your session while you are away - is the failure it exists to prevent.
+  The panes, the orientation and the weights are written to
+  `$XDG_STATE_HOME/gozellij/layouts/<service>.json`, keyed by the name you typed, in JSON meant to
+  be repaired with an editor. Written after every change rather than on the way out, because the
+  usual way this client ends is a connection dropping and not somebody pressing `Ctrl-] d`.
+  **Verified** by killing the client with `kill -9` so that nothing on the way out can run:
+  the file is on disk with both services in it, attaching again puts both panes back, and the
+  restored pane goes on producing output rather than being a picture of one.
+
+  What it will not do: restore a layout that no longer names the service you asked for, since
+  `gozellij attach shell` that gives you two panes with no shell in either has ignored the
+  question; write a smaller arrangement back over a larger one, so a service stopped for an
+  afternoon is not forgotten permanently; or restore more panes than the terminal has room for -
+  splitting by hand cannot make a six-column pane without somebody watching it happen, and a
+  restore onto a smaller terminal can. It says which panes it left out, and says so about a
+  service in the layout that could not be opened.
+
 - **Everything gozellij says goes through one sink.** Standard error while the byte pipe owns the
   terminal, the status line once something is painting over it. Five separate messages had been
   written to a screen that erased them: a service's exit, the picker's menu, the help key, the

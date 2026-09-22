@@ -148,9 +148,15 @@ that belong to the terminal rather than the grid are carried through to it - mou
 bracketed paste, the window title, the cursor shape - and the questions a program asks the terminal
 are answered, which a client that interprets the stream has to do itself or the program waits.
 
+A rendered attach comes back to the arrangement it left: the panes, the orientation and the
+weights are written to `$XDG_STATE_HOME/gozellij/layouts/<service>.json` after every change rather
+than on the way out, because the usual way a login multiplexer's client ends is the connection
+dropping and not somebody pressing detach.
+
 What is missing, so that this does not read as finished: one orientation for the whole screen
-rather than a tree of splits, no layouts to save or restore, no mouse handling of gozellij's own
-(clicks go to the program in the pane, not to gozellij), and the status line is the only chrome.
+rather than a tree of splits, layouts are remembered but there is no way to name or choose one, no
+mouse handling of gozellij's own (clicks go to the program in the pane, not to gozellij), and the
+status line is the only chrome.
 The rendered attach costs two to three times the byte pipe on a flood of output and the reason is
 not repaint count (measured; see `internal/vt/render`). It is not the default, and
 `docs/REPLACING_GEZELLIJ.md` says what would have to be true for it to become one.
