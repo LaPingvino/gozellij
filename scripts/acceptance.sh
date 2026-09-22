@@ -709,7 +709,11 @@ else
     # and the user has no way to connect an odd-looking screen to it. Said once per sequence, on
     # the status line, with the way back to the byte pipe.
     only
-    "$gz" add exotic -start -- sh -c 'printf "\033]8;;https://example.com\033\\link\033]8;;\033\\\r\n"; sleep 60' >/dev/null 2>&1
+    # OSC 52, a clipboard write, which this emulator does not implement. It used to be OSC 8 - and
+    # then OSC 8 was implemented, and this check failed for the best possible reason: its example
+    # had stopped being an example. Whatever is picked here has to be something still on the list
+    # in internal/vt/grid/probe_test.go, and this note is here so the next person knows to look.
+    "$gz" add exotic -start -- sh -c 'printf "\033]52;c;aGVsbG8=\007clipboard\r\n"; sleep 60' >/dev/null 2>&1
     sleep 1
     newscreen
     tmux -L "$tmuxSock" new-session -d -x 70 -y 6 \
