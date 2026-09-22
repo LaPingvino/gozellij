@@ -128,6 +128,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **The picker is visible.** `Ctrl-] l` prints the services and waits for a keystroke. In a
+  rendered attach the repaint that keeps the status clock moving drew the last frame over it within
+  two seconds, so the question was invisible and the answer still worked - a menu answered by
+  guesswork. Painting is suspended while something else owns the screen. **Verified:** the menu is
+  still on screen three seconds after being asked for, and choosing an entry switches to it.
+  Removing the suspend makes the first of those fail with the pane's output where the menu should
+  be.
+
 - **Switching a service does not throw the layout away.** `Ctrl-] n` in a split changes what the
   focused pane is showing and leaves the other pane alone; with one pane it reattaches as before.
   **Verified:** after switching, both panes are still there and the switched one is still receiving
