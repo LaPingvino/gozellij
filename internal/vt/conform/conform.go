@@ -345,7 +345,12 @@ func diffStyles(row int, content, want, got []string) []Difference {
 		return content[col] == "" || content[col] == " "
 	}
 	var diffs []Difference
-	for col := 0; col < max(len(want), len(got)); col++ {
+	// Only as far as the recording goes. capture-pane trims a row's trailing cells, so a styled
+	// blank at the end of a row - which a background-colour erase leaves behind - is invisible to
+	// the oracle, and comparing past that length reports the emulator as wrong for cells the
+	// recording could not contain. That misreading cost an emulator fix in the wrong direction
+	// once already.
+	for col := 0; col < len(want); col++ {
 		w, g := "-", "-"
 		if col < len(want) {
 			w = want[col]

@@ -1,0 +1,8 @@
+# size 16x3
+# Erasing carries the background, and the oracle cannot see it at the end of a row.
+#
+# Blue background, four characters, home, erase to end of line, then a mark nine columns along.
+# The cells between are blue: background-colour erase is on. The proof has to be a mark further
+# along, because capture-pane trims a row trailing cells and reading those is what once produced
+# the opposite conclusion and an emulator change in the wrong direction.
+\e[44mABCD\e[H\e[K\e[1;10HZ

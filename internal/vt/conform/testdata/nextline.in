@@ -1,0 +1,4 @@
+# size 20x6
+# Cursor to the start of a line above or below, which are CSI E and CSI F rather than the ESC E
+# this emulator already had. Found by the generator, which produced `\\e[E` in three bytes.
+\e[HX\e[EY\e[2EZ\e[FW

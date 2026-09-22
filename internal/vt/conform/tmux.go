@@ -189,7 +189,7 @@ func Record(c Case) (Screen, error) {
 	// capture-pane drops rows that are entirely empty at the bottom, and trims each row's trailing
 	// spaces. The rows are padded back so that a recording always describes the whole screen; the
 	// trimming within a row is what the package doc says is ignored on both sides.
-	lines := expandTabs(strings.Split(strings.TrimRight(content, "\n"), "\n"))
+	lines := expandTabs(strings.Split(strings.TrimRight(content, "\n"), "\n"), cols)
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil
 	}
@@ -255,7 +255,7 @@ func waitFor(tmux, sock, channel string) error {
 // actually holds, so a recording of a tab compared as a literal tab character against an emulator
 // that (correctly) holds spaces. The screen is what is being compared, and on the screen those
 // cells are blank.
-func expandTabs(lines []string) []string {
+func expandTabs(lines []string, cols int) []string {
 	for i, l := range lines {
 		if !strings.Contains(l, "\t") {
 			continue
@@ -271,7 +271,17 @@ func expandTabs(lines []string) []string {
 			// Columns, not bytes. Padding by byte length made a three-byte replacement character
 			// count as three columns, so a tab after one landed two columns early and the
 			// comparison blamed the emulator for the oracle's arithmetic.
-			for next := (width/8 + 1) * 8; width < next; width++ {
+			//
+			// And never past the last column. A tab stop beyond the edge of the screen is the
+			// edge of the screen - a terminal clamps there - but this expanded the full eight and
+			// produced a recording with a character in column 40 of a forty-column screen, which
+			// no screen can hold. The emulator was reported wrong for putting it in column 39.
+			// The last column, not the width: a tab stop past the edge leaves the cursor on the
+			// final column, and clamping to the width itself filled every remaining cell and left
+			// the character after the tab with nowhere to go - producing a recorded row of
+			// forty-one columns on a forty-column screen.
+			next := min((width/8+1)*8, max(cols-1, 0))
+			for ; width < next; width++ {
 				b.WriteByte(' ')
 			}
 		}

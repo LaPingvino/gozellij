@@ -170,9 +170,15 @@ func (p *parser) control(t *Term, c byte) bool {
 	case c == '\t':
 		// Tab stops every eight columns, which is the default every terminal ships with. Custom
 		// stops (HTS/TBC) are not implemented, and the package doc says so.
+		//
+		// A tab does nothing at all while a wrap is pending: the cursor is already past the last
+		// column and the next character belongs on the next line. Clearing the pending flag here,
+		// which this used to do, made that character land at the right margin instead of wrapping.
+		if t.pend {
+			return true
+		}
 		next := (t.cur.Col/8 + 1) * 8
 		t.cur.Col = min(next, t.cols-1)
-		t.pend = false
 	case c == 0x07:
 		// Bell: nothing to draw.
 	case c < 0x20 || c == 0x7f:
@@ -333,6 +339,12 @@ func (p *parser) dispatch(t *Term, final byte) {
 		t.moveTo(t.cur.Row, t.cur.Col+arg(0, 1))
 	case 'D': // cursor back
 		t.moveTo(t.cur.Row, t.cur.Col-arg(0, 1))
+	case 'E': // cursor to the start of a line below
+		t.moveVertically(arg(0, 1))
+		t.cur.Col = 0
+	case 'F': // cursor to the start of a line above
+		t.moveVertically(-arg(0, 1))
+		t.cur.Col = 0
 	case 'G', '`': // cursor to column
 		t.moveTo(t.cur.Row, arg(0, 1)-1)
 	case 'd': // cursor to row

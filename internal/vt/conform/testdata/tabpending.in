@@ -1,0 +1,7 @@
+# size 16x3
+# A tab while a wrap is pending does nothing, and the next character still wraps.
+#
+# Sixteen characters fill a sixteen-column row and leave the cursor past the last column. The tab
+# must not pull it back to the margin - if it does, the X lands at the right-hand edge instead of
+# on the line below.
+1234567890123456\tX

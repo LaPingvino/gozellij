@@ -468,12 +468,18 @@ func (t *Term) eraseInRow(row, from, to int) {
 	// foreground into those blanks paints a row of invisible blue spaces that a real terminal
 	// does not have. The corpus reported it at every column of the row the first time styles were
 	// compared.
-	// Erasing fills with the terminal's default, not with the active style and not even with its
-	// background. Background-colour erase is a terminal capability that the oracle does not have
-	// switched on, and a case that sets a blue background and erases to the end of the line came
-	// back from tmux with a plain tail. Matching what an emulator "should" do here would mean
-	// disagreeing with the terminal this is recorded against, and with the one the user has.
-	fill := vt.Cell{Content: " ", Width: 1}
+	// Erasing fills with the current background and nothing else.
+	//
+	// This said the opposite for several commits, on a misreading: a case that set a blue
+	// background and erased to the end of a line came back from tmux with a plain tail, so the
+	// conclusion was that background-colour erase was off. It was not. capture-pane trims a row's
+	// trailing cells, and those blue cells were exactly the trimmed ones. Erasing into the middle
+	// of a row - blue background, erase, then a mark further along - shows nine blue cells and
+	// settles it.
+	//
+	// The background only. An underline on a blank draws a line, and a terminal does not leave one
+	// behind after an erase.
+	fill := vt.Cell{Content: " ", Width: 1, Style: vt.Style{Bg: t.style.Bg}}
 	for c := max(from, 0); c <= min(to, t.cols-1); c++ {
 		t.cells[row][c] = fill
 	}
