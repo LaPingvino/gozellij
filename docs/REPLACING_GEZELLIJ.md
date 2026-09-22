@@ -128,6 +128,14 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **Everything gozellij says goes through one sink.** Standard error while the byte pipe owns the
+  terminal, the status line once something is painting over it. Five separate messages had been
+  written to a screen that erased them: a service's exit, the picker's menu, the help key, the
+  "that key does nothing" reply, and the errors around switching. A rendered attach also says when
+  a pane has reconnected after an upgrade - it comes back working, but what the service printed
+  meanwhile is not on that screen and never will be, and the byte-pipe path has always said so.
+  **Verified** on a real screen, including that the reconnection notice appears.
+
 - **The help key answers where you are looking.** `Ctrl-] ?` lists the keys and `Ctrl-] <anything
   else>` says that key does nothing. Both wrote to standard error, which a rendered attach covers
   within milliseconds - a help key that helps nobody, and a prefix key that eats a keystroke in
