@@ -1,6 +1,7 @@
 package grid
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -266,6 +267,7 @@ func (p *parser) escape(t *Term, c byte) {
 		if c >= 0x20 && c <= 0x2f {
 			return
 		}
+		t.noteUnknown(fmt.Sprintf("ESC %c", c))
 		p.state = ground
 	}
 }
@@ -452,6 +454,10 @@ func (p *parser) dispatch(t *Term, final byte) {
 		t.restoreCursor()
 	case 'm':
 		t.sgr(ps)
+	default:
+		// Nothing here implements this. Recorded rather than dropped silently: a byte pipe would
+		// have handed it to the terminal, which may well have understood it.
+		t.noteUnknown(fmt.Sprintf("CSI %s%c", string(p.inter), final))
 	case 'n': // device status report
 		switch arg(0, 0) {
 		case 5:
@@ -683,6 +689,10 @@ func (p *parser) finishOSC(t *Term) {
 		return
 	}
 	switch num {
+	default:
+		// An operating-system command this does not act on - a hyperlink, a colour query, a
+		// clipboard write. A byte pipe would have passed it to the terminal.
+		t.noteUnknown("OSC " + num)
 	case "0", "2":
 		// 0 sets the icon name and the title, 2 sets the title. Nothing here distinguishes them,
 		// because nothing downstream of it does either.

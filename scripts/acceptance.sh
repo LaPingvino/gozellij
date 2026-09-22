@@ -702,6 +702,31 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ------------------------------------------- saying what was dropped rather than dropping it
+    #
+    # A byte pipe hands anything it does not understand to the terminal, which may well understand
+    # it. A rendered attach interprets the stream, so an unimplemented sequence is simply gone -
+    # and the user has no way to connect an odd-looking screen to it. Said once per sequence, on
+    # the status line, with the way back to the byte pipe.
+    only
+    "$gz" add exotic -start -- sh -c 'printf "\033]8;;https://example.com\033\\link\033]8;;\033\\\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 70 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render exotic'"
+    sleep 3
+
+    if pane | sed -n '6p' | grep -q 'does not implement'; then
+        ok "an unimplemented sequence is said out loud rather than silently dropped"
+    else
+        bad "nothing said anything about the dropped sequence: $(pane | sed -n '6p')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm exotic >/dev/null 2>&1
+
     # ------------------------------------------------------------ a way to fix a wrong screen
     #
     # The first thing anybody reaches for when a screen looks wrong. It repaints from the grid and

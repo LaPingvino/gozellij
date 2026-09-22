@@ -37,6 +37,10 @@ type livePane struct {
 	finished bool
 	// scroll is how many lines back this pane is being looked at. Zero is live.
 	scroll int
+	// told is which unimplemented sequences the user has already been told about, so that a
+	// program emitting one on every keystroke says it once rather than filling the status line
+	// with the same complaint.
+	told map[string]bool
 	// weight is this pane's share of the screen. Every pane starts equal; growing one takes from
 	// the others rather than from nowhere, because the screen does not get any bigger.
 	weight float64
@@ -397,6 +401,21 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 			ev.pane.scroll = min(ev.pane.scroll+countNewlines(ev.data), ev.pane.term.MaxScroll())
 		}
 	}
+	// Anything the emulator did not implement is worth saying once. A byte pipe hands what it does
+	// not understand to the terminal, which may well understand it; this drops it, and a user who
+	// is never told has no way to connect an odd-looking screen to a sequence that went nowhere.
+	for name := range ev.pane.term.Unknown() {
+		if ev.pane.told[name] {
+			continue
+		}
+		if ev.pane.told == nil {
+			ev.pane.told = make(map[string]bool, 4)
+		}
+		ev.pane.told[name] = true
+		note(fmt.Sprintf("%s used %s, which gozellij does not implement - the byte pipe would have "+
+			"passed it to your terminal (gozellij attach -no-render %s)", ev.pane.service, name, ev.pane.service))
+	}
+
 	if ev.finished {
 		ev.pane.finished = true
 	}

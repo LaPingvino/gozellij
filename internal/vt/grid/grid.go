@@ -90,6 +90,12 @@ type Term struct {
 	// and is not answered waits.
 	replies []byte
 
+	// unknown counts the sequences this emulator did not implement, by name. A byte pipe hands
+	// everything it does not understand to the terminal, which may well understand it; this
+	// interprets the stream, so anything unimplemented is simply dropped. Counting it turns that
+	// from something a user notices as "the screen looks odd" into something they can be told.
+	unknown map[string]int
+
 	// g0 and g1 are the two character sets a program can select between, and active says which is
 	// in use. See charset.go: this is what turns "lqqqk" into the top of a box.
 	g0, g1 charset
@@ -573,6 +579,31 @@ var PassthroughModes = []int{
 	1005, 1006, 1015, // how those reports are encoded
 	1004, // focus in and out
 	2004, // bracketed paste
+}
+
+// unknownLimit caps how many distinct sequences are remembered. A stream of junk must not be able
+// to grow this without bound, and a pane that has met fifty things this emulator cannot do has
+// made the point.
+const unknownLimit = 50
+
+// noteUnknown records a sequence that went nowhere.
+func (t *Term) noteUnknown(name string) {
+	if t.unknown == nil {
+		t.unknown = make(map[string]int, 4)
+	}
+	if _, seen := t.unknown[name]; !seen && len(t.unknown) >= unknownLimit {
+		return
+	}
+	t.unknown[name]++
+}
+
+// Unknown is what this terminal was sent and did not implement, by name and count.
+func (t *Term) Unknown() map[string]int {
+	out := make(map[string]int, len(t.unknown))
+	for k, v := range t.unknown {
+		out[k] = v
+	}
+	return out
 }
 
 // TakeReplies returns and clears what this terminal owes the program, to be written back to it as
