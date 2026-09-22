@@ -250,15 +250,44 @@ func keysOf(m map[string]*os.File) []string {
 // does not leak into the next test either.
 func placeFDs(t *testing.T, files ...*os.File) int {
 	t.Helper()
-	const base = 60
+	base := freeFDRun(t, len(files))
 	old := listenFDsStart
 	listenFDsStart = base
 	t.Cleanup(func() { listenFDsStart = old })
 	for i, f := range files {
-		if err := syscall.Dup2(int(f.Fd()), base+i); err != nil {
-			t.Fatalf("placing a descriptor at %d: %v", base+i, err)
+		target := base + i
+		if err := syscall.Dup2(int(f.Fd()), target); err != nil {
+			t.Fatalf("placing a descriptor at %d: %v", target, err)
 		}
-		t.Cleanup(func() { _ = syscall.Close(base + i) })
+		t.Cleanup(func() { _ = syscall.Close(target) })
 	}
 	return base
+}
+
+// freeFDRun finds n consecutive descriptor numbers nothing is using.
+//
+// The first version of this took 60 and 61 on the grounds that they were probably free. Probably
+// is not a property: dup2 onto a number in use closes what was there without a word, and the test
+// that finds out is some other test in this package failing inside a temporary directory whose
+// handle has quietly become something else. Descriptor numbers are process-wide state and the only
+// safe way to pick one is to ask.
+func freeFDRun(t *testing.T, n int) int {
+	t.Helper()
+	if n <= 0 {
+		n = 1
+	}
+	for base := 40; base < 400; base++ {
+		free := true
+		for i := range n {
+			if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(base+i), syscall.F_GETFD, 0); errno != syscall.EBADF {
+				free = false
+				break
+			}
+		}
+		if free {
+			return base
+		}
+	}
+	t.Fatal("no run of unused descriptor numbers to borrow")
+	return 0
 }
