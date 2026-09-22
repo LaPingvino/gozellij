@@ -187,7 +187,7 @@ func Record(c Case) (Screen, error) {
 	// capture-pane drops rows that are entirely empty at the bottom, and trims each row's trailing
 	// spaces. The rows are padded back so that a recording always describes the whole screen; the
 	// trimming within a row is what the package doc says is ignored on both sides.
-	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	lines := expandTabs(strings.Split(strings.TrimRight(content, "\n"), "\n"))
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil
 	}
@@ -245,6 +245,32 @@ func waitFor(tmux, sock, channel string) error {
 		return fmt.Errorf("waiting on %s: %v: %s", channel, err, out)
 	}
 	return nil
+}
+
+// expandTabs replaces a captured tab with the blanks it stands for.
+//
+// capture-pane re-emits a tab where the cursor jumped rather than the blank cells the screen
+// actually holds, so a recording of a tab compared as a literal tab character against an emulator
+// that (correctly) holds spaces. The screen is what is being compared, and on the screen those
+// cells are blank.
+func expandTabs(lines []string) []string {
+	for i, l := range lines {
+		if !strings.Contains(l, "\t") {
+			continue
+		}
+		var b strings.Builder
+		for _, r := range l {
+			if r != '\t' {
+				b.WriteRune(r)
+				continue
+			}
+			for next := (b.Len()/8 + 1) * 8; b.Len() < next; {
+				b.WriteByte(' ')
+			}
+		}
+		lines[i] = strings.TrimRight(b.String(), " ")
+	}
+	return lines
 }
 
 // settle waits until the pane has stopped changing.

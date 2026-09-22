@@ -73,42 +73,25 @@ func (p *parser) ground(t *Term, b []byte, i int) int {
 		p.utf8 = p.utf8[:0]
 		p.invalid = true
 	}
-	switch {
-	case c == 0x1b:
+	// Anything but an escape settles the debt now. Waiting for something that draws meant a
+	// backspace, a carriage return or the end of the stream left the replacement unwritten:
+	// "\xed\b" drew nothing where tmux draws a replacement and then moves the cursor. An escape
+	// is the exception, and the reason is the whole point of deferring: the sequence may change
+	// the colour, and the replacement is drawn in the colour that results.
+	if c != 0x1b {
+		p.drawPending(t)
+	}
+	if c == 0x1b {
 		p.state = escape
 		p.params = p.params[:0]
 		p.inter = p.inter[:0]
 		return 0
-	case c == '\r':
-		t.cur.Col = 0
-		t.pend = false
+	}
+	if p.control(t, c) {
 		return 0
-	case c == '\n', c == 0x0b, c == 0x0c:
-		t.lineFeed()
-		t.pend = false
-		return 0
-	case c == '\b':
-		if t.pend {
-			t.pend = false
-		} else if t.cur.Col > 0 {
-			t.cur.Col--
-		}
-		return 0
-	case c == '\t':
-		// Tab stops every eight columns, which is the default every terminal ships with. Custom
-		// stops (HTS/TBC) are not implemented, and the package doc says so.
-		next := (t.cur.Col/8 + 1) * 8
-		t.cur.Col = min(next, t.cols-1)
-		t.pend = false
-		return 0
-	case c == 0x07:
-		return 0 // bell: nothing to draw
-	case c < 0x20 || c == 0x7f:
-		return 0 // other C0: ignored rather than printed
 	}
 
 	if c < 0x80 {
-		p.drawPending(t)
 		t.put(rune(c), vt.RuneWidth(rune(c)))
 		return 0
 	}
@@ -156,14 +139,48 @@ func (p *parser) ground(t *Term, b []byte, i int) int {
 	if r == utf8.RuneError && size <= 1 {
 		// Bytes that are a complete-looking sequence but not a valid character.
 		p.utf8 = p.utf8[:0]
-		p.drawPending(t)
 		t.put(utf8.RuneError, 1)
 		return extra
 	}
 	p.utf8 = p.utf8[:0]
-	p.drawPending(t)
 	t.put(r, vt.RuneWidth(r))
 	return extra
+}
+
+// control executes a C0 control character, reporting whether it was one.
+//
+// Shared by every state, because a control inside an escape sequence is executed where it appears
+// and the sequence carries on afterwards - measured: `\e[3;5` then a tab then `H` moves the cursor
+// to row 3 column 5 *and* the tab took effect on the way. Swallowing them, which this did, lost
+// both the control and (for a tab) eight columns of cursor movement.
+func (p *parser) control(t *Term, c byte) bool {
+	switch {
+	case c == '\r':
+		t.cur.Col = 0
+		t.pend = false
+	case c == '\n', c == 0x0b, c == 0x0c:
+		t.lineFeed()
+		t.pend = false
+	case c == '\b':
+		if t.pend {
+			t.pend = false
+		} else if t.cur.Col > 0 {
+			t.cur.Col--
+		}
+	case c == '\t':
+		// Tab stops every eight columns, which is the default every terminal ships with. Custom
+		// stops (HTS/TBC) are not implemented, and the package doc says so.
+		next := (t.cur.Col/8 + 1) * 8
+		t.cur.Col = min(next, t.cols-1)
+		t.pend = false
+	case c == 0x07:
+		// Bell: nothing to draw.
+	case c < 0x20 || c == 0x7f:
+		// Other C0: ignored rather than printed.
+	default:
+		return false
+	}
+	return true
 }
 
 func (p *parser) escape(t *Term, c byte) {
@@ -225,6 +242,16 @@ func (p *parser) csi(t *Term, c byte) {
 		p.state = escape
 		p.params = p.params[:0]
 		p.inter = p.inter[:0]
+		return
+	case c < 0x20:
+		// A control character inside a sequence is executed here and now, and the sequence goes
+		// on afterwards. Not swallowed: a tab arriving mid-CSI moves the cursor eight columns in
+		// a real terminal, and this code was losing it.
+		//
+		// After the escape case, not before it. ESC is itself below 0x20, so putting this first
+		// made `\e[;6\eB` stay inside the CSI and let the B complete it as a cursor movement -
+		// found by the generator within a minute of the mistake being made.
+		p.control(t, c)
 		return
 	case c < 0x40 || c > 0x7e:
 		// Not a final byte at all: abandon rather than hang in this state for ever.

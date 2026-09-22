@@ -16,6 +16,12 @@ var (
 // TestAgainstTmux drives generated streams into this emulator and into a real tmux, and requires
 // them to agree.
 //
+// It is not expected to be silent for ever. At the time of writing it still finds disagreements
+// beyond the twelve seeds it runs by default - a background colour surviving on a blank cell where
+// tmux drops it, and a cursor row after a run of scrolling sequences. Those are open, and saying so
+// here is better than a comment claiming the emulator agrees with tmux in general when what is
+// actually known is that it agrees on twenty-four recorded screens and the seeds below.
+//
 // The corpus tests what somebody thought of. This tests what nobody thought of, which is the
 // arrangement DESIGN.md asks for. A disagreement is shrunk and printed as a ready-made corpus
 // case, because a fuzzer that only says "these differ" leaves the hard half of the work undone.
@@ -43,6 +49,13 @@ func TestAgainstTmux(t *testing.T) {
 			// The shrunk stream's own differences, not the original's. Reporting the original's
 			// beside the shrunk input named a cell that the shrunk input never writes, which sent
 			// the first investigation looking for a character that was not there.
+			if knownDivergence(small) {
+				// Checked after shrinking, not before: the generator emits well-formed sequences
+				// and it is the shrinker that produces this shape, by cutting a wide character
+				// in half beside an escape. Checking the original stream skipped nothing and
+				// reported the same known difference every time.
+				t.Skipf("shrinks to the known-divergence class: %q", string(small))
+			}
 			smallDiffs := differences(t, small, cols, rows)
 			if len(smallDiffs) == 0 {
 				smallDiffs = diffs
@@ -52,6 +65,27 @@ func TestAgainstTmux(t *testing.T) {
 				string(small), len(smallDiffs), smallDiffs[0], conform.AsCase(small, cols, rows, why))
 		})
 	}
+}
+
+// knownDivergence reports streams where tmux does something this emulator deliberately does not.
+//
+// One case, and it is deliberate rather than unfinished: an escape followed by a byte of 0x80 or
+// more makes tmux discard everything that comes after it, to the end of the stream. Measured -
+// `\e\xaaX` leaves an empty screen and the cursor at home. That is tmux waiting for the end of
+// something it will never find, and matching it would mean a garbled byte in a service's output
+// being able to blank a user's pane and keep it blank. This emulator abandons the escape and
+// carries on, which is the behaviour worth having even though it disagrees.
+//
+// The shrinker produces such streams readily by cutting a wide character in half next to an
+// escape, so without this the generator reports the same known difference instead of finding new
+// ones.
+func knownDivergence(input []byte) bool {
+	for i := 0; i+1 < len(input); i++ {
+		if input[i] == 0x1b && input[i+1] >= 0x80 {
+			return true
+		}
+	}
+	return false
 }
 
 // differences records one input through tmux and plays it through this emulator, and compares.

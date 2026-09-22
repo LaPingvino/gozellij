@@ -1,0 +1,7 @@
+# size 20x4
+# A lead byte with nothing to follow it, then a control character that draws nothing at all.
+#
+# The replacement still appears: it is owed the moment the next byte turns out not to belong to
+# the character, and a backspace settles that debt even though it draws nothing itself. Found by
+# the generator in two bytes, after the deferred-replacement rule was written for escapes only.
+\xed\x08X

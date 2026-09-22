@@ -280,7 +280,17 @@ func (t *Term) put(r rune, width int) {
 }
 
 func (t *Term) combine(r rune) {
-	col := t.cur.Col
+	if t.cur.Col == 0 && !t.pend {
+		// A combining mark with nothing to combine with. A terminal drops it rather than
+		// inventing a cell to hang it on, which is what this did - leaving a space with an accent
+		// on it where tmux has an empty screen.
+		return
+	}
+	// The cell *before* the cursor, which is the character just written. Starting at the cursor
+	// attached the mark to the blank cell the cursor is sitting on, so "e" followed by a combining
+	// acute produced "e" and a decorated space beside it instead of "é" - which is what the
+	// generator reported in a two-character stream.
+	col := t.cur.Col - 1
 	if t.pend {
 		col = t.cols - 1
 	}
