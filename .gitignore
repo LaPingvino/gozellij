@@ -12,3 +12,12 @@ coverage.*
 # editor/OS
 .DS_Store
 *.swp
+
+# makepkg writes these into packaging/arch when you build there, and leaves pkg/ with no read
+# permission on it, which stops `go vet ./...` and `git status` in their tracks. Build from a copy
+# if you would rather not have them.
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/gozellij/
+packaging/arch/*.pkg.tar.*
+packaging/arch/*.log

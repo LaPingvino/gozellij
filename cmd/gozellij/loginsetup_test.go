@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -378,6 +379,11 @@ func TestDoctorSaysWhetherTheLoginShellStartsGozellij(t *testing.T) {
 }
 
 // captureStdout runs f and returns what it printed.
+//
+// Reads to EOF, which is the whole point and was the bug: one Read returns whatever happens to be
+// in the pipe at that instant, not the whole stream. It passed here by winning a race and failed
+// inside makepkg, where it saw the first line and nothing else - a test that was wrong in a way
+// that only showed up on somebody else's machine, which is the worst kind.
 func captureStdout(t *testing.T, f func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -388,12 +394,15 @@ func captureStdout(t *testing.T, f func()) string {
 	os.Stdout = w
 	done := make(chan string, 1)
 	go func() {
-		buf := make([]byte, 64*1024)
-		n, _ := r.Read(buf)
-		done <- string(buf[:n])
+		body, _ := io.ReadAll(r)
+		done <- string(body)
 	}()
 	f()
-	w.Close()
+	// Closed before the read finishes, because ReadAll waits for EOF and only closing gives it
+	// one. Restoring os.Stdout after, so nothing else writes into a pipe nobody is reading.
+	_ = w.Close()
 	os.Stdout = old
-	return <-done
+	out := <-done
+	_ = r.Close()
+	return out
 }

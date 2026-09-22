@@ -247,6 +247,17 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     before=$("$gz" ls 2>/dev/null | awk 'NR>1 {print $1"="$3}' | sort)
     # A different binary, so the version really changes and the daemon really re-execs.
     ( cd "$repo" && HOME="$real_home" go build -ldflags "-X main.Version=acceptance-v2" -o "$gzd" ./cmd/gozellijd ) || bad "could not build v2"
+    # That the new binary is really at that path before anything asks the daemon to exec it.
+    #
+    # Without this, a build that had not finished landing shows up later as "the upgrade did not
+    # report the new version" - which reads as a broken upgrade when it is a v2 that was never
+    # there. Seen once, not reproducible in two runs afterwards, and this is what will say which
+    # half it was next time.
+    if "$gzd" -version 2>&1 | grep -q 'acceptance-v2'; then
+        ok "the replacement binary is in place before the upgrade is asked for"
+    else
+        bad "v2 is not at $gzd: $("$gzd" -version 2>&1 | head -1)"
+    fi
 
     # A client attached across the upgrade is the part nothing else tests. It has to still be
     # attached when the daemon replaces itself, so the detach key comes well afterwards.
