@@ -258,7 +258,8 @@ each promise in [docs/REPLACING_GEZELLIJ.md](docs/REPLACING_GEZELLIJ.md) rather 
 document's word for it. Several of the last bugs found were invisible to the unit tests, because
 they were about what the terminal ends up showing.
 
-See [packaging/](packaging/) for the systemd user unit.
+See [packaging/](packaging/) for the systemd user unit, and `packaging/arch/PKGBUILD` on Arch -
+that one installs the unit too, and `replaces` gezellij, so installing it *is* the migration.
 
 ## Name
 

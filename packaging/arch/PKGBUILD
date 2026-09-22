@@ -1,0 +1,71 @@
+# Maintainer: Joop Kiefte <ikojba@gmail.com>
+#
+# Installs gozellij system-wide and takes gezellij's place.
+#
+# The replacement is deliberate and it is safe in one specific way worth knowing: removing
+# gezellij-git takes /usr/bin/gezellij with it, and the login block that package's setup script
+# wrote into your profile guards on `[ -x "$GEZELLIJ_BIN" ]`. So the moment the binary is gone that
+# block stops doing anything, by its own condition, without editing a single dotfile. You are left
+# with a login that starts nothing until you run `gozellij login-setup -install`, which is a state
+# you can log in from.
+pkgname=gozellij-git
+pkgver=0.r0.0000000
+pkgrel=1
+pkgdesc="gozellij - a host-native process fabric with a terminal UI, in Go (replaces gezellij)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/LaPingvino/gozellij"
+license=('MIT')
+depends=('glibc')
+makedepends=('go' 'git')
+provides=('gozellij')
+conflicts=('gozellij' 'gezellij-git' 'gezellij')
+replaces=('gezellij-git' 'gezellij')
+install="${pkgname}.install"
+source=("git+https://github.com/LaPingvino/gozellij.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${srcdir}/gozellij"
+    printf "0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "${srcdir}/gozellij"
+    export CGO_ENABLED=0
+    export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+    go build -ldflags "-s -w -X main.Version=${pkgver}" -o build/gozellij ./cmd/gozellij
+    go build -ldflags "-s -w -X main.Version=${pkgver}" -o build/gozellijd ./cmd/gozellijd
+}
+
+check() {
+    cd "${srcdir}/gozellij"
+    go vet ./...
+    # Named packages rather than ./... on purpose. The terminal emulator's tests drive a real
+    # tmux and compare its screen with ours, and scripts/acceptance.sh drives a real pty; both are
+    # the right thing to run on a machine somebody uses and the wrong thing to require of a build
+    # host, which has neither. Excluded here and listed so that nobody reads a passing build as
+    # "the emulator was checked":
+    #
+    #   internal/vt/...  needs tmux        (make conform, make test)
+    #   scripts/         needs a real pty  (make acceptance)
+    go test ./internal/ipc/ ./internal/status/ ./internal/ula/ ./internal/fabric/ ./internal/daemon/ ./cmd/...
+}
+
+package() {
+    cd "${srcdir}/gozellij"
+    install -Dm755 build/gozellij  "${pkgdir}/usr/bin/gozellij"
+    install -Dm755 build/gozellijd "${pkgdir}/usr/bin/gozellijd"
+
+    # The systemd *user* unit, generated from the one in the repo rather than copied: that one
+    # names ~/.local/bin for a `make install`, and there is no reason for two files that say the
+    # same thing to drift apart.
+    install -dm755 "${pkgdir}/usr/lib/systemd/user"
+    sed 's|^ExecStart=.*|ExecStart=/usr/bin/gozellijd|' packaging/systemd/gozellijd.service \
+        > "${pkgdir}/usr/lib/systemd/user/gozellijd.service"
+    chmod 644 "${pkgdir}/usr/lib/systemd/user/gozellijd.service"
+
+    install -Dm644 LICENSE    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 README.md  "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 DESIGN.md  "${pkgdir}/usr/share/doc/${pkgname}/DESIGN.md"
+    install -Dm644 docs/REPLACING_GEZELLIJ.md "${pkgdir}/usr/share/doc/${pkgname}/REPLACING_GEZELLIJ.md"
+}

@@ -1,0 +1,54 @@
+# What pacman cannot do for you, said at the moment you would otherwise have to go looking.
+#
+# Neither of these is something a package should do on its own: one needs root and changes how your
+# user session behaves after logout, the other edits your profile.
+
+post_install() {
+    cat <<'MSG'
+
+gozellij is installed. Two steps are yours, in this order:
+
+  1. Keep your services running after you log out:
+
+         sudo loginctl enable-linger $USER
+         systemctl --user enable --now gozellijd
+
+  2. Make it what your login shell starts:
+
+         gozellij login-setup            # says what it would change, and changes nothing
+         gozellij login-setup -install
+
+     Then open a *new* login session to try it - not the one you are in, whose
+     environment still says you are inside the multiplexer you are replacing.
+
+  Check either step with:  gozellij doctor
+
+MSG
+}
+
+post_upgrade() {
+    cat <<'MSG'
+
+gozellij upgraded. The running daemon keeps the old binary until you tell it:
+
+    systemctl --user reload gozellijd    # exec in place; every service keeps its pid
+
+  Not `restart`: that stops the daemon, and stopping is the one case where the
+  descriptors it is holding are deliberately let go.
+
+MSG
+}
+
+post_remove() {
+    cat <<'MSG'
+
+gozellij is gone, but your login shell may still try to start it. Take that out with:
+
+    gozellij login-setup -undo -install    # if you still have the binary
+
+  or by hand: remove the block marked ">>> gozellij login setup >>>" from your
+  profile. Until then a login prints one line saying gozellij could not start,
+  and gives you an ordinary shell - it cannot lock you out.
+
+MSG
+}
