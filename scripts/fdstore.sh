@@ -127,6 +127,65 @@ else
     bad "the daemon does not answer after the restart"
 fi
 
+# ---------------------------------------------------------------- and now the point of all this
+#
+# A service started before the crash, still running afterwards, with the same pid. This is the
+# promise C3 is about: "the daemon hits a nil pointer, or the OOM killer. Synapse should not care."
+say
+"$gz" add survivor -start -restart always -- sh -c 'i=0; while :; do echo "SURVIVOR-$i"; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+sleep 2
+svcpid=$("$gz" status survivor 2>/dev/null | awk '/^pid:/{print $2}')
+if [ -n "$svcpid" ] && [ "$svcpid" != "0" ]; then
+    ok "a service is running before the crash (pid $svcpid)"
+else
+    bad "the service never started, so there is nothing to lose"
+    exit 1
+fi
+
+if [ "$(systemctl --user show "$unit" -p NFileDescriptorStore --value)" -ge 2 ]; then
+    ok "systemd is holding the service's terminal as well as the socket"
+else
+    bad "systemd holds $(systemctl --user show "$unit" -p NFileDescriptorStore --value) descriptors; want the socket and one terminal"
+fi
+
+main=$(systemctl --user show "$unit" -p MainPID --value)
+kill -9 "$main" 2>/dev/null
+for _ in $(seq 40); do
+    now=$(systemctl --user show "$unit" -p MainPID --value)
+    [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$main" ] && break
+    sleep 0.25
+done
+sleep 2
+
+after_svc=$("$gz" status survivor 2>/dev/null | awk '/^pid:/{print $2}')
+if [ -n "$after_svc" ] && [ "$after_svc" = "$svcpid" ]; then
+    ok "the service kept its pid across the daemon being killed"
+else
+    bad "the service's pid went $svcpid then [$after_svc] - it was restarted, not recovered"
+fi
+
+# Alive, not merely reported alive: its output has to still be arriving through the terminal the
+# new daemon inherited. A pid that matches proves the process; this proves the pipe.
+first=$("$gz" logs survivor 2>/dev/null | tail -1)
+sleep 3
+second=$("$gz" logs survivor 2>/dev/null | tail -1)
+if [ -n "$first" ] && [ "$first" != "$second" ]; then
+    ok "and its output is still arriving through the terminal that was handed back"
+else
+    bad "the recovered service is not producing output: [$first] then [$second]"
+fi
+
+# Stopping it has to work too. A recovered process is not this daemon's child, so the ordinary
+# kill-and-wait cannot be what happens.
+"$gz" stop survivor >/dev/null 2>&1
+sleep 2
+if kill -0 "$svcpid" 2>/dev/null; then
+    bad "the recovered service is still running after stop"
+else
+    ok "a recovered service can still be stopped"
+fi
+"$gz" rm survivor >/dev/null 2>&1
+
 say
 if [ "$fail" -eq 0 ]; then
     say "all $pass held."

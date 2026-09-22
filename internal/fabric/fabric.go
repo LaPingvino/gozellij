@@ -108,6 +108,14 @@ type Handover struct {
 	Pid       int       `json:"pid"`
 	PTYFd     int       `json:"pty_fd"`
 	StartedAt time.Time `json:"started_at"`
+	// Orphan marks a process this daemon is not the parent of: recovered after a crash rather
+	// than carried across an exec. It is watched with a pidfd instead of waited for, and its
+	// exit arrives without a code. See internal/fabric/orphan.go.
+	//
+	// Never serialised into the exec manifest: an exec keeps the pid, so a process handed over
+	// that way is always still a child. A manifest that arrived claiming otherwise would be
+	// from a daemon that had got something badly wrong.
+	Orphan bool `json:"-"`
 }
 
 // AdoptAll takes over processes inherited from a previous daemon, then loads everything else.
@@ -131,7 +139,11 @@ func (f *Fabric) AdoptAll(handovers []Handover) []error {
 		opts := f.opts
 		opts.Output = sup.Output()
 
-		p, err := Adopt(svc, h.Pid, h.PTYFd, h.StartedAt, opts)
+		adopt := Adopt
+		if h.Orphan {
+			adopt = AdoptOrphan
+		}
+		p, err := adopt(svc, h.Pid, h.PTYFd, h.StartedAt, opts)
 		if err != nil {
 			// Say so and carry on: Load will start it fresh below, which is a worse outcome
 			// than a true handover but a much better one than a service that vanishes.

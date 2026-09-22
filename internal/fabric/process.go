@@ -116,6 +116,18 @@ type StartOptions struct {
 	// stops everything it started - including a child that called setsid, which is the one case
 	// a process-group kill cannot reach. Nil means process groups only.
 	Cgroups *Cgroups
+
+	// OnRunning and OnEnded, when set, are told when a process starts and when it ends.
+	//
+	// They exist so that the daemon can hand each pty master to systemd's file-descriptor store
+	// and take it back out again, without the fabric knowing systemd exists. The fabric's job is
+	// processes; where a descriptor is kept so that it outlives a crash is the daemon's.
+	//
+	// Called with no lock held and never from inside the process's own goroutines, so an
+	// implementation may do anything it likes, including talk on a socket. The *os.File is
+	// borrowed: it stays the process's, and closing it would take the service's terminal away.
+	OnRunning func(name string, pid int, pty *os.File)
+	OnEnded   func(name string, pid int)
 }
 
 const (
@@ -352,6 +364,20 @@ func (p *Process) PTYFd() int {
 		return -1
 	}
 	return int(p.pty.Fd())
+}
+
+// PTY is the master side of this process's terminal, or nil once it is closed.
+//
+// Borrowed, not handed over: it stays this process's and closing it would take the service's
+// terminal away underneath it. The only caller passes it to a socket, which reads the descriptor
+// number and nothing else.
+func (p *Process) PTY() *os.File {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	return p.pty
 }
 
 // Adopted reports whether this process was inherited across an exec rather than spawned here.

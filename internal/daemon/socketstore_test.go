@@ -33,6 +33,17 @@ func handOver(t *testing.T, ln *net.UnixListener, name string) {
 	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
 	t.Setenv("LISTEN_FDS", "1")
 	t.Setenv("LISTEN_FDNAMES", name)
+	freshCollection(t)
+}
+
+// freshCollection undoes the one-shot guard on reading the environment, so each test sets up its
+// own handover rather than inheriting whether an earlier one happened to have read first. A guard
+// that is right in production and shared between tests is a test order dependency waiting to
+// produce a result nobody can explain.
+func freshCollection(t *testing.T) {
+	t.Helper()
+	clearPendingFDs()
+	t.Cleanup(func() { clearPendingFDs() })
 }
 
 func listenSomewhere(t *testing.T) (*net.UnixListener, string) {
@@ -104,6 +115,7 @@ func TestSomethingThatIsNotASocketIsRefused(t *testing.T) {
 	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
 	t.Setenv("LISTEN_FDS", "1")
 	t.Setenv("LISTEN_FDNAMES", socketFDName)
+	freshCollection(t)
 
 	if _, ok := adoptListener("/tmp/whatever.sock", quietLogger()); ok {
 		t.Fatal("a regular file was adopted as the listening socket")
@@ -113,9 +125,6 @@ func TestSomethingThatIsNotASocketIsRefused(t *testing.T) {
 func TestDescriptorsForSomethingElseAreKeptNotClosed(t *testing.T) {
 	// The services' pty masters come back through the same door. A function whose job is the
 	// socket must not decide their fate - it hands them on.
-	t.Cleanup(func() { clearPendingFDs() })
-	clearPendingFDs()
-
 	ln, path := listenSomewhere(t)
 	other, err := os.CreateTemp("", "pty")
 	if err != nil {
@@ -131,6 +140,7 @@ func TestDescriptorsForSomethingElseAreKeptNotClosed(t *testing.T) {
 	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
 	t.Setenv("LISTEN_FDS", "2")
 	t.Setenv("LISTEN_FDNAMES", socketFDName+":shell-99")
+	freshCollection(t)
 
 	got, ok := adoptListener(path, quietLogger())
 	if !ok {
@@ -149,8 +159,7 @@ func TestDescriptorsForSomethingElseAreKeptNotClosed(t *testing.T) {
 }
 
 func TestNothingLeftOverIsClosedAndDropped(t *testing.T) {
-	t.Cleanup(func() { clearPendingFDs() })
-	clearPendingFDs()
+	freshCollection(t)
 
 	f, err := os.CreateTemp("", "orphan")
 	if err != nil {
@@ -168,6 +177,7 @@ func TestNothingLeftOverIsClosedAndDropped(t *testing.T) {
 }
 
 func clearPendingFDs() {
+	collected = false
 	for k, v := range pendingFDs {
 		_ = v.Close()
 		delete(pendingFDs, k)

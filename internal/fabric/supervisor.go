@@ -370,6 +370,11 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		s.mu.Lock()
 		s.cur = p
 		s.mu.Unlock()
+		// Outside the lock, and before the status goes out: whoever is keeping this descriptor
+		// safe should have it before anything can act on the service being up.
+		if s.opts.OnRunning != nil {
+			s.opts.OnRunning(s.svc.Name, p.Pid(), p.PTY())
+		}
 		s.setStatus(func(st *Status) {
 			st.State = StateRunning
 			st.Pid = p.Pid()
@@ -392,11 +397,17 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 
 		exit := p.Wait()
 		ran := p.Ran()
+		endedPid := p.Pid()
 		p.Close()
 
 		s.mu.Lock()
 		s.cur = nil
 		s.mu.Unlock()
+		// Told before anything else, because this is what stops a descriptor for a process that
+		// no longer exists being kept for the next daemon to adopt.
+		if s.opts.OnEnded != nil {
+			s.opts.OnEnded(s.svc.Name, endedPid)
+		}
 
 		// Work out where we are going *before* publishing, so the snapshot a watcher sees is
 		// internally consistent. Publishing the exit first and the state afterwards opened a

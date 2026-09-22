@@ -87,7 +87,19 @@ func run(socket, state, logs string, verbose bool) error {
 			"why", cgroups.Why())
 	}
 
-	fab := fabric.NewFabric(reg, fabric.StartOptions{LogDir: logs, Cgroups: cgroups})
+	// Whatever systemd is holding for us, taken out of the environment once and held until
+	// something claims it: the services' terminals below, and the listening socket in Listen.
+	daemon.CollectStoredFDs()
+
+	fab := fabric.NewFabric(reg, fabric.StartOptions{
+		LogDir:  logs,
+		Cgroups: cgroups,
+		// Each service's terminal goes to systemd to hold, and is dropped when its process
+		// ends. This is what lets the *next* daemon pick the services up after a crash; see
+		// internal/daemon/ptystore.go and docs/USER_STORIES.md C3.
+		OnRunning: func(name string, pid int, pty *os.File) { daemon.StorePTY(log, name, pid, pty) },
+		OnEnded:   func(name string, pid int) { daemon.DropPTY(log, name, pid) },
+	})
 
 	// Did a predecessor hand its processes over? If so we are the *same process* it was - the
 	// exec kept the pid - and the ptys it opened are still open on the descriptors it names.
@@ -100,11 +112,21 @@ func run(socket, state, logs string, verbose bool) error {
 	}
 
 	var problems []error
-	if handover != nil {
+	switch recovered := daemon.RecoveredPTYs(log); {
+	case handover != nil:
 		log.Info("adopting processes from the previous daemon",
 			"count", len(handover.Processes), "pid", os.Getpid(), "was", handover.FromPid)
 		problems = fab.AdoptAll(handover.Processes)
-	} else {
+
+	case len(recovered) > 0:
+		// No handover, but systemd was holding terminals: this daemon is the replacement for
+		// one that died. The services never stopped - they were children of a process, not
+		// parts of it - and what was lost was the terminal they were talking to.
+		log.Info("recovering services from a daemon that did not shut down cleanly",
+			"count", len(recovered))
+		problems = fab.AdoptAll(recovered)
+
+	default:
 		// Bring back what was running before. Load reports every problem rather than the
 		// first: one unreadable service file must not stop the other nine, and must not
 		// disappear either.

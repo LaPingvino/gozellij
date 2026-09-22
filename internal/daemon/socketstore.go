@@ -29,23 +29,12 @@ const socketFDName = "gz-socket"
 // listener, or is one for a different path, is closed and ignored. Serving the wrong socket would
 // be a daemon nobody can reach, which is worse than a restart that drops a few connections.
 func adoptListener(path string, log *slog.Logger) (net.Listener, bool) {
-	stored := StoredFDs()
-	if len(stored) == 0 {
-		return nil, false
-	}
-	// Everything that is not the socket belongs to whoever adopts it next; closing it here would
-	// be this function deciding the fate of a service's pty.
-	f, ok := stored[socketFDName]
+	CollectStoredFDs()
+	f, ok := pendingFDs[socketFDName]
 	if !ok {
-		for name, other := range stored {
-			keepForLater(name, other)
-		}
 		return nil, false
 	}
-	delete(stored, socketFDName)
-	for name, other := range stored {
-		keepForLater(name, other)
-	}
+	claimFD(socketFDName)
 	defer f.Close()
 
 	ln, err := net.FileListener(f)
@@ -92,7 +81,45 @@ func storeListener(ln net.Listener, log *slog.Logger) {
 // everything that wants one has had its chance.
 var pendingFDs = map[string]*os.File{}
 
+// collected guards the one-shot read of the environment. sd_listen_fds is a once-per-process
+// thing - it clears LISTEN_FDS on the way out - so calling it twice would find nothing the second
+// time and quietly drop every descriptor systemd handed back.
+var collected bool
+
+// CollectStoredFDs reads what systemd handed over and holds it until something claims it.
+//
+// Called once, early, before anything that wants a descriptor. Separate from adopting because the
+// two claimants are in different places and start at different times: the fabric wants the
+// services' terminals before it loads anything, and the server wants the listening socket after
+// that.
+func CollectStoredFDs() {
+	if collected {
+		return
+	}
+	collected = true
+	for name, f := range StoredFDs() {
+		keepForLater(name, f)
+	}
+}
+
 func keepForLater(name string, f *os.File) { pendingFDs[name] = f }
+
+// claimFD says somebody has taken responsibility for a descriptor, so ReleaseUnadoptedFDs must not
+// close it. The file itself stays open and is now the claimant's.
+func claimFD(name string) { delete(pendingFDs, name) }
+
+// releaseFD closes one nobody wants and tells systemd to stop holding it.
+func releaseFD(log *slog.Logger, name string) {
+	f, ok := pendingFDs[name]
+	if !ok {
+		return
+	}
+	_ = f.Close()
+	delete(pendingFDs, name)
+	if err := RemoveStoredFD(name); err != nil && err != ErrNoNotifySocket {
+		log.Debug("could not tell systemd to drop it", "name", name, "err", err)
+	}
+}
 
 // PendingFDs is what came back from systemd and has not been adopted.
 func PendingFDs() map[string]*os.File {
