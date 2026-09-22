@@ -74,6 +74,15 @@ func smallCount(r *rand.Rand) int { return 1 + r.Intn(4) }
 
 // randomCSI produces a sequence from the set this emulator claims to implement, with parameters
 // near the edges of the screen - which is where an off-by-one lives.
+//
+// Two things the emulator does are deliberately not generated, because the oracle cannot judge
+// them and every stream containing one would report a disagreement that is not a bug. Selecting
+// the line-drawing character set: capture-pane reports the letter underneath rather than the glyph
+// drawn, so a terminal that applies it and one that ignores it record identically - and this
+// emulator stores the glyph, so it would record differently from both. Moving a tab stop: the
+// capture contains a literal tab and the recorder has to assume stops every eight columns, so the
+// recording puts the text where the stops were not. Both are checked in the emulator's own tests
+// and on a real screen instead.
 func randomCSI(r *rand.Rand, cols, rows int) string {
 	arg := func(limit int) int {
 		switch r.Intn(5) {
@@ -87,7 +96,7 @@ func randomCSI(r *rand.Rand, cols, rows int) string {
 			return 1 + r.Intn(limit)
 		}
 	}
-	switch r.Intn(16) {
+	switch r.Intn(20) {
 	case 0:
 		return fmt.Sprintf("\x1b[%d;%dH", arg(rows), arg(cols))
 	case 1:
@@ -119,6 +128,14 @@ func randomCSI(r *rand.Rand, cols, rows int) string {
 		return fmt.Sprintf("\x1b[%dS", 1+r.Intn(3))
 	case 14:
 		return fmt.Sprintf("\x1b[%dm", []int{0, 1, 4, 7, 31, 32, 44, 94, 39, 49}[r.Intn(10)])
+	case 15:
+		return fmt.Sprintf("\x1b[%dE", arg(rows)) // to the start of a line below
+	case 16:
+		return fmt.Sprintf("\x1b[%dF", arg(rows)) // to the start of a line above
+	case 17:
+		return fmt.Sprintf("\x1b[%dd", arg(rows)) // to a row, keeping the column
+	case 18:
+		return fmt.Sprintf("\x1b[%dG", arg(cols)) // to a column, keeping the row
 	default:
 		return "\x1b7" // save cursor; the restore comes from another draw of the dice
 	}

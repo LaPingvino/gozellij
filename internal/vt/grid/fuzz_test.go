@@ -85,7 +85,53 @@ func knownDivergence(input []byte) bool {
 			return true
 		}
 	}
-	return setsRegion(input) && shiftsLines(input)
+	if highByteInCSI(input) {
+		return true
+	}
+	if setsRegion(input) && shiftsLines(input) {
+		return true
+	}
+	// A tab and an insert or delete of characters in the same stream. Measured: `\t\b\e[@i`
+	// leaves tmux with an empty row and the cursor at home - the whole thing gone - while the
+	// same insert at an ordinary column works perfectly. tmux's grid evidently stores something
+	// for the cells a tab skipped that insert-character mishandles, and this emulator inserts a
+	// blank and writes the character, which is coherent.
+	return hasTab(input) && shiftsChars(input)
+}
+
+// highByteInCSI spots the other half of the escape-plus-high-byte divergence.
+//
+// `\e[\x9e9` leaves tmux with an empty screen: a C1 byte inside a sequence starts something it
+// never finds the end of, and everything after it is swallowed. Same hazard as the ESC form - one
+// garbled byte blanking a pane and keeping it blank - and the same answer: this emulator abandons
+// the sequence and carries on.
+func highByteInCSI(input []byte) bool {
+	for i := 0; i+2 < len(input); i++ {
+		if input[i] != 0x1b || input[i+1] != '[' {
+			continue
+		}
+		for j := i + 2; j < len(input); j++ {
+			if c := input[j]; c >= 0x80 {
+				return true
+			} else if c >= 0x40 && c <= 0x7e {
+				break
+			}
+		}
+	}
+	return false
+}
+
+func hasTab(input []byte) bool {
+	for _, c := range input {
+		if c == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+func shiftsChars(input []byte) bool {
+	return hasFinal(input, '@') || hasFinal(input, 'P')
 }
 
 // setsRegion and shiftsLines spot the second known divergence: inserting or deleting lines with
