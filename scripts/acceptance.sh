@@ -702,6 +702,34 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # ----------------------------------------------------- the set that draws boxes has to draw
+    #
+    # A program selects the DEC line-drawing set and sends "lqqqk", which is the top of a box and
+    # not five letters. ncurses uses it whenever the terminal description says to. Ignoring it puts
+    # scattered letters where a person expects a frame.
+    #
+    # Checked on the screen rather than in the corpus, because the corpus cannot see it: tmux's
+    # capture-pane reports the underlying letter whether or not the set was applied, so a recording
+    # of a terminal that draws boxes and one that does not are identical.
+    only
+    "$gz" add boxy -start -- sh -c 'printf "\033(0lqqqk\033(B\r\n\033(0mqqqj\033(B\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 20 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render boxy'"
+    sleep 3
+
+    if [ "$(pane | sed -n '1p')" = "┌───┐" ] && [ "$(pane | sed -n '2p')" = "└───┘" ]; then
+        ok "the line-drawing set draws lines, not letters"
+    else
+        bad "the box came out as [$(pane | sed -n '1p')]"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm boxy >/dev/null 2>&1
+
     # ------------------------------------------- a program that asks the terminal gets an answer
     #
     # A byte pipe gets this for free: the query reaches the user's real terminal and the reply

@@ -21,6 +21,8 @@ type parser struct {
 	utf8   []byte
 	// oscBuf collects an operating-system command until its terminator.
 	oscBuf []byte
+	// charsetSlot is which of G0 and G1 the sequence being parsed is about.
+	charsetSlot int
 	// invalid marks bytes that turned out not to be a character. The replacement is drawn at the
 	// next opportunity rather than immediately, so that an escape sequence arriving in between is
 	// obeyed first - see the comment where it is set.
@@ -42,6 +44,7 @@ const (
 	escape
 	csi
 	osc
+	charsetSelect
 )
 
 func (p *parser) feed(t *Term, b []byte) {
@@ -56,6 +59,9 @@ func (p *parser) feed(t *Term, b []byte) {
 			p.csi(t, c)
 		case osc:
 			p.osc(t, c)
+		case charsetSelect:
+			t.selectCharset(p.charsetSlot, c)
+			p.state = ground
 		}
 	}
 }
@@ -94,6 +100,11 @@ func (p *parser) ground(t *Term, b []byte, i int) int {
 	}
 
 	if c < 0x80 {
+		if glyph, ok := t.mapRune(rune(c)); ok {
+			// A character set is in force and this byte means something else in it.
+			t.putString(glyph, vt.StringWidth(glyph))
+			return 0
+		}
 		t.put(rune(c), vt.RuneWidth(rune(c)))
 		return 0
 	}
@@ -181,6 +192,10 @@ func (p *parser) control(t *Term, c byte) bool {
 		}
 		next := (t.cur.Col/8 + 1) * 8
 		t.cur.Col = min(next, t.cols-1)
+	case c == 0x0e:
+		t.shiftTo(1) // shift out: G1 is in use
+	case c == 0x0f:
+		t.shiftTo(0) // shift in: back to G0
 	case c == 0x07:
 		// Bell: nothing to draw.
 	case c < 0x20 || c == 0x7f:
@@ -238,10 +253,17 @@ func (p *parser) escape(t *Term, c byte) {
 	case 'c': // reset
 		*t = *New(t.cols, t.rows)
 		p.state = ground
+	case '(', ')':
+		// Which character set G0 or G1 holds. The byte after this says which.
+		p.charsetSlot = 0
+		if c == ')' {
+			p.charsetSlot = 1
+		}
+		p.state = charsetSelect
 	default:
-		// Intermediate bytes of a sequence we do not implement - charset selection, mostly.
-		// Swallowing the final byte rather than printing it is the difference between ignoring
-		// a sequence and drawing "(B" in the corner of the screen.
+		// Intermediate bytes of a sequence we do not implement. Swallowing the final byte rather
+		// than printing it is the difference between ignoring a sequence and drawing "(B" in the
+		// corner of the screen.
 		if c >= 0x20 && c <= 0x2f {
 			return
 		}

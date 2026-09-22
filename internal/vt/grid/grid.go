@@ -88,6 +88,11 @@ type Term struct {
 	// and is not answered waits.
 	replies []byte
 
+	// g0 and g1 are the two character sets a program can select between, and active says which is
+	// in use. See charset.go: this is what turns "lqqqk" into the top of a box.
+	g0, g1 charset
+	active int
+
 	// history is what has scrolled off the top of the primary screen, oldest first.
 	history []histLine
 	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
@@ -275,6 +280,14 @@ func (t *Term) put(r rune, width int) {
 		t.combine(r)
 		return
 	}
+	t.putString(string(r), width)
+}
+
+// putString writes one grapheme at the cursor and advances.
+//
+// A string rather than a rune because a cell can hold something that is not one: a character
+// translated through the line-drawing set, or a letter with a combining mark attached later.
+func (t *Term) putString(content string, width int) {
 	if t.pend {
 		t.wrap()
 	}
@@ -283,7 +296,7 @@ func (t *Term) put(r rune, width int) {
 		// line whole, which is what a terminal does and what half of one is not.
 		t.wrap()
 	}
-	t.cells[t.cur.Row][t.cur.Col] = vt.Cell{Content: string(r), Width: width, Style: t.style}
+	t.cells[t.cur.Row][t.cur.Col] = vt.Cell{Content: content, Width: width, Style: t.style}
 	if end := t.cur.Col + width; end > t.used[t.cur.Row] {
 		t.used[t.cur.Row] = end
 	}
