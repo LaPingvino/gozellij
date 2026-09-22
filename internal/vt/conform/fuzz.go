@@ -60,6 +60,18 @@ func randomText(r *rand.Rand) string {
 	return b.String()
 }
 
+// smallCount is a count for inserting or deleting characters, kept well inside the width.
+//
+// Deliberately not near the edge, where the other parameters are aimed, and the reason is measured
+// rather than cautious. On an eight-column row with the cursor at column two, tmux inserts one and
+// three characters correctly, turns six into "A CDEFGB" - a rotation of the row, not a shift of
+// anything - and ignores seven or more entirely. There is no rule there to find, so a generator
+// that keeps producing those counts reports the same non-answer instead of finding something else.
+// Insert-line behaves the same way and is skipped by knownDivergence for the same reason.
+//
+// This emulator shifts what fits and blanks the rest, at any count.
+func smallCount(r *rand.Rand) int { return 1 + r.Intn(4) }
+
 // randomCSI produces a sequence from the set this emulator claims to implement, with parameters
 // near the edges of the screen - which is where an off-by-one lives.
 func randomCSI(r *rand.Rand, cols, rows int) string {
@@ -95,9 +107,9 @@ func randomCSI(r *rand.Rand, cols, rows int) string {
 	case 8:
 		return fmt.Sprintf("\x1b[%dM", arg(rows))
 	case 9:
-		return fmt.Sprintf("\x1b[%dP", arg(cols))
+		return fmt.Sprintf("\x1b[%dP", smallCount(r))
 	case 10:
-		return fmt.Sprintf("\x1b[%d@", arg(cols))
+		return fmt.Sprintf("\x1b[%d@", smallCount(r))
 	case 11:
 		return fmt.Sprintf("\x1b[%dX", arg(cols))
 	case 12:
