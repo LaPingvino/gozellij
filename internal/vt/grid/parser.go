@@ -308,6 +308,12 @@ func (p *parser) dispatch(t *Term, final byte) {
 						t.cur = t.altSaved
 						t.pend = false
 					}
+				case 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004:
+					// Not ours to act on: mouse reporting, its encoding, focus events and
+					// bracketed paste all belong to the terminal a person is looking at. Kept so
+					// that whatever is drawing this grid can put that terminal into the same
+					// state; a byte pipe gets this for free by passing the bytes along.
+					t.setMode(n, set)
 				case 1049:
 					// The one everything actually uses: save the cursor, switch, clear. vim,
 					// less, htop and top all begin with this and end with its opposite, which is

@@ -10,6 +10,7 @@ import (
 
 	"github.com/LaPingvino/gozellij/internal/status"
 	"github.com/LaPingvino/gozellij/internal/vt"
+	"github.com/LaPingvino/gozellij/internal/vt/grid"
 	"github.com/LaPingvino/gozellij/internal/vt/layout"
 	"github.com/LaPingvino/gozellij/internal/vt/render"
 )
@@ -45,6 +46,13 @@ type renderedScreen struct {
 	// code 1" was being written to a screen that erased it before anybody could read it.
 	message string
 	said    time.Time
+
+	// applied is what the real terminal has been put into: mouse reporting, bracketed paste and
+	// focus events, as asked for by whichever pane has the keyboard. A byte pipe passes those
+	// sequences straight through and gets this for free; a client that interprets them has to
+	// hand them on deliberately, and not doing it is how pasting into vim breaks in a mode that
+	// otherwise looks right.
+	applied map[int]bool
 
 	// suspended stops painting while something else owns the screen - the service picker, which
 	// draws a menu and waits for a keystroke. Without it the repaint that keeps the clock moving
@@ -142,6 +150,7 @@ func (s *renderedScreen) Close() error {
 	// Clear the status row on the way out. What the panes drew can stay - it is output, and a
 	// terminal keeps output - but a status bar left along the bottom says gozellij is still here
 	// when it is not, and the next shell prompt appears above it.
+	s.releaseModes()
 	var b strings.Builder
 	b.WriteString("\x1b[0m")
 	if s.reserved > 0 && s.rows > 0 {
@@ -247,6 +256,11 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	for i, p := range panes {
 		ps = append(ps, layout.Pane{Rect: p.Rect(), Term: p.Grid(), Focused: i == focus})
 	}
+	// The focused pane's modes, because they are about the keyboard and the mouse and those go to
+	// one pane at a time.
+	if focus < len(panes) {
+		s.applyModes(panes[focus].Modes())
+	}
 	frame := layout.Compose(s.cols, s.rows, ps)
 	if s.reserved > 0 && s.line != nil {
 		text := s.line(s.cols)
@@ -275,6 +289,52 @@ type layoutPane interface {
 	Rect() layout.Rect
 	Grid() vt.Grid
 	Service() string
+	// Modes are the terminal-level modes this pane's program has asked for.
+	Modes() map[int]bool
+}
+
+// applyModes puts the real terminal into the state a pane asked for, changing only what differs.
+//
+// Only the difference, because these sequences are not free: a terminal that is told to enable
+// mouse reporting on every repaint is being told several times a second.
+func (s *renderedScreen) applyModes(want map[int]bool) {
+	if s.applied == nil {
+		s.applied = make(map[int]bool, len(grid.PassthroughModes))
+	}
+	var b strings.Builder
+	for _, m := range grid.PassthroughModes {
+		on := want[m]
+		if on == s.applied[m] {
+			continue
+		}
+		verb := "l"
+		if on {
+			verb = "h"
+		}
+		fmt.Fprintf(&b, "\x1b[?%d%s", m, verb)
+		s.applied[m] = on
+	}
+	if b.Len() > 0 {
+		_, _ = io.WriteString(s.out, b.String())
+	}
+}
+
+// releaseModes puts back everything this client switched on.
+//
+// On the way out, always. Leaving mouse reporting enabled after a detach means the user's own
+// shell starts receiving escape sequences whenever they click, which is the kind of mess that
+// outlives the program that caused it.
+func (s *renderedScreen) releaseModes() {
+	var b strings.Builder
+	for m, on := range s.applied {
+		if on {
+			fmt.Fprintf(&b, "\x1b[?%dl", m)
+			s.applied[m] = false
+		}
+	}
+	if b.Len() > 0 {
+		_, _ = io.WriteString(s.out, b.String())
+	}
 }
 
 func paneMarker(panes []layoutPane, focus int) string {

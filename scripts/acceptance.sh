@@ -702,6 +702,45 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pika pikb pikc >/dev/null 2>&1
 
+    # --------------------------------- mouse and paste modes have to reach the real terminal
+    #
+    # A byte pipe passes these through for free. A client that interprets the output has to hand
+    # them on deliberately, and until it did, a rendered attach silently dropped every one: mouse
+    # clicks did nothing and pasting into an editor misbehaved, on a screen that otherwise looked
+    # perfect.
+    #
+    # This check reads the bytes the client writes rather than the screen, because none of it is
+    # visible on the screen - which is exactly why it was missing.
+    only
+    "$gz" add moder -start -- sh -c 'printf "\033[?2004h\033[?1000hMODES-ON\r\n"; sleep 60' >/dev/null 2>&1
+    "$gz" add noder -start -- sh -c 'printf "NO-MODES\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render moder > $home/modes.bin'"
+    sleep 3
+
+    if grep -q "$(printf '\033')\[?2004h" "$home/modes.bin" && grep -q "$(printf '\033')\[?1000h" "$home/modes.bin"; then
+        ok "a rendered attach passes bracketed paste and mouse reporting to the terminal"
+    else
+        bad "the modes never reached the terminal"
+    fi
+
+    # And withdrawn when the keyboard moves to a pane that did not ask for them: they are about
+    # the mouse and the keyboard, and those go to one pane at a time.
+    tmux -L "$tmuxSock" send-keys C-] 'n'
+    sleep 3
+    if grep -q "$(printf '\033')\[?2004l" "$home/modes.bin" && grep -q "$(printf '\033')\[?1000l" "$home/modes.bin"; then
+        ok "and takes them back when the focused service does not want them"
+    else
+        bad "the modes were left switched on after switching service"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm moder noder >/dev/null 2>&1
+
     # ------------------------------------------------- a split that stacks instead of splitting
     #
     # Three panes in columns on an eighty-column terminal give twenty-six each, which is not a pane

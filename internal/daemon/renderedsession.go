@@ -44,6 +44,9 @@ func (p *livePane) Rect() layout.Rect { return p.rect }
 func (p *livePane) Grid() vt.Grid     { return p.term.Scrolled(p.scroll) }
 func (p *livePane) Service() string   { return p.service }
 
+// Modes are the terminal-level modes this pane's program has asked for.
+func (p *livePane) Modes() map[int]bool { return p.term.Modes() }
+
 // paneEvent is something a pane's connection had to say.
 type paneEvent struct {
 	pane     *livePane

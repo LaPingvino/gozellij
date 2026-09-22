@@ -70,6 +70,14 @@ type Term struct {
 	// grid still has to be reflowed when that program exits.
 	altPending bool
 
+	// modes are the terminal-level modes a program has asked for: mouse reporting, bracketed
+	// paste, focus events. Nothing here acts on them - they belong to whatever terminal is finally
+	// showing this screen, and are kept so that a multiplexer painting the screen can put the real
+	// terminal into the same state. A byte pipe passes them through for free; owning the grid
+	// means owning this too, and not doing it is how pasting into vim breaks in a mode that
+	// otherwise looks right.
+	modes map[int]bool
+
 	// history is what has scrolled off the top of the primary screen, oldest first.
 	history []histLine
 	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
@@ -479,6 +487,37 @@ func (t *Term) moveTo(row, col int) {
 	t.cur.Row = clamp(row, 0, t.rows-1)
 	t.cur.Col = clamp(col, 0, t.cols-1)
 	t.pend = false
+}
+
+// PassthroughModes are the private modes a grid keeps for whoever is drawing it.
+//
+// A list rather than everything, because most private modes are the emulator's own business -
+// DECTCEM and the alternate screen are handled here and must not also be handed on. These are the
+// ones that only mean something to the terminal a person is actually looking at.
+var PassthroughModes = []int{
+	1000, 1002, 1003, // mouse reporting: clicks, drags, all motion
+	1005, 1006, 1015, // how those reports are encoded
+	1004, // focus in and out
+	2004, // bracketed paste
+}
+
+// Modes returns the terminal-level modes currently asked for, so a renderer can match them.
+func (t *Term) Modes() map[int]bool {
+	out := make(map[int]bool, len(t.modes))
+	for m, on := range t.modes {
+		if on {
+			out[m] = true
+		}
+	}
+	return out
+}
+
+// setMode records a terminal-level mode.
+func (t *Term) setMode(n int, on bool) {
+	if t.modes == nil {
+		t.modes = make(map[int]bool, 4)
+	}
+	t.modes[n] = on
 }
 
 func (t *Term) eraseInRow(row, from, to int) {
