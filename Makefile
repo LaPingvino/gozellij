@@ -36,10 +36,16 @@ fmt:
 acceptance:
 	bash scripts/acceptance.sh
 
-# fdstore checks that the daemon keeps its listening socket across a crash, against a real systemd
-# user manager. Deliberately not in `check` and not in `acceptance`: that script runs the daemon
-# itself under `env -i` with no service manager anywhere, which is how TERM=dumb was found, and
-# this one needs the opposite. It is a no-op with nothing to say on a machine without systemd.
+# fdstore checks what survives a daemon crash, against a real systemd user manager: the listening
+# socket, the services and their pids, the terminals they are talking through, and the person who
+# was attached when it happened.
+#
+# Its own script rather than part of `acceptance`, because that one runs the daemon under `env -i`
+# with no service manager anywhere - on purpose, it is how TERM=dumb was found - and this needs the
+# opposite. Out of `check` for a different reason, and worth being clear about which: not because
+# it is unreliable, but because it starts and kills transient units in the user's own systemd, and
+# a suite that is run reflexively should not have side effects outside the directory it is run in.
+# It is a no-op with nothing to say on a machine without systemd.
 fdstore:
 	bash scripts/fdstore.sh
 

@@ -15,6 +15,7 @@ set -u
 repo=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 unit="gozellij-fdstore-$$"
+tmuxSock="gozellij-fdstore-tmux-$$"
 pass=0
 fail=0
 
@@ -26,6 +27,7 @@ cleanup() {
     systemctl --user stop "$unit" 2>/dev/null
     systemctl --user clean --what=fdstore "$unit" 2>/dev/null
     systemctl --user reset-failed "$unit" 2>/dev/null
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -203,6 +205,57 @@ else
     ok "a recovered service can still be stopped"
 fi
 "$gz" rm survivor >/dev/null 2>&1
+
+# ------------------------------------- somebody is attached when the daemon dies
+#
+# The scenario this is all actually for. You are in an ssh session, attached to your shell, and the
+# daemon hits a bug. Everything above says the *process* survives; this says the person does.
+#
+# The client's connection dies with the daemon, so it has to notice, wait for the replacement and
+# attach again - to the same shell, which has been running the whole time and still knows what you
+# typed before it happened.
+say
+"$gz" add sticky -start -restart always -- sh -c 'PS1=""; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+sleep 1
+tmux -L "$tmuxSock" kill-server 2>/dev/null
+tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+    -e GOZELLIJ_RUNTIME_DIR="$work/run" -e GOZELLIJ_STATE_DIR="$work/state" -e HOME="$work/home" \
+    -e TERM=xterm-256color \
+    "sh -c 'stty -echo; exec $work/bin/gozellij attach sticky'" 2>/dev/null
+sleep 2
+# Something only this shell knows, set before the crash.
+tmux -L "$tmuxSock" send-keys 'BEFORE=the-same-shell' Enter
+sleep 1
+sticky_pid=$("$gz" status sticky 2>/dev/null | awk '/^pid:/{print $2}')
+
+main=$(systemctl --user show "$unit" -p MainPID --value)
+kill -9 "$main" 2>/dev/null
+for _ in $(seq 40); do
+    now=$(systemctl --user show "$unit" -p MainPID --value)
+    [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$main" ] && break
+    sleep 0.25
+done
+# The reattach window is generous on purpose; give the client time to use it.
+sleep 6
+
+if [ "$($gz status sticky 2>/dev/null | awk '/^pid:/{print $2}')" = "$sticky_pid" ]; then
+    ok "the shell somebody was attached to kept its pid"
+else
+    bad "the shell was replaced: $sticky_pid then $($gz status sticky 2>/dev/null | awk '/^pid:/{print $2}')"
+fi
+
+# The client has to be back, and talking to the same shell: the variable is only set in the
+# process that was there before the crash.
+tmux -L "$tmuxSock" send-keys 'echo STILL-HERE-$BEFORE' Enter
+sleep 3
+if tmux -L "$tmuxSock" capture-pane -p 2>/dev/null | grep -q 'STILL-HERE-the-same-shell'; then
+    ok "and the client reattached to it by itself, with what was typed before the crash still set"
+else
+    bad "the client is not back on the same shell: $(tmux -L "$tmuxSock" capture-pane -p 2>/dev/null | tail -3 | tr '\n' '|')"
+fi
+
+tmux -L "$tmuxSock" kill-server 2>/dev/null
+"$gz" rm sticky >/dev/null 2>&1
 
 # ------------------------------------------- the store must not fill up with terminals of the dead
 #
