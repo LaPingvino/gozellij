@@ -10,14 +10,16 @@
 // slot, one scrolling region, both shared with the service) are what owning a grid fixes.
 //
 // What it does not do yet, said here rather than discovered later: no grapheme clustering beyond
-// combining marks, no tab stops other than every eight columns, no charset selection, no mouse
-// reporting, no bracketed paste, and nothing is done with the title. The corpus says exactly which
+// combining marks, and no scrollback search or selection - the grid keeps the lines, nothing reads
+// them back except a renderer. The corpus says exactly which
 // real-program cases that costs, which at the time of writing is none of them - meaning the gap is
 // in the corpus as much as in the emulator.
 //
 // What it does do, each with cases behind it: the grid and the cursor, wrapping with a deferred
 // last column, scrolling regions, erase and insert/delete, the alternate screen, scrollback,
-// styles, and reflow on resize. Reflow is the one with no oracle behind it, because tmux does not
+// styles, reflow on resize, the line-drawing character set, tab stops a program has moved, the
+// modes and title that belong to whatever terminal is showing the screen, and the answers a
+// program expects when it asks the terminal where the cursor is. Reflow is the one with no oracle behind it, because tmux does not
 // reflow at all; reflow.go says so.
 package grid
 
@@ -93,6 +95,10 @@ type Term struct {
 	g0, g1 charset
 	active int
 
+	// tabs marks the columns a tab jumps to. Every eighth by default, which is what every
+	// terminal ships with, but a program may set and clear them.
+	tabs []bool
+
 	// history is what has scrolled off the top of the primary screen, oldest first.
 	history []histLine
 	// limit is how many lines of it are kept. Zero would mean a multiplexer that loses your
@@ -132,7 +138,49 @@ func New(cols, rows int) *Term {
 	}
 	t.wrapped = make([]bool, rows)
 	t.used = make([]int, rows)
+	t.tabs = defaultTabs(cols)
 	return t
+}
+
+// defaultTabs is a stop every eight columns, the setting every terminal starts with.
+func defaultTabs(cols int) []bool {
+	tabs := make([]bool, cols)
+	for c := 8; c < cols; c += 8 {
+		tabs[c] = true
+	}
+	return tabs
+}
+
+// nextTab is the column a tab moves to: the next stop, or the last column when there is none.
+//
+// The last column rather than staying put, measured against tmux: with every stop cleared, a tab
+// from column 1 on a twenty-column screen lands on column 19.
+func (t *Term) nextTab() int {
+	for c := t.cur.Col + 1; c < t.cols; c++ {
+		if c < len(t.tabs) && t.tabs[c] {
+			return c
+		}
+	}
+	return t.cols - 1
+}
+
+// setTab and clearTabs are HTS and TBC: a stop at the cursor, one cleared, or all of them.
+func (t *Term) setTab() {
+	if t.cur.Col < len(t.tabs) {
+		t.tabs[t.cur.Col] = true
+	}
+}
+
+func (t *Term) clearTabs(all bool) {
+	if all {
+		for i := range t.tabs {
+			t.tabs[i] = false
+		}
+		return
+	}
+	if t.cur.Col < len(t.tabs) {
+		t.tabs[t.cur.Col] = false
+	}
 }
 
 func blankRow(cols int) []vt.Cell {
@@ -250,6 +298,9 @@ func (t *Term) Resize(cols, rows int) error {
 		// it now would re-break a screen the user cannot see, twice if they resize again.
 		t.cells = resizeCells(t.cells, cols, rows)
 		t.wrapped, t.used = resizeFlags(t.wrapped, t.used, rows)
+		// Stops go back to every eighth column: one set for the old width means nothing at the
+		// new one, and a terminal resets them.
+		t.tabs = defaultTabs(cols)
 		// The hidden primary buffer is deliberately left at its old width. Truncating it here
 		// destroyed every character past the new margin before reflow could see them, so leaving
 		// vim in a narrowed window returned a shell screen with the middle of its lines cut out.

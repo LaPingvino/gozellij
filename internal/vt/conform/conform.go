@@ -30,13 +30,18 @@
 // for ever. A list of what a harness does not check is worth keeping for that reason, and worth
 // treating as a list of unexamined behaviour rather than a list of tests to write.
 //
-// What remains genuinely unchecked anywhere: tab stops other than every eighth column, which no
-// case sets and the emulator does not implement.
+// Nothing is on that list now. Everything that was on it turned out to be worth checking, and four
+// of the six items turned out to be behaviour that was missing rather than untested: mouse
+// reporting, bracketed paste, the window title and the answers a program expects when it asks the
+// terminal a question - that last one a hang rather than a cosmetic difference.
 //
-// Character sets came off this list by being implemented and checked on a real screen instead -
-// the corpus is blind to them, because capture-pane reports the letter underneath rather than the
-// glyph. That is worth noticing as a pattern: when the oracle cannot see something, the answer has
-// been to check it where a person would look, not to leave it unchecked.
+// Two of the six the oracle is blind to and always will be, and they are checked where a person
+// would look instead: character sets, because capture-pane reports the letter underneath rather
+// than the drawn glyph, and moved tab stops, because it emits a literal tab and says nothing about
+// where the cursor jumped to. Every case in this corpus uses the default stops for that reason.
+//
+// The pattern is worth keeping when the next such list is written: when the oracle cannot see
+// something, check it where a person would look rather than leaving it unchecked.
 //
 // Replies to what a program asks the terminal were on that list until a check was written for
 // them, and they turned out not to be implemented at all - a program asking where the cursor is

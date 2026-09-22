@@ -253,6 +253,12 @@ func waitFor(tmux, sock, channel string) error {
 
 // expandTabs replaces a captured tab with the blanks it stands for.
 //
+// Assuming a stop every eight columns, which is all it can do: capture-pane emits a literal tab
+// where the cursor jumped and says nothing about where it jumped to. A case that moves a tab stop
+// therefore cannot be recorded correctly - the recording puts the text at the default stop, which
+// is not where the terminal put it - so those cases live in the emulator's own tests instead. Every
+// case in the corpus uses the default stops.
+//
 // capture-pane re-emits a tab where the cursor jumped rather than the blank cells the screen
 // actually holds, so a recording of a tab compared as a literal tab character against an emulator
 // that (correctly) holds spaces. The screen is what is being compared, and on the screen those

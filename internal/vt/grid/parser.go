@@ -181,17 +181,13 @@ func (p *parser) control(t *Term, c byte) bool {
 			t.cur.Col--
 		}
 	case c == '\t':
-		// Tab stops every eight columns, which is the default every terminal ships with. Custom
-		// stops (HTS/TBC) are not implemented, and the package doc says so.
-		//
 		// A tab does nothing at all while a wrap is pending: the cursor is already past the last
 		// column and the next character belongs on the next line. Clearing the pending flag here,
 		// which this used to do, made that character land at the right margin instead of wrapping.
 		if t.pend {
 			return true
 		}
-		next := (t.cur.Col/8 + 1) * 8
-		t.cur.Col = min(next, t.cols-1)
+		t.cur.Col = t.nextTab()
 	case c == 0x0e:
 		t.shiftTo(1) // shift out: G1 is in use
 	case c == 0x0f:
@@ -249,6 +245,9 @@ func (p *parser) escape(t *Term, c byte) {
 	case 'E': // next line
 		t.cur.Col = 0
 		t.lineFeed()
+		p.state = ground
+	case 'H': // a tab stop here
+		t.setTab()
 		p.state = ground
 	case 'c': // reset
 		*t = *New(t.cols, t.rows)
@@ -474,6 +473,8 @@ func (p *parser) dispatch(t *Term, final byte) {
 		// Primary: the same answer tmux gives, because programs are tested against it and this
 		// emulator is in the same class - a VT100 with an advanced video option.
 		t.reply("\x1b[?1;2;4c")
+	case 'g': // clear tab stops: this one, or all of them
+		t.clearTabs(arg(0, 0) == 3)
 	case 'q':
 		// DECSCUSR: the shape of the cursor, written `CSI Ps SP q`. The space is what tells it
 		// apart from other sequences ending in q, so the intermediate byte has to be checked -

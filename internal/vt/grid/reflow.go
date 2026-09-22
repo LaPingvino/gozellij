@@ -67,6 +67,9 @@ func (t *Term) reflowTo(cols, rows int) {
 	}
 
 	t.cols, t.rows = cols, rows
+	// Stops go back to every eighth column on a resize. A stop set for the old width means
+	// nothing at the new one, and a terminal resets them.
+	t.tabs = defaultTabs(cols)
 	t.cells = make([][]vt.Cell, rows)
 	t.wrapped = make([]bool, rows)
 	t.used = make([]int, rows)
