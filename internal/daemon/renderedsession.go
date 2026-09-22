@@ -173,41 +173,12 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			data, cmds, ended = nil, nil, nil
 
 		case ev := <-events:
-			if ev.message != "" {
-				note(ev.message)
-			}
-			if len(ev.data) > 0 {
-				_, _ = ev.pane.term.Write(ev.data)
-				if ev.pane.scroll > 0 {
-					// Output while somebody is reading back pushes the lines they are looking at
-					// further into the scrollback, so the offset has to grow with it or the view
-					// slides forward under them. Capped, so a pane that scrolls faster than it
-					// has history does not walk off the top.
-					ev.pane.scroll = min(ev.pane.scroll+countNewlines(ev.data), ev.pane.term.MaxScroll())
-				}
-				paint()
-			}
-			if ev.finished {
-				ev.pane.finished = true
-			}
-			if ev.gone && !ev.pane.finished {
-				// The connection went away without the service ending, which is what a daemon
-				// upgrade looks like from here. Reconnect this pane where it stands rather than
-				// ending the session: `gozellij upgrade` keeps every process running, and a split
-				// screen that has to be rebuilt afterwards makes that promise worth less than it
-				// sounds.
-				//
-				// Before this, a pane whose connection ended simply stopped updating and nothing
-				// said so: both halves of a split froze at the instant of the upgrade and stayed
-				// frozen, which looked exactly like two idle shells.
-				if err := reopenPane(socket, ev.pane); err != nil {
-					note(fmt.Sprintf("%s: %v", ev.pane.service, err))
-					ev.pane.finished = true
-				} else {
-					go readFrames(ev.pane, events)
-				}
-				paint()
-			}
+			// One event, then draw. Batching several before drawing was written here and then
+			// removed: it changed neither the time nor the bytes written (see the measurement in
+			// internal/vt/render), and an optimisation that cannot be shown to optimise anything
+			// is a claim with code attached.
+			applyEvent(socket, ev, events, note)
+			paint()
 			if allDone(panes) {
 				if ev.finished {
 					return outcomeFinished, nil
@@ -293,6 +264,43 @@ func openPane(socket, service string, screen *renderedScreen, count int) (*liveP
 		return nil, err
 	}
 	return &livePane{service: service, client: c, term: grid.New(cols, rows)}, nil
+}
+
+// applyEvent takes one thing a pane's connection said and does it, without drawing.
+//
+// Drawing is the caller's, once, after a whole batch: see the comment where these are gathered.
+func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string)) {
+	if ev.message != "" {
+		note(ev.message)
+	}
+	if len(ev.data) > 0 {
+		_, _ = ev.pane.term.Write(ev.data)
+		if ev.pane.scroll > 0 {
+			// Output while somebody is reading back pushes the lines they are looking at further
+			// into the scrollback, so the offset grows with it and the view stays still. Capped,
+			// so a pane that scrolls faster than it has history does not walk off the top.
+			ev.pane.scroll = min(ev.pane.scroll+countNewlines(ev.data), ev.pane.term.MaxScroll())
+		}
+	}
+	if ev.finished {
+		ev.pane.finished = true
+	}
+	if ev.gone && !ev.pane.finished {
+		// The connection went away without the service ending, which is what a daemon upgrade
+		// looks like from here. Reconnect this pane where it stands rather than ending the
+		// session: `gozellij upgrade` keeps every process running, and a split screen that has to
+		// be rebuilt afterwards makes that promise worth less than it sounds.
+		//
+		// Before this, a pane whose connection ended simply stopped updating and nothing said so:
+		// both halves of a split froze at the instant of the upgrade and stayed frozen, which
+		// looked exactly like two idle shells.
+		if err := reopenPane(socket, ev.pane); err != nil {
+			note(fmt.Sprintf("%s: %v", ev.pane.service, err))
+			ev.pane.finished = true
+		} else {
+			go readFrames(ev.pane, events)
+		}
+	}
 }
 
 // reopenPane reconnects a pane to its service after the connection went away.

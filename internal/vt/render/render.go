@@ -7,9 +7,19 @@
 // scrolling region to keep a row for itself - it simply does not draw the service there.
 //
 // What is drawn is a whole screen, every time. Damage tracking - redrawing only what changed - is
-// the obvious optimisation and is deliberately not here yet: it is also the obvious way to ship a
-// screen that is subtly stale, and there is no reason to take that risk before there is a pane to
-// measure it on.
+// the obvious optimisation and is deliberately not here, and there is now a measurement instead of
+// an intention.
+//
+// Twenty thousand lines poured into a pane take about 0.6-0.8s through the byte pipe and about
+// 1.3-2.3s rendered, on this machine, with enough variance between runs to swamp anything smaller.
+// So rendering costs roughly two to three times the byte pipe on a flood, and nothing at all that
+// a person would notice on a shell or an editor.
+//
+// The cost is not the number of repaints. Batching events so that a burst of output produced one
+// paint instead of several changed neither the time nor the bytes written - about 8-10 KB either
+// way for the whole flood, which is three or four whole-screen paints. Whatever the two-to-three
+// times is, it is not screens being drawn needlessly, and damage tracking would therefore not fix
+// it. That is worth knowing before writing it.
 package render
 
 import (
