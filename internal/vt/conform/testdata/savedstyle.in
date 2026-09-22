@@ -1,0 +1,8 @@
+# size 20x4
+# Saving and restoring the cursor carries the colour with it.
+#
+# A background is set, a character drawn, the cursor restored - which puts back the rendition that
+# was saved along with the position, not just the position - and then a byte that draws a
+# replacement. The replacement is in the restored style, not the one that was current when it
+# arrived. Found by the generator.
+\e[44mD\e8\x81

@@ -1,0 +1,7 @@
+# size 20x4
+# A control character between the ESC and the byte that names the sequence.
+#
+# It is executed where it appears and the escape is still waiting afterwards, so this is a
+# carriage return followed by ESC B and draws nothing at all. Found by the generator in three
+# bytes; this used to abandon the escape and print the B.
+\e\rB

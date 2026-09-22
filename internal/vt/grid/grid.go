@@ -41,12 +41,17 @@ type Term struct {
 	// knowing that inserts a space into the middle of a re-wrapped line.
 	used []int
 
-	cur    vt.Cursor
-	saved  vt.Cursor
-	style  vt.Style
-	pend   bool // the cursor is past the last column, waiting to wrap on the next character
-	top    int  // scrolling region, inclusive, 0-based
-	bottom int
+	cur   vt.Cursor
+	saved vt.Cursor
+	// savedStyle travels with the saved cursor. DECSC saves the graphic rendition as well as the
+	// position and DECRC puts both back, which is not a detail: a program that sets a colour,
+	// saves, draws elsewhere and restores expects to be drawing in the colour it saved, and a
+	// terminal that restores only the position leaves the rest of its output the wrong colour.
+	savedStyle vt.Style
+	style      vt.Style
+	pend       bool // the cursor is past the last column, waiting to wrap on the next character
+	top        int  // scrolling region, inclusive, 0-based
+	bottom     int
 
 	parser parser
 
@@ -410,6 +415,34 @@ func (t *Term) scrollDown(n int) {
 		t.cells[t.top] = blankRow(t.cols)
 		t.wrapped[t.top], t.used[t.top] = false, 0
 	}
+}
+
+// saveCursor and restoreCursor are DECSC and DECRC: the position, the pending wrap and the
+// current graphic rendition, together.
+func (t *Term) saveCursor() {
+	t.saved, t.savedStyle = t.cur, t.style
+}
+
+func (t *Term) restoreCursor() {
+	t.cur, t.style = t.saved, t.savedStyle
+	t.cur.Row = clamp(t.cur.Row, 0, t.rows-1)
+	t.cur.Col = clamp(t.cur.Col, 0, t.cols-1)
+	t.pend = false
+}
+
+// moveVertically moves the cursor up or down, bounded by the scrolling region.
+//
+// A cursor inside the region cannot be moved out of it by CUU or CUD: it stops at the margin. This
+// stopped at the edge of the screen instead, so `\e[;6r` followed by `\e[9B` landed two rows
+// below where a terminal puts it. A cursor that starts outside the region is bounded by the screen,
+// because the region is not its cage.
+func (t *Term) moveVertically(delta int) {
+	lo, hi := 0, t.rows-1
+	if t.cur.Row >= t.top && t.cur.Row <= t.bottom {
+		lo, hi = t.top, t.bottom
+	}
+	t.cur.Row = clamp(t.cur.Row+delta, lo, hi)
+	t.pend = false
 }
 
 func (t *Term) moveTo(row, col int) {

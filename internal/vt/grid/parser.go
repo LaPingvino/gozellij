@@ -184,6 +184,14 @@ func (p *parser) control(t *Term, c byte) bool {
 }
 
 func (p *parser) escape(t *Term, c byte) {
+	if c != 0x1b && c < 0x20 {
+		// A control character between the ESC and the byte that names the sequence is executed
+		// where it appears, and the sequence is still waiting afterwards. `\e\rB` is a carriage
+		// return and then ESC B, and draws nothing; this used to abandon the escape on the
+		// carriage return and print the B.
+		p.control(t, c)
+		return
+	}
 	switch c {
 	case '[':
 		p.state = csi
@@ -192,11 +200,10 @@ func (p *parser) escape(t *Term, c byte) {
 	case ']':
 		p.state = osc
 	case '7':
-		t.saved = t.cur
+		t.saveCursor()
 		p.state = ground
 	case '8':
-		t.cur = t.saved
-		t.pend = false
+		t.restoreCursor()
 		p.state = ground
 	case 'M': // reverse index
 		if t.cur.Row == t.top {
@@ -311,9 +318,9 @@ func (p *parser) dispatch(t *Term, final byte) {
 
 	switch final {
 	case 'A': // cursor up
-		t.moveTo(t.cur.Row-arg(0, 1), t.cur.Col)
+		t.moveVertically(-arg(0, 1))
 	case 'B': // cursor down
-		t.moveTo(t.cur.Row+arg(0, 1), t.cur.Col)
+		t.moveVertically(arg(0, 1))
 	case 'C': // cursor forward
 		t.moveTo(t.cur.Row, t.cur.Col+arg(0, 1))
 	case 'D': // cursor back
@@ -369,7 +376,7 @@ func (p *parser) dispatch(t *Term, final byte) {
 		// terminal discards the whole sequence. `\e[0;0r` looked like a request for the whole
 		// screen to this code, which set the region and homed the cursor - moving it for a
 		// sequence tmux throws away. `\e[r` with no parameters at all is still the reset.
-		if (len(ps) > 0 && ps[0] <= 0) || (len(ps) > 1 && ps[1] <= 0) {
+		if (len(ps) > 0 && ps[0] == 0) || (len(ps) > 1 && ps[1] == 0) {
 			return
 		}
 		top, bottom := arg(0, 1)-1, arg(1, t.rows)-1
@@ -385,10 +392,9 @@ func (p *parser) dispatch(t *Term, final byte) {
 		// cursor at the top of the screen on every detach - measured, in this project.
 		t.moveTo(0, 0)
 	case 's':
-		t.saved = t.cur
+		t.saveCursor()
 	case 'u':
-		t.cur = t.saved
-		t.pend = false
+		t.restoreCursor()
 	case 'm':
 		t.sgr(ps)
 	}
@@ -515,6 +521,13 @@ func (t *Term) sgr(ps []int) {
 	}
 }
 
+// params splits the numeric parameters of a sequence.
+//
+// An omitted parameter comes back as -1 rather than 0, because the two are not the same thing and
+// one sequence cares: DECSTBM treats an explicitly written zero as nonsense and discards the whole
+// sequence, while an omitted parameter means "the default". Conflating them made `\e[;6r` - a
+// perfectly ordinary request for a region ending at row six - be thrown away, which the generator
+// caught immediately after the zero rule was added.
 func params(s string) []int {
 	if s == "" {
 		return nil
@@ -522,7 +535,11 @@ func params(s string) []int {
 	fields := strings.Split(s, ";")
 	out := make([]int, 0, len(fields))
 	for _, f := range fields {
-		n, _ := strconv.Atoi(f) // an empty or malformed parameter is zero, as in a real terminal
+		if f == "" {
+			out = append(out, -1)
+			continue
+		}
+		n, _ := strconv.Atoi(f) // a malformed parameter is zero, as in a real terminal
 		out = append(out, n)
 	}
 	return out

@@ -1,0 +1,6 @@
+# size 20x8
+# Cursor movement is bounded by the scrolling region, not by the screen.
+#
+# A region over the first six rows, then a request to move nine rows down: the cursor stops at the
+# bottom margin. Found by the generator, which landed it two rows lower than a terminal does.
+\e[;6r\e[9BX
