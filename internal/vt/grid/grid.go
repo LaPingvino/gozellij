@@ -424,7 +424,13 @@ func (t *Term) saveCursor() {
 }
 
 func (t *Term) restoreCursor() {
+	// Visibility is not part of what DECSC saves, so restoring must not change it. Taking the
+	// whole saved cursor did: with nothing ever saved, the zero value has Visible false, so a
+	// lone `\e8` hid the cursor - which the corpus reported the first time cursor visibility was
+	// compared at all.
+	visible := t.cur.Visible
 	t.cur, t.style = t.saved, t.savedStyle
+	t.cur.Visible = visible
 	t.cur.Row = clamp(t.cur.Row, 0, t.rows-1)
 	t.cur.Col = clamp(t.cur.Col, 0, t.cols-1)
 	t.pend = false

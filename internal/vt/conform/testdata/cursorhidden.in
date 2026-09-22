@@ -1,0 +1,4 @@
+# size 16x3
+# Hiding and showing the cursor, which nothing compared until now: a program that hides it and an
+# emulator that does not leaves a block sitting on the screen.
+hidden\e[?25l

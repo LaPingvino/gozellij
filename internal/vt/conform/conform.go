@@ -18,10 +18,13 @@
 // style.go for the signature, and the note in diffStyles for the one thing no oracle of this kind
 // can see - a blank cell carrying only a foreground colour draws exactly like a plain space.
 //
-// Not compared: anything that is not on the screen. Cursor shape and visibility, the title, mouse
-// modes, bracketed paste. An emulator can get all of those wrong and pass every case here, and
-// that is written down rather than left to be discovered, because a harness that quietly checks
-// less than it appears to is worse than no harness.
+// Also cursor visibility, which was on the list below until a case was written for it and found a
+// bug in the first run: a lone restore-cursor was hiding it.
+//
+// Not compared: cursor shape, the title, mouse modes, bracketed paste. An emulator can get all of
+// those wrong and pass every case here, and that is written down rather than left to be
+// discovered, because a harness that quietly checks less than it appears to is worse than no
+// harness.
 //
 // # Two things the format has to decide, and does
 //
@@ -84,6 +87,10 @@ type Screen struct {
 	History   []string
 	CursorRow int
 	CursorCol int
+	// CursorHidden is DECTCEM: a program that hides the cursor and an emulator that does not
+	// leaves a block sitting on the user's screen, which is the kind of thing that is obvious in
+	// use and invisible to a comparison that only looks at characters.
+	CursorHidden bool
 
 	// cells is the grid laid out by column, when the screen came from an emulator rather than
 	// from a recording: cells[row][col] is what is drawn in that column, and a wide character's
@@ -111,7 +118,7 @@ type Screen struct {
 func ScreenOf(t vt.Grid) Screen {
 	cols, rows := t.Size()
 	cur := t.Cursor()
-	s := Screen{Cols: cols, Rows: rows, CursorRow: cur.Row, CursorCol: cur.Col}
+	s := Screen{Cols: cols, Rows: rows, CursorRow: cur.Row, CursorCol: cur.Col, CursorHidden: !cur.Visible}
 	if cur.Pending {
 		// A pending wrap is recorded the way tmux reports it: the column past the last one. The
 		// alternative was to throw the distinction away on the tmux side, which would have made
@@ -216,6 +223,13 @@ type Scrollbacker interface {
 	Scrollback() [][]vt.Cell
 }
 
+func shownOrHidden(hidden bool) string {
+	if hidden {
+		return "hidden"
+	}
+	return "shown"
+}
+
 // WithoutHistory is the same screen with its scrollback dropped.
 //
 // For comparing things that only ever describe a visible screen - a repaint, for instance. A
@@ -310,6 +324,10 @@ func Diff(want, got Screen) []Difference {
 		diffs = append(diffs, Difference{Row: -1, Col: -1, What: "cursor",
 			Want: fmt.Sprintf("%d,%d", want.CursorRow, want.CursorCol),
 			Got:  fmt.Sprintf("%d,%d", got.CursorRow, got.CursorCol)})
+	}
+	if want.CursorHidden != got.CursorHidden {
+		diffs = append(diffs, Difference{Row: -1, Col: -1, What: "cursor visibility",
+			Want: shownOrHidden(want.CursorHidden), Got: shownOrHidden(got.CursorHidden)})
 	}
 	return diffs
 }

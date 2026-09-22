@@ -1,0 +1,3 @@
+# size 16x3
+# Hidden and then shown again, so that a case exists for the state coming back.
+both\e[?25l\e[?25h

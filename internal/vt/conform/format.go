@@ -73,6 +73,11 @@ func Unescape(s string) ([]byte, error) {
 func (s Screen) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cols %d\nrows %d\ncursor %d %d\n", s.Cols, s.Rows, s.CursorRow, s.CursorCol)
+	if s.CursorHidden {
+		// Written only when it is hidden, so that every recording made before this existed still
+		// reads correctly and means what it meant.
+		b.WriteString("cursor hidden\n")
+	}
 	for _, l := range s.History {
 		l = escapeRow(l)
 		if l == "" {
@@ -114,6 +119,11 @@ func ParseScreen(text string) (Screen, error) {
 			s.Rows, err = strconv.Atoi(strings.TrimSpace(rest))
 			sawRows = true
 		case "cursor":
+			if strings.TrimSpace(rest) == "hidden" {
+				s.CursorHidden = true
+				sawCursor = true
+				continue
+			}
 			row, col, ok := strings.Cut(strings.TrimSpace(rest), " ")
 			if !ok {
 				err = fmt.Errorf("cursor takes a row and a column")

@@ -164,14 +164,15 @@ func Record(c Case) (Screen, error) {
 		return Screen{}, err
 	}
 
-	pos, err := tm("display", "-p", "#{cursor_y} #{cursor_x}")
+	pos, err := tm("display", "-p", "#{cursor_y} #{cursor_x} #{cursor_flag}")
 	if err != nil {
 		return Screen{}, err
 	}
-	row, col, ok := strings.Cut(strings.TrimSpace(pos), " ")
-	if !ok {
+	fields := strings.Fields(pos)
+	if len(fields) != 3 {
 		return Screen{}, fmt.Errorf("tmux reported the cursor as %q", pos)
 	}
+	row, col := fields[0], fields[1]
 	cols, rows := c.Cols, c.Rows
 	for _, st := range c.Steps {
 		if st.IsResize() {
@@ -185,6 +186,7 @@ func Record(c Case) (Screen, error) {
 	if s.CursorCol, err = strconv.Atoi(col); err != nil {
 		return Screen{}, fmt.Errorf("cursor column %q: %w", col, err)
 	}
+	s.CursorHidden = fields[2] == "0"
 
 	// capture-pane drops rows that are entirely empty at the bottom, and trims each row's trailing
 	// spaces. The rows are padded back so that a recording always describes the whole screen; the
