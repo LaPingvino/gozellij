@@ -138,8 +138,21 @@ What is missing:
 - **A reason to think an unknown sequence is harmless.** Anything the emulator does not implement is
   dropped rather than passed on. For a byte pipe that question does not arise. This is now *visible*
   rather than silent - a pane that emits something unimplemented says so on the status line, once,
-  with the way back to the byte pipe - which turns it from a mystery into a limitation, but does not
-  make it harmless.
+  with the way back to the byte pipe - which turns it from a mystery into a limitation.
+
+  And the limitation has been measured rather than imagined. `internal/vt/grid/probe_test.go` runs
+  eleven real programs on a real pty and reports what each of them sends that this emulator does
+  not implement: bash, vim, nvim, less, htop, top, man, git, python3, nano, mc. They sent five
+  things between them. Four are implemented now - control strings read to their end instead of
+  drawn on the screen, application cursor keys and the keypad passed to the terminal, autowrap,
+  the title stack, insert mode - and eight of the eleven programs now report that everything they
+  sent is understood.
+
+  What is left is named rather than unknown: OSC 8 hyperlinks, which `man` emits and which are
+  lost; OSC 10 and 11, where `vim` asks the terminal what colour it is and gets no answer, so it
+  guesses; and the bodies of DCS strings, which are read and thrown away on purpose. Answering the
+  colour queries properly means asking the real terminal once at attach time rather than inventing
+  a reply, and that has not been done.
 - **The cost.** It was two to three times the byte pipe on a flood, and this entry said the reason
   was not the number of repaints. Counting them said otherwise: twenty thousand lines arrived as
   378 frames and drew 379 whole screens, which was 4.7 of the 5.9 seconds. The earlier experiment

@@ -148,6 +148,11 @@ that belong to the terminal rather than the grid are carried through to it - mou
 bracketed paste, the window title, the cursor shape - and the questions a program asks the terminal
 are answered, which a client that interprets the stream has to do itself or the program waits.
 
+The emulator's coverage is measured rather than assumed: `internal/vt/grid/probe_test.go` runs
+eleven real programs on a real pty and reports what each of them sends that the emulator does not
+implement. Eight of the eleven now report that all of it is understood, and the residue is named in
+`docs/REPLACING_GEZELLIJ.md`.
+
 A rendered attach comes back to the arrangement it left: the panes, the orientation and the
 weights are written to `$XDG_STATE_HOME/gozellij/layouts/<service>.json` after every change rather
 than on the way out, because the usual way a login multiplexer's client ends is the connection
