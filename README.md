@@ -150,6 +150,10 @@ to. Because gozellij owns the screen rather than borrowing it, the status line n
 terminal's cursor-save slot or a scrolling region - the two things it could not do properly from a
 byte pipe.
 
+The arrangement is remembered. Attach to the same service again - after a detach, or after your
+connection dropped - and the panes, their orientation and their sizes come back. It is kept in
+`$XDG_STATE_HOME/gozellij/layouts/<service>.json`, which you can read and edit.
+
 Painting the whole screen means your terminal's own scrollback stops filling up, so gozellij keeps
 2000 lines per pane and gives you `Ctrl-] b` back, `Ctrl-] f` forward and `Ctrl-] g` to return to
 the live screen.
