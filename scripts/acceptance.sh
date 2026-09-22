@@ -615,6 +615,49 @@ else
         bad "the split screen set a scrolling region: $region"
     fi
 
+    # ------------------------------------------ two shells, and typing into the right one
+    #
+    # The core of what a multiplexer does, and until now only the drawing was checked. A keystroke
+    # going to the wrong pane is the mistake that gets discovered by running something destructive
+    # in the wrong shell, so it is worth a check that uses real interactive shells rather than
+    # services that only print.
+    only
+    "$gz" add sh1 -start -- sh -c 'PS1="one$ "; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+    "$gz" add sh2 -start -- sh -c 'PS1="two$ "; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+    sleep 1
+    tmux -L "$tmuxSock" new-session -d -x 70 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e SHELL=/bin/sh -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render sh1'"
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 2
+    tmux -L "$tmuxSock" send-keys 'echo TYPED-RIGHT' Enter
+    sleep 2
+    tmux -L "$tmuxSock" send-keys C-] 'o'
+    sleep 1
+    tmux -L "$tmuxSock" send-keys 'echo TYPED-LEFT' Enter
+    sleep 2
+
+    # Each answer must be in its own pane, which is a statement about columns: the left one at
+    # column 0 and the right one past the seam. Checking that both strings appear somewhere would
+    # pass if every keystroke went to the same shell - and checking for them at the start of a line
+    # fails for a reason that is not about panes at all, because both shells answer at once and
+    # their output shares a row.
+    leftCol=$(pane | awk '/TYPED-LEFT/ {print index($0, "TYPED-LEFT"); exit}')
+    rightCol=$(pane | awk '/TYPED-RIGHT/ {print index($0, "TYPED-RIGHT"); exit}')
+    # Which side of the seam each landed on, which is the actual claim. Asserting column 1 for the
+    # left one was wrong twice over: the first match is the line where the shell echoed the command
+    # back, not its output, and a prompt occupies the first columns anyway.
+    if [ -n "$leftCol" ] && [ "$leftCol" -lt 30 ] && [ -n "$rightCol" ] && [ "$rightCol" -gt 30 ]; then
+        ok "keystrokes go to the focused pane, and Ctrl-] o changes which that is"
+    else
+        bad "typing landed in the wrong pane: left at column ${leftCol:-none}, right at ${rightCol:-none}"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm sh1 sh2 >/dev/null 2>&1
+
     # ------------------------------------------- what gozellij says has to be readable
     #
     # In a rendered attach, standard error is covered by the next repaint within milliseconds: a

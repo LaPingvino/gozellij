@@ -128,6 +128,13 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **Two shells side by side, each getting its own keystrokes.** The core of what a multiplexer
+  does, and for several commits only the drawing of it was checked. **Verified** with two real
+  interactive shells in a split: a command typed after the split answers in the right-hand pane, and
+  after `Ctrl-] o` the next one answers in the left. Checked by which side of the seam each answer
+  lands on, since both shells reply at once and their output shares a row. Sending every keystroke
+  to the first pane makes it fail with both answers in the same column.
+
 - **What gozellij says is readable.** In a rendered attach, standard error is covered by the next
   repaint within milliseconds, so a service exiting wrote "exited with code 3" to a screen that
   erased it before anyone could read it. Messages take the status line for six seconds - the whole
