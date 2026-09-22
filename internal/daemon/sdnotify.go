@@ -151,7 +151,13 @@ func StoredFDs() map[string]*os.File {
 }
 
 // listenFDsStart is SD_LISTEN_FDS_START: the first descriptor systemd passes.
-const listenFDsStart = 3
+//
+// A variable rather than a constant so that a test can point it somewhere harmless. The first
+// version of the test for this put its own descriptors at 3 and 4 with dup2 - in a process shared
+// with every other test in the package - and closed the daemon's listening socket out from under
+// eight of them. Descriptor numbers are process-wide state, which is exactly the kind of thing
+// that makes a test suite fail somewhere other than where the mistake is.
+var listenFDsStart = 3
 
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {

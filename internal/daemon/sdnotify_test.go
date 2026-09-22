@@ -179,11 +179,10 @@ func TestWhatComesBackIsNamedAndTheEnvironmentIsCleared(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	for i, f := range []*os.File{a, b} {
-		if err := syscall.Dup2(int(f.Fd()), listenFDsStart+i); err != nil {
-			t.Fatalf("placing a descriptor at %d: %v", listenFDsStart+i, err)
-		}
-	}
+	// Placed away from the low numbers the rest of this package's tests are using. See the note
+	// on listenFDsStart.
+	at := placeFDs(t, a, b)
+	_ = at
 
 	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
 	t.Setenv("LISTEN_FDS", "2")
@@ -215,9 +214,7 @@ func TestAnUnnamedDescriptorStillComesBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if err := syscall.Dup2(int(f.Fd()), listenFDsStart); err != nil {
-		t.Fatal(err)
-	}
+	placeFDs(t, f)
 	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
 	t.Setenv("LISTEN_FDS", "1")
 	// systemd's own placeholder when a descriptor was stored without a name.
@@ -243,4 +240,25 @@ func keysOf(m map[string]*os.File) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// placeFDs puts copies of the given files at consecutive descriptor numbers and points
+// listenFDsStart at them, the way systemd would have placed them at 3.
+//
+// High numbers, not 3: this is one process for the whole package, and taking 3 and 4 closed the
+// daemon's listening socket out from under eight other tests. Restored afterwards, so the choice
+// does not leak into the next test either.
+func placeFDs(t *testing.T, files ...*os.File) int {
+	t.Helper()
+	const base = 60
+	old := listenFDsStart
+	listenFDsStart = base
+	t.Cleanup(func() { listenFDsStart = old })
+	for i, f := range files {
+		if err := syscall.Dup2(int(f.Fd()), base+i); err != nil {
+			t.Fatalf("placing a descriptor at %d: %v", base+i, err)
+		}
+		t.Cleanup(func() { _ = syscall.Close(base + i) })
+	}
+	return base
 }
