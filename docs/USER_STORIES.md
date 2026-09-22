@@ -270,8 +270,15 @@ somebody watching must not reshape the screen of the person working - and a swal
 says so on the status line, once, because a key that quietly goes nowhere is rule 1 with a terminal
 attached. The prefix key still works, which is how you leave.
 
-What is still not there is the second half: no way to see *who else* is attached. `gozellij ls`
-counts viewers but does not distinguish a watcher from someone typing.
+And the other half: `gozellij ls` now says which of the terminals attached can type. `2+1r` is two
+that can and one that cannot; `3r` is three that cannot; `gozellij status` spells it out. The number
+alone answered the wrong question - three terminals showing a service is reassuring, three that can
+type into it is a reason to find out whose they are before you restart it. `logs -f` counts as
+read-only too, and not as a policy: a follower has no way to send anything, so it is the same thing
+`attach -r` asks to be, arrived at from the other direction.
+
+What is still not there: *whose* they are. The daemon knows a connection, not a person, and saying
+more would mean recording who opened it.
 
 **Acceptance.**
 ```sh

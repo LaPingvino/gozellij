@@ -251,3 +251,24 @@ func TestStatusLineWarnsWhenItWillNotFit(t *testing.T) {
 		}
 	}
 }
+
+// The viewer column answers "is anyone looking at this?", and after read-only attaches existed it
+// had to answer a second question with the same handful of characters: can they type?
+func TestViewerWordSeparatesWatchersFromTypists(t *testing.T) {
+	for _, c := range []struct {
+		in   ipc.StatusReply
+		want string
+	}{
+		{ipc.StatusReply{}, "-"},
+		{ipc.StatusReply{Viewers: 2}, "2"},
+		{ipc.StatusReply{Viewers: 1, Watchers: 1}, "1r"},
+		{ipc.StatusReply{Viewers: 3, Watchers: 1}, "2+1r"},
+		{ipc.StatusReply{Viewers: 3, Watchers: 3}, "3r"},
+		// A count that cannot happen, but a wrong one must not print a negative number of people.
+		{ipc.StatusReply{Viewers: 1, Watchers: 4}, "1r"},
+	} {
+		if got := viewerWord(c.in); got != c.want {
+			t.Errorf("%d viewers, %d read-only: got %q, want %q", c.in.Viewers, c.in.Watchers, got, c.want)
+		}
+	}
+}

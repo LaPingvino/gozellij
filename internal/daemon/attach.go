@@ -64,7 +64,7 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// can exist. Counting after would leave a window in which a handler holds a subscription
 	// nobody is counted for, and "no viewers" would not mean "nothing attached" - which it has
 	// to, because that is the only signal anything else has for when the attaches are done.
-	leaving := s.watching(req.Service)
+	leaving := s.watching(req.Service, ar.ReadOnly)
 	defer leaving()
 
 	// Snapshot and subscription are taken together, so nothing written in between is lost. See

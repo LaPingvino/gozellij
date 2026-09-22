@@ -29,12 +29,14 @@ type Server struct {
 	conns   map[net.Conn]struct{}
 	closed  bool
 	version string
-	// viewers counts the clients currently attached to each service.
+	// viewers counts the clients currently attached to each service, and watchers how many of
+	// those are read-only.
 	//
 	// Only the daemon can answer "is anyone watching this?", and it is worth answering: it is
 	// the difference between a service nobody has looked at in a week and the one your other
 	// terminal is sitting in. A client asking about itself could only ever count to one.
-	viewers map[string]int
+	viewers  map[string]int
+	watchers map[string]int
 
 	// upgrades carries an in-band upgrade request out to whoever owns the process (main), since
 	// replacing the binary is not something a connection handler can do to itself.
@@ -98,6 +100,7 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 		ln:       ln,
 		conns:    make(map[net.Conn]struct{}),
 		viewers:  make(map[string]int),
+		watchers: make(map[string]int),
 		upgrades: make(chan struct{}, 1),
 	}, nil
 }
@@ -423,9 +426,12 @@ func (s *Server) ensure(req ipc.Request) ipc.Response {
 }
 
 // watching records that a client has attached, and returns the function that records it leaving.
-func (s *Server) watching(service string) func() {
+func (s *Server) watching(service string, readOnly bool) func() {
 	s.mu.Lock()
 	s.viewers[service]++
+	if readOnly {
+		s.watchers[service]++
+	}
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -438,12 +444,27 @@ func (s *Server) watching(service string) func() {
 			if s.viewers[service] == 0 {
 				delete(s.viewers, service)
 			}
+			if readOnly {
+				if s.watchers[service] > 0 {
+					s.watchers[service]--
+				}
+				if s.watchers[service] == 0 {
+					delete(s.watchers, service)
+				}
+			}
 			s.mu.Unlock()
 		})
 	}
 }
 
 // viewerCount reports how many clients are attached to a service.
+// watcherCount reports how many of a service's viewers are read-only.
+func (s *Server) watcherCount(service string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.watchers[service]
+}
+
 func (s *Server) viewerCount(service string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -522,7 +543,10 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	// A terminal tailing a service is watching it. The column is called VIEWERS and the question
 	// it answers is "is anyone looking at this?" - and someone running `logs -f` in another
 	// window is, whatever the name of the command they used.
-	leaving := s.watching(req.Service)
+	//
+	// Read-only, and not as a policy: a follower has no way to send anything. It is the same
+	// thing `attach -r` asks to be, arrived at from the other direction.
+	leaving := s.watching(req.Service, true)
 	defer leaving()
 
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {
@@ -646,6 +670,7 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		LastError:   st.LastError,
 		LogError:    st.LogError,
 		Viewers:     s.viewerCount(st.Service),
+		Watchers:    s.watcherCount(st.Service),
 	}
 	if def, err := s.fab.Definition(st.Service); err == nil {
 		out.Enabled = def.Enabled

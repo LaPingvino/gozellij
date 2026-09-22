@@ -179,6 +179,10 @@ type StatusReply struct {
 	// Viewers is how many clients are attached right now. Only the daemon can know this, and it
 	// is what tells you which service your other terminal is sitting in.
 	Viewers int `json:"viewers,omitempty"`
+	// Watchers is how many of those are read-only. The difference is the one a person cares
+	// about: three terminals showing a service is reassuring, three terminals that can type into
+	// it is a reason to find out whose they are before you restart it.
+	Watchers int `json:"watchers,omitempty"`
 	// LogPath and LogBytes are where this service's output is kept and how much of it there is,
 	// counting the rotated generation. Disk is the resource a log-keeping supervisor quietly
 	// spends, so it should be visible without going looking for the directory.

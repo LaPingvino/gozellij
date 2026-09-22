@@ -984,6 +984,33 @@ else
     else
         bad "the read-only attach would not detach"
     fi
+    # And the other half of the story: which of the terminals attached can type.
+    #
+    # The number alone answers the wrong question. Three terminals showing a service is
+    # reassuring; three that can type into it is a reason to find out whose they are before you
+    # restart it.
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 50 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -r watched'"
+    tmux -L "$tmuxSock" split-window -d \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach watched'"
+    sleep 3
+    seen=$("$gz" ls 2>/dev/null | awk '$1 == "watched" {print}')
+    if printf '%s' "$seen" | grep -q '1+1r'; then
+        ok "the list says which of the terminals attached can type"
+    else
+        bad "with one read-only and one ordinary attach, ls says: $seen"
+    fi
+    if "$gz" status watched 2>/dev/null | grep -q 'viewers:.*2 (1 read-only)'; then
+        ok "and status spells it out"
+    else
+        bad "status says: $("$gz" status watched 2>/dev/null | grep viewers)"
+    fi
+
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm watched >/dev/null 2>&1
 

@@ -351,9 +351,19 @@ func cmdStatus(args []string) error {
 //
 // A dash rather than a zero: a column of zeroes reads as a measurement, and what is being said is
 // that nobody is there.
+//
+// Read-only viewers are marked, because the number on its own answers the wrong question. Three
+// terminals showing a service is reassuring; three terminals that can type into it is a reason to
+// find out whose they are before you restart it. "2+1r" is two that can type and one that cannot.
 func viewerWord(s ipc.StatusReply) string {
 	if s.Viewers == 0 {
 		return "-"
+	}
+	if s.Watchers > 0 && s.Watchers < s.Viewers {
+		return fmt.Sprintf("%d+%dr", s.Viewers-s.Watchers, s.Watchers)
+	}
+	if s.Watchers >= s.Viewers {
+		return fmt.Sprintf("%dr", s.Viewers)
 	}
 	return strconv.Itoa(s.Viewers)
 }
@@ -395,7 +405,16 @@ func printStatus(s ipc.StatusReply) {
 		fmt.Fprintf(w, "starts:\t%d\n", s.TotalStarts)
 	}
 	if s.Viewers > 0 {
-		fmt.Fprintf(w, "viewers:\t%d\n", s.Viewers)
+		// Spelled out here rather than the list's shorthand: this is the page you read when you
+		// are deciding whether restarting it will interrupt somebody.
+		switch {
+		case s.Watchers == 0:
+			fmt.Fprintf(w, "viewers:\t%d\n", s.Viewers)
+		case s.Watchers == s.Viewers:
+			fmt.Fprintf(w, "viewers:\t%d (all read-only)\n", s.Viewers)
+		default:
+			fmt.Fprintf(w, "viewers:\t%d (%d read-only)\n", s.Viewers, s.Watchers)
+		}
 	}
 	if s.LogPath != "" {
 		fmt.Fprintf(w, "log:\t%s (%s)\n", s.LogPath, byteWord(s.LogBytes))
