@@ -935,6 +935,66 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm titler >/dev/null 2>&1
 
+    # ------------------------------- the login shell actually lands in gozellij
+    #
+    # The chain a person meets on their first ssh in after `gozellij login-setup -install`:
+    # bash -l reads ~/.profile, the block fires, gozellij creates the shell service and attaches.
+    # Every part of that is checked somewhere else; this is the part where they are checked
+    # together, which is the only place the ordering can be wrong.
+    #
+    # A throwaway HOME, carrying the shape of the problem: another multiplexer's autostart block,
+    # pointed at a stand-in so nothing real can start.
+    #
+    # env -u matters more than it looks. tmux exports $TMUX in every pane, and this suite may
+    # itself be running inside a multiplexer that exports $ZELLIJ. The block correctly stands down
+    # for both - so without clearing them the check shows an ordinary shell and reads exactly like
+    # a failure of the thing it is testing. It did, once, and the answer looked like a bug in the
+    # program rather than in the harness.
+    only
+    lhome="$work/loginhome"
+    rm -rf "$lhome"; mkdir -p "$lhome/bin"
+    printf '#!/bin/sh\necho OTHER-MULTIPLEXER-STARTED\nsleep 30\n' > "$lhome/bin/othermux"
+    chmod +x "$lhome/bin/othermux"
+    cat > "$lhome/.profile" <<PROFILE
+export EDITOR=vim
+if [ -n "\$PS1" ] && [ -z "\${ZELLIJ:-}" ] && [ -z "\${TMUX:-}" ]; then
+    tmux attach -t main 2>/dev/null || "$lhome/bin/othermux"
+fi
+PROFILE
+    HOME="$lhome" "$gz" login-setup -install >/dev/null 2>&1
+
+    # The invocation is "$GOZELLIJ_BIN" shell -name <service>, not the literal program name: the
+    # block names the binary by path because /etc/profile resets PATH and a profile may not have
+    # put it back by the time this line runs.
+    if grep -q '#gz# ' "$lhome/.profile" && grep -q 'shell -name shell' "$lhome/.profile"; then
+        ok "login-setup disables the other multiplexer and adds its own block"
+    else
+        bad "the profile does not look set up: $(grep -c . "$lhome/.profile") lines, no markers"
+    fi
+
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 20 \
+        -e HOME="$lhome" -e PATH="$bin:/usr/bin:/bin" -e SHELL=/bin/bash \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e TERM=xterm-256color \
+        "sh -c 'exec env -u TMUX -u ZELLIJ -u ZELLIJ_SESSION_NAME -u STY bash -l'"
+    sleep 5
+    tmux -L "$tmuxSock" send-keys 'echo INSIDE-[$GOZELLIJ]' Enter
+    sleep 2
+    if pane | grep -q 'INSIDE-\[shell\]'; then
+        ok "a login shell lands inside gozellij, with \$GOZELLIJ set"
+    else
+        bad "the login shell did not land in gozellij: $(pane | tail -3 | tr '\n' '|')"
+    fi
+    if pane | grep -q 'OTHER-MULTIPLEXER-STARTED'; then
+        bad "the other multiplexer started as well, so you would be in two at once"
+    else
+        ok "and the other multiplexer did not start alongside it"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm shell >/dev/null 2>&1
+    rm -rf "$lhome"
+
     # ----------------------------------------- watching without being able to touch
     #
     # Story B3: eyes on the live output, and my Ctrl-C does not reach the service. `attach -r`.

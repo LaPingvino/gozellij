@@ -38,7 +38,7 @@ func TestWhatItWritesIsValidShell(t *testing.T) {
 		t.Skip("no bash to check the syntax with")
 	}
 	f := filepath.Join(t.TempDir(), "profile")
-	if err := os.WriteFile(f, []byte(loginBlock("shell")), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte(loginBlockWith("shell", "/usr/bin/gozellij")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// A login file that does not parse is the lockout this command exists to avoid.
@@ -128,7 +128,7 @@ func setUpHome(t *testing.T) (home, bin string) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
-	if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", true); err != nil {
+	if err := loginInstall(home, filepath.Join(home, ".profile"), "shell", filepath.Join(bin, "gozellij"), true); err != nil {
 		t.Fatal(err)
 	}
 	return home, bin
@@ -177,7 +177,7 @@ func TestSetupIsUndoneExactly(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
 
-	if err := loginInstall(home, profile, "shell", true); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(profile)
@@ -206,7 +206,7 @@ func TestSettingItUpTwiceLeavesOneBlock(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
 	for range 3 {
-		if err := loginInstall(home, profile, "shell", true); err != nil {
+		if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -226,7 +226,7 @@ func TestNothingIsChangedWithoutBeingAskedTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	if err := loginInstall(home, profile, "shell", false); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", false); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(profile)
@@ -244,7 +244,7 @@ func TestTheOriginalIsCopiedBeforeItIsTouched(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
-	if err := loginInstall(home, profile, "shell", true); err != nil {
+	if err := loginInstall(home, profile, "shell", "/bin/true", true); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(home)
@@ -276,12 +276,12 @@ func TestTheBlockWorksForAServiceThatIsNotCalledShell(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/bash")
-	if err := loginInstall(home, profile, "work", true); err != nil {
+	// A gozellij that reports how it was called, so the test reads the real invocation rather
+	// than the text of the block. Made before the install, because the block names it by path.
+	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A gozellij that reports how it was called, so the test reads the real invocation rather
-	// than the text of the block.
-	if err := os.MkdirAll(bin, 0o700); err != nil {
+	if err := loginInstall(home, profile, "work", filepath.Join(bin, "gozellij"), true); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\necho \"CALLED-AS: $*\"\n"
