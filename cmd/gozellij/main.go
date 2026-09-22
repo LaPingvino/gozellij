@@ -48,6 +48,7 @@ Usage:
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
+  gozellij login-setup                 say how to make it what your login shell starts (-install to do it)
   gozellij stats                       print the status line once and exit
 
 Flags for add:
@@ -124,6 +125,8 @@ func run(args []string) error {
 		return cmdPing(rest)
 	case "doctor":
 		return cmdDoctor(rest)
+	case "login-setup":
+		return cmdLoginSetup(rest)
 	case "stats":
 		return cmdStats(rest)
 	default:
