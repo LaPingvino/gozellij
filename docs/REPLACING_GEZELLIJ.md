@@ -128,6 +128,12 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   Breaking cursor positioning or bright colours in the emulator makes it fail; an earlier version
   of this check used a pager over a file of numbers and caught neither.
 
+- **The window title reaches the terminal.** The same gap as the modes below, found on the same
+  list: a byte pipe hands `OSC 2` to the real terminal so a shell's title tracks what it is
+  running, and a rendered attach swallowed it - the title froze at whatever it said when the attach
+  started. The focused pane's title is applied, and a pane whose program has not set one is named
+  after its service. **Verified** through tmux's own `#{pane_title}`.
+
 - **Mouse and paste reach the terminal.** A byte pipe passes a service's mode changes through for
   free; a client that interprets the output has to hand them on, and this one did not - mouse
   reporting, its encoding, focus events and bracketed paste were all absorbed, so clicking did

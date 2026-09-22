@@ -21,10 +21,15 @@
 // Also cursor visibility, which was on the list below until a case was written for it and found a
 // bug in the first run: a lone restore-cursor was hiding it.
 //
-// Not compared: cursor shape, the title, mouse modes, bracketed paste. An emulator can get all of
-// those wrong and pass every case here, and that is written down rather than left to be
-// discovered, because a harness that quietly checks less than it appears to is worse than no
-// harness.
+// Not compared here: cursor shape, the title, mouse modes and bracketed paste. The last three are
+// no longer unchecked - they are checked in scripts/acceptance.sh instead, by reading the bytes
+// the client sends to the terminal, because they are not on the screen and no screen comparison
+// could ever see them. Working down this list is what found that a rendered attach was swallowing
+// all of them, which is worse than an untested feature: a missing one.
+//
+// An emulator can still get cursor shape wrong and pass every case here. That is written down
+// rather than left to be discovered, because a harness that quietly checks less than it appears
+// to is worse than no harness.
 //
 // # Two things the format has to decide, and does
 //
