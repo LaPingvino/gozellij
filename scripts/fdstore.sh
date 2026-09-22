@@ -114,11 +114,23 @@ else
     bad "the socket was replaced: inode $before then $after"
 fi
 
-if journalctl --user -u "$unit" --no-pager -o cat --since "-60s" | grep -q "took the listening socket back from systemd"; then
+# Waited for rather than read once. journald ingests asynchronously, and reading the log the
+# instant the daemon comes back failed one run in three while the inode check beside it passed -
+# a flake that says "the socket was not adopted" about a socket that was. A check that cries wolf
+# is worse than no check, because the next person to see it assumes the same.
+said=""
+for _ in $(seq 20); do
+    if journalctl --user -u "$unit" --no-pager -o cat --since "-120s" | grep -q "took the listening socket back from systemd"; then
+        said=yes
+        break
+    fi
+    sleep 0.5
+done
+if [ -n "$said" ]; then
     ok "the daemon says it took the socket back rather than making one"
 else
     bad "the daemon made a new socket instead of adopting the stored one"
-    journalctl --user -u "$unit" --no-pager -o cat --since "-60s" | tail -6
+    journalctl --user -u "$unit" --no-pager -o cat --since "-120s" | tail -6
 fi
 
 if "$gz" ping >/dev/null 2>&1; then
@@ -132,7 +144,13 @@ fi
 # A service started before the crash, still running afterwards, with the same pid. This is the
 # promise C3 is about: "the daemon hits a nil pointer, or the OOM killer. Synapse should not care."
 say
-"$gz" add survivor -start -restart always -- sh -c 'i=0; while :; do echo "SURVIVOR-$i"; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+# Each line carries the pid that wrote it. Which is the fourth version of this check: comparing
+# whole log lines passed because a restarted service also writes; comparing two readings from
+# after the crash passed for the same reason; comparing a counter against its value from before
+# the crash passed because the restarted process had simply been running longer than the original
+# had. Every one of those was a check that could not fail, sitting next to a FAIL saying the
+# service had been restarted. A pid in the output cannot be argued with by timing.
+"$gz" add survivor -start -restart always -- sh -c 'i=0; while :; do echo "SURVIVOR-$$-$i"; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
 sleep 2
 svcpid=$("$gz" status survivor 2>/dev/null | awk '/^pid:/{print $2}')
 if [ -n "$svcpid" ] && [ "$svcpid" != "0" ]; then
@@ -165,14 +183,14 @@ else
 fi
 
 # Alive, not merely reported alive: its output has to still be arriving through the terminal the
-# new daemon inherited. A pid that matches proves the process; this proves the pipe.
-first=$("$gz" logs survivor 2>/dev/null | tail -1)
+# new daemon inherited, written by the process that was there before the crash. The pid in the
+# line is what makes that unambiguous - see the note where the service is defined.
 sleep 3
-second=$("$gz" logs survivor 2>/dev/null | tail -1)
-if [ -n "$first" ] && [ "$first" != "$second" ]; then
-    ok "and its output is still arriving through the terminal that was handed back"
+writer=$("$gz" logs survivor 2>/dev/null | grep -o 'SURVIVOR-[0-9]*-[0-9]*' | tail -1 | cut -d- -f2)
+if [ -n "$writer" ] && [ "$writer" = "$svcpid" ]; then
+    ok "and the lines still arriving were written by the process that was there before the crash"
 else
-    bad "the recovered service is not producing output: [$first] then [$second]"
+    bad "the newest output was written by pid [$writer], and the service before the crash was $svcpid"
 fi
 
 # Stopping it has to work too. A recovered process is not this daemon's child, so the ordinary
