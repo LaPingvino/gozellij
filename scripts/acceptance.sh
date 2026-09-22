@@ -847,6 +847,16 @@ else
     "$gz" upgrade >/dev/null 2>&1
     sleep 6
     afterUpgrade=$(pane | head -1)
+
+    # And it has to say so. The panes come back working, but whatever was printed while the daemon
+    # was being replaced is not on this screen and never will be; the byte-pipe path says exactly
+    # that on its way back in, and silence about lost output is what this project keeps refusing
+    # to ship.
+    if pane | sed -n '10p' | grep -q 'reconnected'; then
+        ok "the reconnection after an upgrade is said out loud"
+    else
+        bad "nothing on the status line mentions the reconnection: $(pane | sed -n '10p')"
+    fi
     if printf '%s' "$beforeUpgrade" | grep -q 'one-' && [ "$beforeUpgrade" != "$afterUpgrade" ] \
        && printf '%s' "$afterUpgrade" | grep -q 'two-'; then
         ok "both panes of a split screen stay live across a daemon upgrade"

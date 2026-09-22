@@ -112,6 +112,12 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 	input := startTerminalInput(in)
 	defer input.stop()
 
+	// Everything this loop has to tell the user goes through here. Standard error while the byte
+	// pipe owns the terminal, the status line once something is painting over it - the same sink
+	// the keyboard reader uses, for the same reason: three separate messages have already been
+	// written to a screen that erased them before anyone could read them.
+	say := sayToStderr
+
 	// The status line, if it is switched on. It writes to the same terminal as the service's
 	// output, so everything that draws goes through one lock from here on.
 	screen := &lockedWriter{w: out}
@@ -147,6 +153,7 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 			// Anything the keyboard reader has to say now goes on the status line, where a paint
 			// will not erase it a moment later.
 			input.sayTo(rendered.Say)
+			say = rendered.Say
 		}
 	}
 	if rendered == nil {
@@ -240,6 +247,8 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 			switch outcome {
 			case outcomeDetached:
 				restore()
+				// Straight to the terminal, not through the sink: the screen has just been
+				// handed back and there is nothing left to paint over this.
 				fmt.Fprintf(os.Stderr, "\r\n[detached from %s; it keeps running]\r\n", service)
 				return nil
 
@@ -255,7 +264,7 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 				// terminal does, exactly as it does on a first attach.
 				next, nerr := neighbourService(socket, service, outcome == outcomeNext)
 				if nerr != nil {
-					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", nerr)
+					say(nerr.Error())
 					// Staying put beats dropping the user at a shell prompt because a list
 					// lookup failed.
 					first, replay = false, false
@@ -283,7 +292,7 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 					rendered.Resume()
 				}
 				if perr != nil {
-					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %v]\r\n", perr)
+					say(perr.Error())
 					first, replay = false, false
 					break dispatch
 				}
@@ -320,7 +329,7 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 
 		// The stream ended without us asking. Either the daemon went away - an upgrade, most
 		// likely - or the connection broke. Say so, then try to get back in.
-		fmt.Fprintf(os.Stderr, "\r\n[gozellij: connection to the daemon ended; reattaching...]\r\n")
+		say("connection to the daemon ended; reattaching...")
 
 		back, werr := waitForDaemonClient(socket, ReattachWindow)
 		if werr != nil {
@@ -332,8 +341,8 @@ func AttachLoopMode(socket, service string, in *os.File, out io.Writer, replay b
 		// repainting it would duplicate what is on screen; but output produced while we were
 		// away is genuinely missing, and a client that cannot tell is exactly what this
 		// project keeps refusing to ship.
-		fmt.Fprintf(os.Stderr, "\r\n[gozellij: reattached; anything printed while the daemon "+
-			"was restarting was not captured here - `gozellij logs %s` has it]\r\n", service)
+		say(fmt.Sprintf("reattached; anything printed while the daemon was restarting was not "+
+			"captured here - `gozellij logs %s` has it", service))
 		first = false
 		replay = false
 	}

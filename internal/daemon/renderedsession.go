@@ -325,6 +325,12 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 			note(fmt.Sprintf("%s: %v", ev.pane.service, err))
 			ev.pane.finished = true
 		} else {
+			// Say so. The pane comes back working, but whatever the service printed while the
+			// daemon was being replaced is not on this screen and never will be - the byte-pipe
+			// path says exactly that on its way back in, and a rendered attach that reconnects
+			// silently is the same loss with nothing to explain it.
+			note(fmt.Sprintf("reconnected to %s after the daemon restarted; anything printed "+
+				"meanwhile is in `gozellij logs %s`", ev.pane.service, ev.pane.service))
 			go readFrames(ev.pane, events)
 		}
 	}
