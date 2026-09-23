@@ -489,6 +489,123 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ---------------------------------------- a broken environment is reported, not suffered
+#
+# A log directory that cannot be written is not exotic: a full disk, a mode somebody tightened,
+# a state directory on a filesystem that went read-only. What a multiplexer must not do then is
+# take your shells down with it, and what it must not do instead is carry on quietly while the
+# transcript everybody assumes exists is not being written.
+#
+# gozellij already gets this right, and that is exactly why it needs checking: good behaviour
+# nothing defends is good behaviour until somebody refactors. Every one of these was measured
+# by hand first - the service keeps running, and four different places say what is wrong.
+only
+"$gz" add quiet1 -start -restart no -- sh -c 'echo BEFORE-BREAK; sleep 120' >/dev/null 2>&1
+sleep 1
+chmod 500 "$state/logs"
+"$gz" add broke -start -restart no -- sh -c 'echo AFTER-BREAK; sleep 120' >/dev/null 2>&1
+sleep 2
+brokepid=$("$gz" status broke 2>/dev/null | awk '/^pid:/{print $2}')
+
+# The service runs. This is the promise that matters: a disk problem is not a reason to lose
+# the shell you are working in.
+if [ -n "$brokepid" ] && "$gz" status broke 2>/dev/null | grep -q '^state: *running'; then
+    ok "a service still starts when its log cannot be written"
+else
+    bad "the service did not run: $("$gz" status broke 2>/dev/null | tr '\n' '|' | head -c 150)"
+fi
+
+# And says so, in status, with the reason. Rule 1: not writing the log is a thing that did not
+# happen, and something that did not happen has to be said.
+if "$gz" status broke 2>/dev/null | grep -q 'log error:.*permission denied'; then
+    ok "and status says why the log is not being written"
+else
+    bad "status says nothing about the log: $("$gz" status broke 2>/dev/null | grep -i log | tr '\n' '|')"
+fi
+
+# `logs` is the other place somebody looks, and it has the harder job: it still has the output
+# in memory, so it can show it - but it must not let you think you are reading a file that is
+# being kept up to date.
+logsaid=$("$gz" logs broke 2>&1)
+if printf '%s' "$logsaid" | grep -q 'not being written' && printf '%s' "$logsaid" | grep -q 'AFTER-BREAK'; then
+    ok "and logs still shows the output while saying the file is not keeping up"
+else
+    bad "logs said: $(printf '%s' "$logsaid" | tr '\n' '|' | head -c 200)"
+fi
+
+# doctor is where somebody goes when they already suspect something, so it has to name the
+# service rather than say the state directory looks odd.
+if "$gz" doctor 2>/dev/null | grep -q 'logs: broke'; then
+    ok "and doctor names the service whose log is failing"
+else
+    bad "doctor says: $("$gz" doctor 2>/dev/null | grep -i log | tr '\n' '|' | head -c 200)"
+fi
+
+# The service that was already writing before the break is not dragged down with it.
+if "$gz" status quiet1 2>/dev/null | grep -q '^state: *running'; then
+    ok "and a service that was already logging is unaffected"
+else
+    bad "the earlier service stopped: $("$gz" status quiet1 2>/dev/null | tr '\n' '|' | head -c 120)"
+fi
+
+chmod 700 "$state/logs"
+"$gz" stop broke quiet1 >/dev/null 2>&1
+"$gz" rm broke quiet1 >/dev/null 2>&1
+
+# ------------------------------------------ the package that replaces the other multiplexer
+#
+# The PKGBUILD is the only thing standing between a commit here and the machine somebody
+# actually uses. A typo in it is not a small bug: it is "I cannot upgrade", and it is found at
+# the worst moment, by the person who wanted the fix.
+#
+# Nothing checked it. makepkg --printsrcinfo sources the file and prints what it declares,
+# offline and without sudo, so the parts that matter can be asserted rather than assumed - and
+# the parts that matter are the ones that let it take a machine over from gezellij. Getting
+# `replaces` wrong does not fail loudly; it leaves both installed, two login blocks, and a
+# fight over the terminal.
+only
+if ! command -v makepkg >/dev/null 2>&1; then
+    say "  SKIP  the packaging checks, because makepkg is not installed"
+else
+    srcinfo=$(cd "$repo/packaging/arch" && timeout 60 makepkg --printsrcinfo 2>&1)
+    if [ -n "$srcinfo" ] && printf '%s' "$srcinfo" | grep -q '^pkgbase = gozellij-git'; then
+        ok "the PKGBUILD parses and declares itself"
+    else
+        bad "makepkg could not read the PKGBUILD: $(printf '%s' "$srcinfo" | head -3 | tr '\n' '|')"
+    fi
+
+    # The whole point of the package: it takes over from the other one rather than sitting
+    # beside it.
+    if printf '%s' "$srcinfo" | grep -q 'replaces = gezellij-git' &&
+       printf '%s' "$srcinfo" | grep -q 'conflicts = gezellij-git'; then
+        ok "and it replaces and conflicts with gezellij-git, so pacman swaps them"
+    else
+        bad "the package does not replace gezellij-git: $(printf '%s' "$srcinfo" | grep -E 'replaces|conflicts' | tr '\n' '|')"
+    fi
+
+    # Every file the package build reaches for, checked from the recipe rather than believed.
+    # A rename in the repo that nobody carried into the PKGBUILD fails at `makepkg`, on the
+    # machine of the person upgrading.
+    missing=""
+    for f in packaging/systemd/gozellijd.service packaging/arch/gozellij-git.install LICENSE; do
+        [ -f "$repo/$f" ] || missing="$missing $f"
+    done
+    if [ -z "$missing" ]; then
+        ok "and every file its package() step installs is in the repository"
+    else
+        bad "the PKGBUILD installs files that are not here:$missing"
+    fi
+
+    # The unit it generates is the repo's with ExecStart rewritten to the installed path. If
+    # that sed stops matching, the unit ships pointing at somebody's build directory.
+    generated=$(sed 's|^ExecStart=.*|ExecStart=/usr/bin/gozellijd|' "$repo/packaging/systemd/gozellijd.service")
+    if printf '%s' "$generated" | grep -q '^ExecStart=/usr/bin/gozellijd$'; then
+        ok "and the unit it generates starts the installed daemon, not a build directory"
+    else
+        bad "the generated unit says: $(printf '%s' "$generated" | grep -i execstart | tr '\n' '|')"
+    fi
+fi
+
 # So this section drives a real terminal of a known size and reads the screen back. tmux is the
 # tool to hand; a private server, so it cannot touch a session you are using.
 if [ "$noscreen" = 1 ]; then
@@ -2117,60 +2234,6 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
-    # ------------------------------------------ the package that replaces the other multiplexer
-    #
-    # The PKGBUILD is the only thing standing between a commit here and the machine somebody
-    # actually uses. A typo in it is not a small bug: it is "I cannot upgrade", and it is found at
-    # the worst moment, by the person who wanted the fix.
-    #
-    # Nothing checked it. makepkg --printsrcinfo sources the file and prints what it declares,
-    # offline and without sudo, so the parts that matter can be asserted rather than assumed - and
-    # the parts that matter are the ones that let it take a machine over from gezellij. Getting
-    # `replaces` wrong does not fail loudly; it leaves both installed, two login blocks, and a
-    # fight over the terminal.
-    only
-    if ! command -v makepkg >/dev/null 2>&1; then
-        say "  SKIP  the packaging checks, because makepkg is not installed"
-    else
-        srcinfo=$(cd "$repo/packaging/arch" && timeout 60 makepkg --printsrcinfo 2>&1)
-        if [ -n "$srcinfo" ] && printf '%s' "$srcinfo" | grep -q '^pkgbase = gozellij-git'; then
-            ok "the PKGBUILD parses and declares itself"
-        else
-            bad "makepkg could not read the PKGBUILD: $(printf '%s' "$srcinfo" | head -3 | tr '\n' '|')"
-        fi
-
-        # The whole point of the package: it takes over from the other one rather than sitting
-        # beside it.
-        if printf '%s' "$srcinfo" | grep -q 'replaces = gezellij-git' &&
-           printf '%s' "$srcinfo" | grep -q 'conflicts = gezellij-git'; then
-            ok "and it replaces and conflicts with gezellij-git, so pacman swaps them"
-        else
-            bad "the package does not replace gezellij-git: $(printf '%s' "$srcinfo" | grep -E 'replaces|conflicts' | tr '\n' '|')"
-        fi
-
-        # Every file the package build reaches for, checked from the recipe rather than believed.
-        # A rename in the repo that nobody carried into the PKGBUILD fails at `makepkg`, on the
-        # machine of the person upgrading.
-        missing=""
-        for f in packaging/systemd/gozellijd.service packaging/arch/gozellij-git.install LICENSE; do
-            [ -f "$repo/$f" ] || missing="$missing $f"
-        done
-        if [ -z "$missing" ]; then
-            ok "and every file its package() step installs is in the repository"
-        else
-            bad "the PKGBUILD installs files that are not here:$missing"
-        fi
-
-        # The unit it generates is the repo's with ExecStart rewritten to the installed path. If
-        # that sed stops matching, the unit ships pointing at somebody's build directory.
-        generated=$(sed 's|^ExecStart=.*|ExecStart=/usr/bin/gozellijd|' "$repo/packaging/systemd/gozellijd.service")
-        if printf '%s' "$generated" | grep -q '^ExecStart=/usr/bin/gozellijd$'; then
-            ok "and the unit it generates starts the installed daemon, not a build directory"
-        else
-            bad "the generated unit says: $(printf '%s' "$generated" | grep -i execstart | tr '\n' '|')"
-        fi
-    fi
-
     # -------------------------------------- the status line as a command, and landing where you were
     #
     # Two things the document names that nothing here drove. `gozellij stats` is the status line as
@@ -2326,69 +2389,6 @@ PROFILE
     rm -f "$home/.config/gozellij/status"
     "$gz" stop prefixed >/dev/null 2>&1
     "$gz" rm prefixed >/dev/null 2>&1
-
-    # ---------------------------------------- a broken environment is reported, not suffered
-    #
-    # A log directory that cannot be written is not exotic: a full disk, a mode somebody tightened,
-    # a state directory on a filesystem that went read-only. What a multiplexer must not do then is
-    # take your shells down with it, and what it must not do instead is carry on quietly while the
-    # transcript everybody assumes exists is not being written.
-    #
-    # gozellij already gets this right, and that is exactly why it needs checking: good behaviour
-    # nothing defends is good behaviour until somebody refactors. Every one of these was measured
-    # by hand first - the service keeps running, and four different places say what is wrong.
-    only
-    "$gz" add quiet1 -start -restart no -- sh -c 'echo BEFORE-BREAK; sleep 120' >/dev/null 2>&1
-    sleep 1
-    chmod 500 "$state/logs"
-    "$gz" add broke -start -restart no -- sh -c 'echo AFTER-BREAK; sleep 120' >/dev/null 2>&1
-    sleep 2
-    brokepid=$("$gz" status broke 2>/dev/null | awk '/^pid:/{print $2}')
-
-    # The service runs. This is the promise that matters: a disk problem is not a reason to lose
-    # the shell you are working in.
-    if [ -n "$brokepid" ] && "$gz" status broke 2>/dev/null | grep -q '^state: *running'; then
-        ok "a service still starts when its log cannot be written"
-    else
-        bad "the service did not run: $("$gz" status broke 2>/dev/null | tr '\n' '|' | head -c 150)"
-    fi
-
-    # And says so, in status, with the reason. Rule 1: not writing the log is a thing that did not
-    # happen, and something that did not happen has to be said.
-    if "$gz" status broke 2>/dev/null | grep -q 'log error:.*permission denied'; then
-        ok "and status says why the log is not being written"
-    else
-        bad "status says nothing about the log: $("$gz" status broke 2>/dev/null | grep -i log | tr '\n' '|')"
-    fi
-
-    # `logs` is the other place somebody looks, and it has the harder job: it still has the output
-    # in memory, so it can show it - but it must not let you think you are reading a file that is
-    # being kept up to date.
-    logsaid=$("$gz" logs broke 2>&1)
-    if printf '%s' "$logsaid" | grep -q 'not being written' && printf '%s' "$logsaid" | grep -q 'AFTER-BREAK'; then
-        ok "and logs still shows the output while saying the file is not keeping up"
-    else
-        bad "logs said: $(printf '%s' "$logsaid" | tr '\n' '|' | head -c 200)"
-    fi
-
-    # doctor is where somebody goes when they already suspect something, so it has to name the
-    # service rather than say the state directory looks odd.
-    if "$gz" doctor 2>/dev/null | grep -q 'logs: broke'; then
-        ok "and doctor names the service whose log is failing"
-    else
-        bad "doctor says: $("$gz" doctor 2>/dev/null | grep -i log | tr '\n' '|' | head -c 200)"
-    fi
-
-    # The service that was already writing before the break is not dragged down with it.
-    if "$gz" status quiet1 2>/dev/null | grep -q '^state: *running'; then
-        ok "and a service that was already logging is unaffected"
-    else
-        bad "the earlier service stopped: $("$gz" status quiet1 2>/dev/null | tr '\n' '|' | head -c 120)"
-    fi
-
-    chmod 700 "$state/logs"
-    "$gz" stop broke quiet1 >/dev/null 2>&1
-    "$gz" rm broke quiet1 >/dev/null 2>&1
 
     # ------------------------------------- a connection that drops leaves nothing behind
     #
