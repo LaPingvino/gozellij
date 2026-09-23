@@ -259,7 +259,13 @@ func placeFDs(t *testing.T, files ...*os.File) int {
 		if err := syscall.Dup2(int(f.Fd()), target); err != nil {
 			t.Fatalf("placing a descriptor at %d: %v", target, err)
 		}
-		t.Cleanup(func() { _ = syscall.Close(target) })
+		// Not closed here. Whatever reads the handover wraps this number in an *os.File of its
+		// own and closes it - the adopter when it claims one, clearPendingFDs when nothing does -
+		// so a close here was the second close of the same number. Between the two, the number
+		// can be handed to something else, and the second close then destroys that: a test's
+		// listening socket, in the rare failures where a daemon that had just started refused
+		// its own clients. An uncollected descriptor leaking into the test process is harmless;
+		// a double close is not.
 	}
 	return base
 }

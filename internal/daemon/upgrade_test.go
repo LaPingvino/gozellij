@@ -152,9 +152,19 @@ func TestAdoptTakesOverALiveProcessAndItsPty(t *testing.T) {
 	pid := cmd.Process.Pid
 	started := time.Now()
 
-	// Hand the descriptor over without closing it, exactly as the exec does.
+	// Hand over a descriptor of its own, and let go of ours - which is what the exec amounts to:
+	// afterwards exactly one thing owns the pty. Passing int(f.Fd()) and keeping f gave the
+	// number two owners, and when f was garbage collected its finaliser closed the number a
+	// second time. By then it was usually something else's - in the failures, the listening
+	// socket of whichever test came next, whose daemon then refused its own clients ("nothing
+	// listening on the socket") a few runs in a hundred.
+	fd, err := syscall.Dup(int(f.Fd()))
+	if err != nil {
+		t.Fatalf("dup: %v", err)
+	}
+	f.Close()
 	svc := fabric.Service{Name: "adopted", Command: "sh", Args: []string{"-c", "echo ADOPTED_OUTPUT; sleep 30"}}
-	p, err := fabric.Adopt(svc, pid, int(f.Fd()), started, fabric.StartOptions{})
+	p, err := fabric.Adopt(svc, pid, fd, started, fabric.StartOptions{})
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}

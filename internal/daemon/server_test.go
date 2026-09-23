@@ -40,11 +40,13 @@ func newTestDaemon(t *testing.T) (*Server, *fabric.Fabric, string) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	go func() {
+	// The server is passed in rather than captured: a test that ends before this goroutine has
+	// run had its cleanup closure and this one sharing the variable, and -race flagged it.
+	go func(srv *Server) {
 		if err := srv.Serve(); err != nil {
 			t.Errorf("Serve: %v", err)
 		}
-	}()
+	}(srv)
 	t.Cleanup(func() { srv.Close() })
 
 	return srv, fab, sock

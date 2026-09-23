@@ -63,7 +63,13 @@ func Dial(path string) (*Client, error) {
 		// Translate the two cases a user actually hits - no socket file, or a socket nobody is
 		// listening on - into something actionable, rather than passing a syscall name up.
 		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
-			return nil, fmt.Errorf("%w (socket %s). Start one with `gozellijd`", ErrNoDaemon, path)
+			// Which of the two, said: "no socket file" and "a socket file nobody is listening on"
+			// have different causes, and a report that cannot tell them apart cannot be chased.
+			why := "no socket file"
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				why = "nothing listening on the socket"
+			}
+			return nil, fmt.Errorf("%w (%s: %s). Start one with `gozellijd`", ErrNoDaemon, why, path)
 		}
 		return nil, fmt.Errorf("connecting to %s: %w", path, err)
 	}
