@@ -2117,6 +2117,75 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ------------------------------------- a connection that drops leaves nothing behind
+    #
+    # The way a login multiplexer's client usually ends is not Ctrl-] d. It is the ssh dying, the
+    # laptop closing, the network going. So the daemon has to let go of a client that never said
+    # goodbye - and "viewers" has to come back down, because the code counts viewers precisely so
+    # that no viewers can mean nothing is attached. Anything that asks "is anybody looking at
+    # this?" has no other signal.
+    #
+    # A leak here is the kind nobody notices for a week: every dropped connection leaves a
+    # phantom, `ls` slowly counts higher, and the number stops meaning anything. Counting viewers
+    # up was checked; nothing checked them coming back down.
+    only
+    "$gz" add dropped -start -restart no -- sh -c 'i=0; while :; do printf "DROP-%d\r\n" $i; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    sleep 1
+    droppid=$("$gz" status dropped 2>/dev/null | awk '/^pid:/{print $2}')
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach dropped'"
+    sleep 3
+    if [ "$("$gz" ls 2>/dev/null | awk '$1 == "dropped" {print $6}')" = "1" ]; then
+        ok "an attached terminal is counted as one viewer"
+    else
+        bad "viewers reads [$("$gz" ls 2>/dev/null | awk '$1 == "dropped" {print $6}')] with one attached"
+    fi
+
+    # Killed, not detached: nothing on the way out gets to run, which is the whole point. The
+    # pane's command is exec'd, so the pane pid is the client itself.
+    clientPid=$(tmux -L "$tmuxSock" list-panes -F '#{pane_pid}' | head -1)
+    kill -9 "$clientPid" 2>/dev/null
+    for _ in $(seq 20); do
+        [ "$("$gz" ls 2>/dev/null | awk '$1 == "dropped" {print $6}')" = "-" ] && break
+        [ "$("$gz" ls 2>/dev/null | awk '$1 == "dropped" {print $6}')" = "0" ] && break
+        sleep 0.5
+    done
+    left=$("$gz" ls 2>/dev/null | awk '$1 == "dropped" {print $6}')
+    if [ "$left" = "0" ] || [ "$left" = "-" ]; then
+        ok "a client killed without warning stops being counted"
+    else
+        bad "viewers still reads [$left] after the client was killed"
+    fi
+
+    # And the service does not care: same process, still running. A dropped connection that took
+    # the service with it would be the opposite of the promise.
+    if [ "$("$gz" status dropped 2>/dev/null | awk '/^pid:/{print $2}')" = "$droppid" ]; then
+        ok "and the service it was watching is untouched, same pid"
+    else
+        bad "the service was $droppid and is now $("$gz" status dropped 2>/dev/null | awk '/^pid:/{print $2}')"
+    fi
+
+    # Then you come back, which is the part that matters to a person: reattaching after a drop
+    # works, and shows the service still talking.
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach dropped'"
+    sleep 4
+    if pane | grep -q 'DROP-'; then
+        ok "and you can attach again afterwards and see it running"
+    else
+        bad "reattaching after a drop showed nothing: $(pane | head -3 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop dropped >/dev/null 2>&1
+    "$gz" rm dropped >/dev/null 2>&1
+
     # ------------------------------------------ you can always get out, however loud it is
     #
     # The accident everybody has had: cat a binary, or start something that never stops talking.
