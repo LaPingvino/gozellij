@@ -9,9 +9,13 @@ import (
 // Pending means "the process you have is still the previous definition, restart it to pick this
 // up". It used to mean "the service is running", which is a different thing: setting a value to
 // the one it already holds asked for a restart nothing would change, and a restart costs you the
-// process. The CLI refuses a set with no flags; this is the case it cannot see, because flags
-// were given and only the daemon holds the values they are being compared against.
-func TestSetAsksForARestartOnlyWhenSomethingChanged(t *testing.T) {
+// process.
+//
+// The first fix for that compared the definition before and after the call, which is a third
+// question again and wrong in the opposite direction: set a value, forget to restart, set the
+// same value again, and you were told nothing was pending while the old process was still
+// running. Rule 1 inverted. The baseline is what the live process was started with.
+func TestSetAsksForARestartWhileTheProcessIsTheOldDefinition(t *testing.T) {
 	_, _, sock := newTestDaemon(t)
 	c := dial(t, sock)
 
@@ -22,47 +26,52 @@ func TestSetAsksForARestartOnlyWhenSomethingChanged(t *testing.T) {
 	}
 
 	always, no := "always", "no"
-	changed, err := c.Set("svc", ipc.SetRequest{Restart: &always})
-	if err != nil {
-		t.Fatalf("Set to always: %v", err)
-	}
-	if !changed.Pending {
-		t.Fatal("a real change did not say the running process is still the old definition")
-	}
+	cmd, sameArgs, otherArgs := "sleep", []string{"300"}, []string{"301"}
 
-	same, err := c.Set("svc", ipc.SetRequest{Restart: &always})
-	if err != nil {
-		t.Fatalf("Set to always again: %v", err)
+	for _, step := range []struct {
+		what string
+		req  ipc.SetRequest
+		want bool
+	}{
+		// The process was started with restart=no and `sleep 300`.
+		{"setting a value to the one it already has", ipc.SetRequest{Restart: &no}, false},
+		{"setting the command it already runs", ipc.SetRequest{Command: &cmd, Args: &sameArgs}, false},
+		{"a real change", ipc.SetRequest{Restart: &always}, true},
+		// The same set again. Nothing changed this time, but the process is still the old
+		// definition, so there is still something a restart would pick up. This is the case the
+		// before-and-after comparison got wrong.
+		{"the same change a second time", ipc.SetRequest{Restart: &always}, true},
+		// And back: the definition on disk now matches the running process again, so there is
+		// nothing left to pick up - which also stops this passing by always answering true.
+		{"putting it back to what is running", ipc.SetRequest{Restart: &no}, false},
+		// Args alone, because they are a slice: the field a hand-written equality forgets.
+		{"changing only the arguments", ipc.SetRequest{Command: &cmd, Args: &otherArgs}, true},
+	} {
+		reply, err := c.Set("svc", step.req)
+		if err != nil {
+			t.Fatalf("%s: %v", step.what, err)
+		}
+		if reply.Pending != step.want {
+			t.Fatalf("%s: pending=%v, want %v", step.what, reply.Pending, step.want)
+		}
 	}
-	if same.Pending {
-		t.Fatal("setting a value to what it already is asked for a restart")
-	}
+}
 
-	// Back the other way, so this cannot pass by always answering no after the first call.
-	back, err := c.Set("svc", ipc.SetRequest{Restart: &no})
-	if err != nil {
-		t.Fatalf("Set back to no: %v", err)
-	}
-	if !back.Pending {
-		t.Fatal("changing the value back did not say the running process is still the old one")
-	}
+// A service that is not running has nothing pending whatever the definition says: the next start
+// reads what is on disk.
+func TestSetOnAStoppedServiceAsksForNoRestart(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
 
-	// A command and its arguments, which are the slice fields the signature exists for: a
-	// field-by-field equality is what forgets one of these.
-	cmd, args := "sleep", []string{"300"}
-	sameCmd, err := c.Set("svc", ipc.SetRequest{Command: &cmd, Args: &args})
+	if _, err := c.Add("idle", ipc.AddRequest{Command: "sleep", Args: []string{"300"}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	always := "always"
+	reply, err := c.Set("idle", ipc.SetRequest{Restart: &always})
 	if err != nil {
-		t.Fatalf("Set the same command: %v", err)
+		t.Fatalf("Set: %v", err)
 	}
-	if sameCmd.Pending {
-		t.Fatal("setting the command to the one it already runs asked for a restart")
-	}
-	other := []string{"301"}
-	diffArgs, err := c.Set("svc", ipc.SetRequest{Command: &cmd, Args: &other})
-	if err != nil {
-		t.Fatalf("Set different args: %v", err)
-	}
-	if !diffArgs.Pending {
-		t.Fatal("changing only the arguments did not ask for a restart")
+	if reply.Pending {
+		t.Fatal("a stopped service asked for a restart")
 	}
 }

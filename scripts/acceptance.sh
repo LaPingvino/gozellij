@@ -2107,16 +2107,28 @@ PROFILE
     else
         bad "set said: $(printf '%s' "$said" | tail -2 | tr '\n' '|')"
     fi
-    # Setting it to what it already is is not a change, and must not be answered as one. The CLI
+    # Setting it to what the running process already has is not a change, and must not be
+    # answered as one. setme was started with -restart no, so this asks for nothing. The CLI
     # refuses a set with no flags at all; this is the case it cannot see - flags were given, and
-    # every value in them matches what the service already holds. Being told to restart a running
-    # service to pick up a change that does not exist is worse than being told nothing: it costs
-    # you the process for no reason.
-    again=$("$gz" set setme -restart always 2>&1)
-    if printf '%s' "$again" | grep -q 'previous definition'; then
-        bad "setting a value to what it already is still asked for a restart"
+    # their values match what the process is running. Being told to restart a service to pick up
+    # a change that does not exist costs you the process for no reason.
+    noop=$("$gz" set setme -restart no 2>&1)
+    if printf '%s' "$noop" | grep -q 'previous definition'; then
+        bad "setting a value the running process already has still asked for a restart"
     else
-        ok "setting a value to what it already is asks for no restart"
+        ok "setting a value the running process already has asks for no restart"
+    fi
+    # And saying it again still says it. The process is still the old definition until it is
+    # restarted, so there is still something a restart would pick up - the question the message
+    # answers is about the running process, not about whether this particular command changed
+    # anything. A first attempt at the no-op case above compared the definition before and after
+    # the call, which got this exactly backwards: forget to restart, repeat the set, and be told
+    # there is nothing to pick up while the old process is still running.
+    repeat=$("$gz" set setme -restart always 2>&1)
+    if printf '%s' "$repeat" | grep -q 'previous definition'; then
+        ok "repeating a change still says the running process has not picked it up"
+    else
+        bad "the second set went quiet while the process was still the old definition: $(printf '%s' "$repeat" | tail -2 | tr '\n' '|')"
     fi
     if [ "$("$gz" status setme 2>/dev/null | awk '/^pid:/{print $2}')" = "$setpid" ]; then
         ok "and it did not restart the service behind your back"

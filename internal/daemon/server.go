@@ -539,15 +539,7 @@ func (s *Server) set(req ipc.Request) ipc.Response {
 		}
 		policy = p
 	}
-	// Whether any of this is actually a change, which is a different question from whether a
-	// field was given. `gozellij set web -restart no` on a service whose policy is already no
-	// went through, and the reply told you to restart it to pick up a change that is not there
-	// - the same failure as an empty set, one level deeper. The CLI catches the empty case
-	// ("nothing to change"); only the daemon can see that the values given match the ones held.
-	changed := false
 	if _, err := s.fab.Update(req.Service, func(d *fabric.Service) {
-		was := definitionSignature(d)
-		defer func() { changed = definitionSignature(d) != was }()
 		if sr.Command != nil {
 			d.Command = *sr.Command
 		}
@@ -570,7 +562,31 @@ func (s *Server) set(req ipc.Request) ipc.Response {
 	if err != nil {
 		return ipc.Err(req.ID, err)
 	}
-	return ipc.OKResponse(req.ID, ipc.SetReply{Status: s.statusReply(st), Pending: st.Live() && changed})
+	return ipc.OKResponse(req.ID, ipc.SetReply{Status: s.statusReply(st), Pending: s.stale(req.Service)})
+}
+
+// stale answers the question the reply actually asks: is the process running right now a
+// different definition from the one now on disk?
+//
+// Not "did this call change anything", which is a different question and the wrong one. A user
+// who sets a value, forgets to restart, and sets the same value again would be told there is
+// nothing to pick up while the old process is still running - Rule 1 inverted, which is worse
+// than the over-reporting it replaced. The baseline is what the live process was started with,
+// held in Process.Service and never rewritten by a later set: redefine() replaces the
+// supervisor's copy, so that one is no baseline at all.
+//
+// Not running means nothing is pending: the next start reads the definition on disk whatever it
+// says.
+func (s *Server) stale(name string) bool {
+	p, err := s.fab.Process(name)
+	if err != nil || p == nil {
+		return false
+	}
+	def, err := s.fab.Definition(name)
+	if err != nil {
+		return false
+	}
+	return definitionSignature(&def) != definitionSignature(&p.Service)
 }
 
 // definitionSignature is everything a set can alter, in a form two of which can be compared.
@@ -579,6 +595,9 @@ func (s *Server) set(req ipc.Request) ipc.Response {
 // not comparable, and the alternative is a field-by-field equality that silently stops covering a
 // field the day somebody adds one. A signature that misses a new field prints a stale value and is
 // obviously wrong; an equality that misses one reports "nothing changed" about a change.
+//
+// Name is deliberately absent: a rename changes it on the supervisor and not on the running
+// process, and a rename is not something a restart would pick up.
 func definitionSignature(d *fabric.Service) string {
 	return fmt.Sprintf("%q %q %q %q %v", d.Command, d.Args, d.Dir, d.Env, d.Restart)
 }
@@ -647,7 +666,7 @@ func (s *Server) logs(req ipc.Request) ipc.Response {
 		return ipc.Err(req.ID, err)
 	}
 
-	reply := ipc.LogsReply{Data: tail.Data, Truncated: tail.Truncated, Path: tail.Path, LogError: tail.Err}
+	reply := ipc.LogsReply{Data: tail.Data, Truncated: tail.Truncated, Path: tail.Path, LogError: tail.Err, Note: tail.Note}
 	if st, serr := s.fab.Status(req.Service); serr == nil {
 		reply.Running = st.State == fabric.StateRunning
 	}
