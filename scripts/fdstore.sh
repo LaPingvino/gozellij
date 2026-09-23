@@ -168,6 +168,15 @@ else
     bad "systemd holds $(systemctl --user show "$unit" -p NFileDescriptorStore --value) descriptors; want the socket and one terminal"
 fi
 
+# Age before the crash, which is the only place it means anything.
+#
+# This check has now been wrong three times, each one the same mistake in a new costume: a
+# threshold instead of a fact, a tolerance wider than the difference, and then fifteen seconds of
+# waiting placed *after* the crash - where an uptime measured from the adoption accumulates it
+# just the same. The service has to be old when the daemon dies. Then "its own age" and "the time
+# since the crash" are fifteen seconds apart and no tolerance can confuse them.
+sleep 15
+
 main=$(systemctl --user show "$unit" -p MainPID --value)
 kill -9 "$main" 2>/dev/null
 for _ in $(seq 40); do
