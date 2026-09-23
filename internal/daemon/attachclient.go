@@ -305,11 +305,16 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			// A session that owns the screen can show more than one service at a time, which a
 			// byte pipe cannot: two services writing to one terminal would be two programs
 			// drawing over each other. This is what the emulator was built for.
-			outcome, err = renderedSession(socket, c, service, input, in, rendered, replay && first)
+			outcome, err = renderedSession(socket, c, service, input, in, rendered, replay && first, &service)
 		} else {
 			outcome, err = c.runSession(service, input, in, out, replay && first, painter.Reserved())
 		}
 		c.Close()
+		// Renamed while attached, so everything from here on - the detach message, k, u, the
+		// reconnect after an upgrade - has to use the name it has now.
+		if renamed := c.RenamedTo(); renamed != "" {
+			service = renamed
+		}
 		if err != nil {
 			return err
 		}
@@ -1216,6 +1221,13 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 			if jerr := jsonUnmarshal(payload, &ev); jerr == nil {
 				if ev.Kind == ipc.EventFinished {
 					finished = true
+				}
+				if ev.Kind == ipc.EventRenamed && ev.Service != "" {
+					// Remembered, not printed: a line written into a byte pipe lands on top of
+					// the service's screen, and the status line shows the new name anyway.
+					name := ev.Service
+					c.renamedTo.Store(&name)
+					continue
 				}
 				if ev.Message != "" {
 					fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", ev.Message)

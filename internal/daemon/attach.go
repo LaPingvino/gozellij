@@ -164,12 +164,23 @@ func (a *attachSession) watchForExit(sub *fabric.Subscriber, done chan struct{})
 
 	go func() {
 		defer close(done)
+		// A rename is a status change too, and this is where the client hears about it: every
+		// later request it makes about this service - remove, revive, reconnect - has to use the
+		// name it has now.
+		name := a.svc.Name()
+		renamed := func() {
+			if now := a.svc.Name(); now != name {
+				a.notify(ipc.EventRenamed, fmt.Sprintf("%s is now called %s", name, now))
+				name = now
+			}
+		}
 		// Check before waiting: attaching to a service that has already finished must not wait
 		// for a change that has already happened.
 		for !finished() {
 			if _, open := <-changed; !open {
 				return
 			}
+			renamed()
 		}
 		st, _ := a.svc.Status()
 		a.notify(ipc.EventFinished, exitWords(a.svc.Name(), st))

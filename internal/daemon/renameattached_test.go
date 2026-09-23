@@ -30,8 +30,11 @@ func TestAnAttachSurvivesItsServiceBeingRenamed(t *testing.T) {
 	if err := dial(t, sock).Rename("before", "after"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	// Long enough for the rename's status notification to have been acted on.
-	time.Sleep(300 * time.Millisecond)
+	// And the client is told, because every later request it makes about this service - remove,
+	// revive, reconnect - has to use the new name.
+	if ev := eventOfKind(t, a, ipc.EventRenamed, 5*time.Second); ev.Service != "after" {
+		t.Errorf("the rename event says the service is now %q, want after", ev.Service)
+	}
 
 	if err := a.Writer().WriteFrame(ipc.KindData, []byte("echo TYPED-$((6*7))\n")); err != nil {
 		t.Fatalf("typing after the rename: %v", err)
@@ -69,19 +72,25 @@ func viewersOf(t *testing.T, sock, name string) int {
 // finishedMessage reads until the daemon says the service has finished, and returns what it said.
 func finishedMessage(t *testing.T, c *Client, within time.Duration) string {
 	t.Helper()
+	return eventOfKind(t, c, ipc.EventFinished, within).Message
+}
+
+// eventOfKind reads until an event of that kind arrives.
+func eventOfKind(t *testing.T, c *Client, kind string, within time.Duration) ipc.Event {
+	t.Helper()
 	_ = c.Conn().SetReadDeadline(time.Now().Add(within))
 	defer c.Conn().SetReadDeadline(time.Time{})
 	for {
-		kind, payload, err := c.Reader().ReadFrame()
+		frame, payload, err := c.Reader().ReadFrame()
 		if err != nil {
-			t.Fatalf("no finished event before the stream ended: %v", err)
+			t.Fatalf("no %s event before the stream ended: %v", kind, err)
 		}
-		if kind != ipc.KindEvent {
+		if frame != ipc.KindEvent {
 			continue
 		}
 		var ev ipc.Event
-		if json.Unmarshal(payload, &ev) == nil && ev.Kind == ipc.EventFinished {
-			return ev.Message
+		if json.Unmarshal(payload, &ev) == nil && ev.Kind == kind {
+			return ev
 		}
 	}
 }

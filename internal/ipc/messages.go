@@ -124,6 +124,10 @@ const (
 	// change of state behind it. A read-only attach swallowing a keystroke is one: rule 1 says
 	// an action that did nothing must not look like it worked.
 	EventNotice = "notice"
+	// EventRenamed says the service this client is attached to has a new name, carried in the
+	// event's Service. The stream goes on; what changes is the name any later request about this
+	// service must use - a client still using the old one would find "no such service".
+	EventRenamed = "renamed"
 )
 
 // AddRequest is the payload of OpServiceAdd.

@@ -32,6 +32,10 @@ type Client struct {
 
 	nextID atomic.Uint64
 
+	// renamedTo is the name the daemon last said the attached service now has, or "". Set by the
+	// output pump and read by the attach loop once the session is over.
+	renamedTo atomic.Pointer[string]
+
 	// mu serialises request/response pairs. The protocol carries ids so it could multiplex,
 	// but nothing needs that yet and a single in-flight request is far easier to reason about.
 	mu sync.Mutex
@@ -68,6 +72,14 @@ func Dial(path string) (*Client, error) {
 		r:    ipc.NewReader(conn),
 		w:    ipc.NewWriter(conn),
 	}, nil
+}
+
+// RenamedTo is the service's new name if the daemon reported a rename during this attach.
+func (c *Client) RenamedTo() string {
+	if p := c.renamedTo.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // Close hangs up.

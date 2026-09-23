@@ -92,6 +92,8 @@ type paneEvent struct {
 	gone    bool
 	err     error
 	message string
+	// renamed is the pane's service's new name, when the daemon has said it has one.
+	renamed string
 }
 
 // minRepaint is the shortest time between two repaints caused by a service's output.
@@ -115,7 +117,12 @@ type paneEvent struct {
 const minRepaint = 50 * time.Millisecond
 
 // renderedSession shows one or more services at once and returns why it ended.
-func renderedSession(socket string, first *Client, service string, input *terminalInput, in *os.File, screen *renderedScreen, replay bool) (attachOutcome, error) {
+//
+// showing is set, on the way out, to the service in the focused pane. Whatever the loop outside
+// does next - remove it, detach from it, reconnect to it - is about that service, and a rename
+// while attached changes what it is called: the pane hears about it, and the loop, still holding
+// the name it started with, answered Ctrl-] k with "no such service" and let go of the terminal.
+func renderedSession(socket string, first *Client, service string, input *terminalInput, in *os.File, screen *renderedScreen, replay bool, showing *string) (attachOutcome, error) {
 	cols, rows := screen.ServiceSize()
 	if _, err := first.Call(ipc.OpAttach, service, ipc.AttachRequest{
 		Cols: cols, Rows: rows, Replay: replay, ReadOnly: first.ReadOnly(),
@@ -128,6 +135,11 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	// How the panes are arranged, set by whichever split key was pressed last.
 	how := inColumns
 	focus := 0
+	defer func() {
+		if showing != nil && focus < len(panes) {
+			*showing = panes[focus].service
+		}
+	}()
 	// What this attach last looked like, if it has been here before. Anything that goes wrong
 	// reading it is said on the status line once the status line exists, a few lines down: a
 	// layout file that cannot be read is a thing to hear about, not a reason to refuse to attach.
@@ -627,6 +639,11 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 		// nothing left to say that is true of this pane.
 		return
 	}
+	if ev.renamed != "" {
+		// Everything the session does to this pane names its service - remove, revive, the next
+		// one along - and the old name no longer exists.
+		ev.pane.service = ev.renamed
+	}
 	if ev.message != "" {
 		note(ev.message)
 	}
@@ -842,7 +859,11 @@ func readFrames(p *livePane, c *Client, events chan<- paneEvent) {
 		case ipc.KindEvent:
 			var ev ipc.Event
 			if jsonUnmarshal(payload, &ev) == nil {
-				events <- paneEvent{pane: p, from: c, finished: ev.Kind == ipc.EventFinished, message: ev.Message}
+				pe := paneEvent{pane: p, from: c, finished: ev.Kind == ipc.EventFinished, message: ev.Message}
+				if ev.Kind == ipc.EventRenamed {
+					pe.renamed = ev.Service
+				}
+				events <- pe
 			}
 		case ipc.KindResponse:
 			var r ipc.Response
