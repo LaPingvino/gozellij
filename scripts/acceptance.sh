@@ -2157,12 +2157,27 @@ PROFILE
 
     # The default must have stopped being special, or it is still being eaten and never reaches
     # the shell - which is exactly the bug somebody who rebinds would hit and nobody else would.
-    tmux -L "$tmuxSock" send-keys C-] 'd'
+    #
+    # Checked by typing rather than by detaching, and that is not a detail. The first version
+    # pressed Ctrl-] d here: under a sabotage that ignored the configured prefix, that detached,
+    # and the *next* check - that C-b d detaches - then found the attach already gone and passed
+    # without testing anything. An earlier check's side effect making a later one pass is the
+    # shadowing this suite has been caught by before. So: send Ctrl-] and then a command. If the
+    # key is no longer special the shell sees a harmless control character and runs the command;
+    # if it is still being eaten it swallows the "e" and the shell is handed "cho ...".
+    tmux -L "$tmuxSock" send-keys C-] 'echo NOT-SPECIAL-42' Enter
     sleep 2
-    if pane | grep -q 'LEFT-THE-ATTACH'; then
-        bad "Ctrl-] still detached even though the prefix was changed to C-b"
-    else
+    if pane | grep -q 'NOT-SPECIAL-42'; then
         ok "and Ctrl-] is no longer special, so it goes to the service"
+    else
+        bad "Ctrl-] was still eaten: $(pane | tail -3 | tr '\n' '|')"
+    fi
+
+    # Still attached, which the check above depends on and the one below needs.
+    if pane | grep -q 'LEFT-THE-ATTACH'; then
+        bad "the attach ended early, so what follows would prove nothing"
+    else
+        ok "and the attach is still running, so the next check means something"
     fi
 
     # Then the configured one actually does the thing.
