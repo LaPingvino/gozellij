@@ -104,22 +104,44 @@ func RecoveredPTYs(log *slog.Logger) []fabric.Handover {
 			releaseFD(log, name)
 			continue
 		}
+		// Duplicated, not borrowed. The number alone was handed over here, while the *os.File
+		// that carried it from systemd still owned it - so once nothing referenced that File any
+		// more, Go's finaliser closed the descriptor underneath the running service. It showed up
+		// an hour later as "cannot keep pty fd 4 across exec: bad file descriptor" on the next
+		// reload, which dropped every service from the handover. A dup gives the fabric a
+		// descriptor of its own and lets this one go safely.
+		dup, derr := syscall.Dup(int(f.Fd()))
+		if derr != nil {
+			log.Warn("could not take a copy of a recovered terminal; the service will be started fresh",
+				"service", service, "pid", pid, "err", derr)
+			releaseFD(log, name)
+			continue
+		}
+		_ = f.Close()
 		out = append(out, fabric.Handover{
-			Name: service,
-			Pid:  pid,
-			// The descriptor number, not the file: fabric.Adopt wraps it in an os.File of its
-			// own, which is the same shape the exec handover arrives in.
-			PTYFd: int(f.Fd()),
-			// Not the real start time, which died with the daemon that knew it. Now, and
-			// honestly: an uptime counted from the adoption is wrong by the length of the gap,
-			// which is seconds, where a zero time would print as 1970.
-			StartedAt: time.Now(),
+			Name:  service,
+			Pid:   pid,
+			PTYFd: dup,
+			// The real one, from the kernel. This used to be time.Now() with a comment saying
+			// the error would be seconds; it is the whole time since the crash and it grows.
+			// A shell running since yesterday reported twenty minutes of uptime, because that
+			// is when the daemon came back. Now only when /proc cannot say.
+			StartedAt: startOf(pid),
 			Orphan:    true,
 		})
 		claimFD(name)
 		log.Info("taking a service's terminal back from systemd", "service", service, "pid", pid)
 	}
 	return out
+}
+
+// startOf is when a process began, falling back to now when the kernel cannot be asked - which
+// keeps a recovered service's uptime honest instead of restarting it at every crash.
+func startOf(pid int) time.Time {
+	if t, ok := fabric.ProcessStart(pid); ok {
+		return t
+	}
+	return time.Now()
 }
 
 // NoteIfNothingIsHolding says once, at startup, that nothing is holding the terminals - rather than once per

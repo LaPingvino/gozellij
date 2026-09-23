@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
+	"syscall"
 )
 
 // Keeping the listening socket across a restart.
@@ -17,6 +20,78 @@ import (
 //
 // The pty masters are the point of all this and they are the next piece. This one carries no risk
 // of losing a process if it goes wrong.
+
+// HandoverListenerEnv carries the listening socket's descriptor number across an exec-in-place.
+//
+// Without it the successor has no way to know the socket is already open, and the check that
+// refuses to start beside a live daemon reads its *own* socket as that daemon: systemd is holding
+// a copy in its file-descriptor store, so a connect succeeds into the backlog with nobody
+// accepting. Measured in production as "another gozellij daemon is already running", from a
+// `systemctl --user reload` - which then exited 1 and took a restart to recover from.
+const HandoverListenerEnv = "GOZELLIJ_HANDOVER_LISTENER"
+
+// KeepListenerAcrossExec clears FD_CLOEXEC on the listening socket and says which descriptor it
+// is, so the successor can pick it up instead of trying to open one beside it.
+func (s *Server) KeepListenerAcrossExec() (int, error) {
+	ul, ok := s.ln.(*net.UnixListener)
+	if !ok {
+		return 0, fmt.Errorf("the listener is not a unix socket")
+	}
+	f, err := ul.File()
+	if err != nil {
+		return 0, fmt.Errorf("duplicating the listening socket: %w", err)
+	}
+	// Duplicated out of the *os.File and the File closed, rather than returning its descriptor
+	// number and letting it go. This is the same mistake as the one in ptystore.go, made again in
+	// the fix for it an hour later: an os.File finaliser closes the descriptor when nothing
+	// references the File any more, so the successor inherited a closed socket and never came
+	// back. runtime.KeepAlive does not help - it only reaches the end of *this* function.
+	//
+	// The suite caught it as "pids changed across the upgrade", which is the promise this whole
+	// change exists to protect.
+	defer f.Close()
+	fd, err := syscall.Dup(int(f.Fd()))
+	if err != nil {
+		return 0, fmt.Errorf("duplicating the listening socket for the successor: %w", err)
+	}
+	if err := clearCloexec(fd); err != nil {
+		syscall.Close(fd)
+		return 0, err
+	}
+	return fd, nil
+}
+
+// adoptHandedListener takes the socket an exec-in-place left open, if there is one.
+func adoptHandedListener(path string, log *slog.Logger) (net.Listener, bool) {
+	v := os.Getenv(HandoverListenerEnv)
+	if v == "" {
+		return nil, false
+	}
+	defer os.Unsetenv(HandoverListenerEnv)
+	fd, err := strconv.Atoi(v)
+	if err != nil || fd < 0 {
+		log.Warn("the handover named a listening socket that is not a descriptor number", "value", v)
+		return nil, false
+	}
+	f := os.NewFile(uintptr(fd), "listener")
+	if f == nil {
+		return nil, false
+	}
+	defer f.Close()
+	ln, err := net.FileListener(f)
+	if err != nil {
+		log.Warn("the socket handed across the upgrade is not a listener; starting clean", "err", err)
+		return nil, false
+	}
+	if ua, isUnix := ln.Addr().(*net.UnixAddr); !isUnix || ua.Name != path {
+		log.Warn("the socket handed across the upgrade is for a different path; starting clean",
+			"handed", ln.Addr().String(), "want", path)
+		ln.Close()
+		return nil, false
+	}
+	log.Info("kept the listening socket across the upgrade", "path", path)
+	return ln, true
+}
 
 // socketFDName is what the listening socket is stored under. Short, and it cannot collide with a
 // service's own name because of the prefix every one of those carries.

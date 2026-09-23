@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -227,5 +228,15 @@ func upgrade(srv *daemon.Server, fab *fabric.Fabric, log *slog.Logger) error {
 	// exec closes it for us; the socket file is then stale, and the successor reclaims it the
 	// same way it would after a crash. A failed exec, meanwhile, leaves us listening exactly as
 	// before, which is the whole point.
+	// The listening socket goes across too. Without this the successor finds its own socket -
+	// systemd holds a copy in the file-descriptor store, so a connect completes into the backlog
+	// with nobody accepting - decides another daemon is running, and exits.
+	if fd, err := srv.KeepListenerAcrossExec(); err != nil {
+		log.Warn("could not keep the listening socket across the upgrade; the successor will open its own", "err", err)
+	} else {
+		if err := os.Setenv(daemon.HandoverListenerEnv, strconv.Itoa(fd)); err != nil {
+			log.Warn("could not name the listening socket for the successor", "err", err)
+		}
+	}
 	return daemon.ExecSelf(manifest, "")
 }

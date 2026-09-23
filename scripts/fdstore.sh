@@ -184,6 +184,27 @@ else
     bad "the service's pid went $svcpid then [$after_svc] - it was restarted, not recovered"
 fi
 
+# The uptime has to survive too, not just the process.
+#
+# It did not. The adoption recorded time.Now() as the start, so a service that had been running
+# since yesterday reported however long ago the daemon came back - and the error grows with the
+# time since the crash rather than being the "seconds" the comment claimed. Found in production on
+# the first real crash this program survived, where a shell up for an hour and a half said twenty
+# minutes.
+# Against ps rather than against a number I picked. The first version of this check asserted the
+# uptime was at least twenty seconds, which failed on a service that was honestly seven seconds
+# old - a threshold standing in for a fact. ps knows the real age; the only question is whether
+# gozellij agrees with it.
+real=$(ps -o etimes= -p "$svcpid" 2>/dev/null | tr -d ' ')
+said=$("$gz" status survivor 2>/dev/null | awk '/^uptime:/{print $2}')
+saidsecs=${said%s}; saidsecs=${saidsecs%.*}
+case "$said" in *h*|*m*) saidsecs="" ;; esac
+if [ -n "$real" ] && [ -n "$saidsecs" ] && [ "$((real - saidsecs))" -le 3 ] && [ "$((real - saidsecs))" -ge -3 ]; then
+    ok "a recovered service keeps its real uptime (says ${said}, ps says ${real}s)"
+else
+    bad "the recovered service says ${said} but has been running ${real}s - that is the time since the crash, not its own"
+fi
+
 # Alive, not merely reported alive: its output has to still be arriving through the terminal the
 # new daemon inherited, written by the process that was there before the crash. The pid in the
 # line is what makes that unambiguous - see the note where the service is defined.
@@ -256,6 +277,57 @@ fi
 
 tmux -L "$tmuxSock" kill-server 2>/dev/null
 "$gz" rm sticky >/dev/null 2>&1
+
+# ------------------------------------- an upgrade after a recovery still keeps the services
+#
+# The sequence that broke in production, in order: the daemon is restarted and recovers its
+# services from the file-descriptor store, and then somebody runs `systemctl --user reload`. Two
+# separate faults met there, and each on its own is enough to lose every service:
+#
+#   - the recovered pty was handed to the fabric as a bare descriptor number while the *os.File*
+#     that carried it from systemd still owned it, so Go's finaliser closed it underneath the
+#     running shell. The reload then reported "cannot keep pty fd 4 across exec: bad file
+#     descriptor" and handed over nothing.
+#   - the successor of an exec-in-place found its own socket - systemd holds a copy, so a connect
+#     completes into the backlog with nobody accepting - decided another daemon was running, and
+#     exited 1.
+#
+# So this recovers first and reloads second, which is the only order that would have caught it.
+say
+"$gz" add upgrader -start -restart always -- sh -c 'i=0; while :; do echo "UPG-$$-$i"; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+sleep 2
+upg_pid=$("$gz" status upgrader 2>/dev/null | awk '/^pid:/{print $2}')
+
+# A crash first, so the service is one the daemon recovered rather than one it started.
+main=$(systemctl --user show "$unit" -p MainPID --value)
+kill -9 "$main" 2>/dev/null
+for _ in $(seq 40); do
+    now=$(systemctl --user show "$unit" -p MainPID --value)
+    [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$main" ] && break
+    sleep 0.25
+done
+sleep 2
+if [ "$("$gz" status upgrader 2>/dev/null | awk '/^pid:/{print $2}')" = "$upg_pid" ]; then
+    ok "a service survives the crash it is about to be upgraded through"
+else
+    bad "the service did not survive the crash, so the upgrade cannot be tested"
+fi
+
+before_restarts=$(systemctl --user show "$unit" -p NRestarts --value)
+systemctl --user reload "$unit" 2>/dev/null
+sleep 3
+after_pid=$("$gz" status upgrader 2>/dev/null | awk '/^pid:/{print $2}')
+if [ -n "$after_pid" ] && [ "$after_pid" = "$upg_pid" ]; then
+    ok "and keeps its pid through a reload that follows the recovery"
+else
+    bad "the reload lost it: $upg_pid became [$after_pid]"
+fi
+if [ "$(systemctl --user show "$unit" -p NRestarts --value)" = "$before_restarts" ]; then
+    ok "and the reload did not make the unit restart"
+else
+    bad "the reload turned into a restart: $before_restarts -> $(systemctl --user show "$unit" -p NRestarts --value)"
+fi
+"$gz" rm upgrader >/dev/null 2>&1
 
 # ------------------------------------------- the store must not fill up with terminals of the dead
 #

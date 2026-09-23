@@ -83,7 +83,11 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 	// is queued rather than refused - and the stale-socket check below would get in the way,
 	// because a socket with nobody accepting on it still completes a connect into its backlog and
 	// so reads as a live daemon.
-	ln, adopted := adoptListener(path, log)
+	// An exec-in-place hands its socket over directly; only a fresh start asks systemd for one.
+	ln, adopted := adoptHandedListener(path, log)
+	if !adopted {
+		ln, adopted = adoptListener(path, log)
+	}
 	if !adopted {
 		if err := clearStaleSocket(path); err != nil {
 			return nil, err
