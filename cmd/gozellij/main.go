@@ -215,14 +215,22 @@ func captureShellEnv() []string {
 // one takes it, and the inner one can never be told anything. The thing that was wanted is nearly
 // always switching in place, so that is what the message offers. -nest does it anyway.
 //
-// targetPid is the service's process, or 0 when it is not running or could not be asked. Being
-// underneath it in the process tree is the evidence that holds when the name does not - GOZELLIJ
-// is frozen into the shell when it starts, so it says nothing once a service has been renamed, and
-// nothing at all if the service sets GOZELLIJ itself.
-func refuseNesting(target string, targetPid int, nest bool) error {
+// targetPid is the service's process, or 0 when it is not running; asked says whether the daemon
+// answered at all. Being underneath that process is the evidence that holds when the name does not
+// - GOZELLIJ is frozen into the shell when it starts, so it says nothing once a service has been
+// renamed, and nothing at all if the service sets GOZELLIJ itself.
+//
+// So the name counts only when the daemon could not be asked. Counting it always refused bare
+// `gozellij` inside a shell renamed from "shell" to "work" as attaching shell to itself - a service
+// that no longer existed.
+func refuseNesting(target string, targetPid int, asked, nest bool) error {
 	inside := os.Getenv("GOZELLIJ")
 	label := status.PrefixLabel(status.Load().Prefix)
-	if inside == target || (targetPid > 0 && fabric.DescendsFrom(os.Getpid(), targetPid)) {
+	self := targetPid > 0 && fabric.DescendsFrom(os.Getpid(), targetPid)
+	if !asked && inside == target {
+		self = true
+	}
+	if self {
 		return fmt.Errorf("you are already inside %s - attaching it to itself would draw its own "+
 			"output back into itself.\nIf this pane has frozen, %s u reconnects it", target, label)
 	}
@@ -234,19 +242,21 @@ func refuseNesting(target string, targetPid int, nest bool) error {
 		inside, label, label, target, target)
 }
 
-// servicePid asks the daemon for a service's process, for refuseNesting. Any failure is 0: the
-// attach that follows reports a missing daemon or service far better than a guard could.
-func servicePid(sock, name string) int {
+// servicePid asks the daemon for a service's process, for refuseNesting: 0 when it is not
+// running or not defined, and asked false when the daemon could not be reached - the attach that
+// follows reports that far better than a guard could.
+func servicePid(sock, name string) (pid int, asked bool) {
 	c, err := connect(sock)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	defer c.Close()
 	s, err := c.Status(name)
 	if err != nil {
-		return 0
+		// It answered - most often "no such service", which is an answer.
+		return 0, true
 	}
-	return s.Pid
+	return s.Pid, true
 }
 
 // looksLikeAServiceName reports whether an unknown first argument is plausibly one, so that the
@@ -277,7 +287,8 @@ func cmdShell(args []string) error {
 	}
 	// Bare `gozellij`, typed inside a gozellij shell, is the same nesting as `attach` - and the
 	// same feedback loop when the shell it would land in is this one.
-	if err := refuseNesting(*name, servicePid(*sock, *name), *nest); err != nil {
+	pid, asked := servicePid(*sock, *name)
+	if err := refuseNesting(*name, pid, asked, *nest); err != nil {
 		return err
 	}
 
@@ -672,7 +683,8 @@ func cmdAttach(args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("attach needs exactly one service name")
 	}
-	if err := refuseNesting(fs.Arg(0), servicePid(*sock, fs.Arg(0)), *nest); err != nil {
+	pid, asked := servicePid(*sock, fs.Arg(0))
+	if err := refuseNesting(fs.Arg(0), pid, asked, *nest); err != nil {
 		return err
 	}
 	path := *sock
