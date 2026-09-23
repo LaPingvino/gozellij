@@ -2117,6 +2117,71 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ------------------------------------------ the prefix you configured is the prefix you get
+    #
+    # Every other check in this file presses Ctrl-], which is the default. The person this program
+    # was written for does not use the default - he set prefix=C-b - so the whole suite has been
+    # driving a configuration nobody runs, and the one that is actually in daily use was covered
+    # only by a unit test of the parser. A parser that reads "C-b" correctly and an attach loop
+    # that still watches for Ctrl-] would pass everything here and work for nobody.
+    #
+    # Three things have to be true, and the third is the one a unit test cannot see: the new key
+    # works, the old key stops being special, and the help says the key you actually press.
+    only
+    mkdir -p "$home/.config/gozellij"
+    printf 'prefix=C-b\n' > "$home/.config/gozellij/status"
+    "$gz" add prefixed -start -restart no -- sh -c 'PS1=""; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; $gz attach prefixed; printf \"LEFT-THE-ATTACH\\n\"; sleep 60'"
+    sleep 3
+
+    # The help, which is the first thing a person presses when they are not sure. It has to name
+    # the key they configured and must not name the old one: telling somebody to press Ctrl-]
+    # when that now goes to their shell is worse than saying nothing.
+    #
+    # Written for "C-b" first, which is the spelling the config file takes, and it reads back as
+    # "Ctrl-B" - PrefixLabel spells a key the way a person says it out loud rather than the way
+    # they wrote it down. That is the better label, so the check moved rather than the code.
+    tmux -L "$tmuxSock" send-keys C-b '?'
+    sleep 2
+    helpline=$(pane | grep 'detach' | tail -1)
+    if printf '%s' "$helpline" | grep -qiE 'ctrl-b|c-b' && ! printf '%s' "$helpline" | grep -q 'Ctrl-]'; then
+        ok "the configured prefix answers, and the help names it rather than the default"
+    else
+        bad "C-b ? said: $(printf '%s' "$helpline" | tr '\n' '|')"
+    fi
+
+    # The default must have stopped being special, or it is still being eaten and never reaches
+    # the shell - which is exactly the bug somebody who rebinds would hit and nobody else would.
+    tmux -L "$tmuxSock" send-keys C-] 'd'
+    sleep 2
+    if pane | grep -q 'LEFT-THE-ATTACH'; then
+        bad "Ctrl-] still detached even though the prefix was changed to C-b"
+    else
+        ok "and Ctrl-] is no longer special, so it goes to the service"
+    fi
+
+    # Then the configured one actually does the thing.
+    tmux -L "$tmuxSock" send-keys C-b 'd'
+    for _ in $(seq 16); do
+        pane | grep -q 'LEFT-THE-ATTACH' && break
+        sleep 0.5
+    done
+    if pane | grep -q 'LEFT-THE-ATTACH'; then
+        ok "and C-b d detaches, which is what it was rebound for"
+    else
+        bad "C-b d did not detach: $(pane | tail -2 | tr '\n' '|')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    rm -f "$home/.config/gozellij/status"
+    "$gz" stop prefixed >/dev/null 2>&1
+    "$gz" rm prefixed >/dev/null 2>&1
+
     # ---------------------------------------- a broken environment is reported, not suffered
     #
     # A log directory that cannot be written is not exotic: a full disk, a mode somebody tightened,
