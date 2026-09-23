@@ -970,6 +970,63 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm titler >/dev/null 2>&1
 
+    # ---------------------------------------- a rendered attach survives the window changing size
+    #
+    # Nothing tested this, and it is the most ordinary thing a person does: you drag the corner of
+    # your terminal while something is open in it. In a rendered attach that is a longer chain than
+    # anywhere else - SIGWINCH, the screen resizes, the panes are laid out again, each grid reflows
+    # its scrollback to the new width, each service is told its new size, the program redraws, and
+    # the whole thing is painted. Every link is unit-tested and the chain was not.
+    only
+    # It reports the width it believes it has, which is the thing the resize is supposed to change.
+    # stty rather than tput: the daemon runs under a nearly empty environment, so a service has no
+    # TERM and tput cannot answer. stty asks the terminal itself.
+    "$gz" add sizer -start -- sh -c 'while :; do printf "SIZER-COLS-%s\r\n" "$(stty size 2>/dev/null | cut -d" " -f2)"; sleep 1; done' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render sizer'"
+    sleep 3
+    if ! pane | grep -q 'SIZER-'; then
+        bad "the rendered attach drew nothing before the resize, so this proves nothing"
+    else
+        ok "a rendered attach is drawing before the window changes size"
+
+        # Narrower and shorter, which is the direction that has to reflow and re-place things.
+        tmux -L "$tmuxSock" resize-window -x 50 -y 14 2>/dev/null || \
+            tmux -L "$tmuxSock" set-option -g window-size manual 2>/dev/null
+        tmux -L "$tmuxSock" resize-window -x 50 -y 14 2>/dev/null
+        sleep 4
+
+        if pane | grep -q 'SIZER-'; then
+            ok "and it is still drawing the service afterwards"
+        else
+            bad "the pane went blank after the resize: $(pane | head -3 | tr '\n' '|')"
+        fi
+
+        # The status line has to follow the window down, not stay on row 24 of a 14-row screen.
+        if pane | sed -n '14p' | grep -q 'sizer'; then
+            ok "the status line moved to the new last row"
+        else
+            bad "row 14 of the resized window is: [$(pane | sed -n '14p')]"
+        fi
+
+        # And the service was told. This replaced a check on the widest line drawn, which could
+        # not fail: tmux clips its own capture to the window width, so a leftover from the old
+        # size is invisible to it whatever the program does. Asking the service what width it
+        # believes it has goes all the way down the chain instead of looking at the top of it.
+        saw=$(pane | grep -o 'SIZER-COLS-[0-9]*' | tail -1 | sed 's/.*-//')
+        if [ "$saw" = "50" ]; then
+            ok "the service was told its new width ($saw columns)"
+        else
+            bad "the service still believes it has $saw columns, not 50"
+        fi
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm sizer >/dev/null 2>&1
+
     # ------------------------------- the login shell actually lands in gozellij
     #
     # The chain a person meets on their first ssh in after `gozellij login-setup -install`:
@@ -1029,6 +1086,40 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm shell >/dev/null 2>&1
     rm -rf "$lhome"
+
+    # ----------------------------------------------------- a new shell, from inside, where you are
+    #
+    # The new-tab key every other multiplexer has, and the thing there was otherwise no way to do
+    # from inside gozellij: typing `gozellij shell -name x` in a shell is nesting, which is refused.
+    # It has to open in the directory the shell you pressed it in had got to, and know its own name
+    # rather than inherit the one it was made from.
+    only
+    mkdir -p "$home/deep/er"
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 100 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e SHELL=/bin/sh -e TERM=xterm-256color \
+        "sh -c 'exec $gz'"
+    sleep 3
+    tmux -L "$tmuxSock" send-keys "cd $home/deep/er" Enter
+    sleep 1
+    tmux -L "$tmuxSock" send-keys C-] 'c'
+    sleep 3
+    if "$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'shell-2'; then
+        ok "Ctrl-] c starts a new shell from inside an attach"
+    else
+        bad "no new shell appeared: $("$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')"
+    fi
+    tmux -L "$tmuxSock" send-keys 'echo "IN=[$GOZELLIJ] AT=[$(pwd)]"' Enter
+    sleep 2
+    seen=$(pane | grep -o 'IN=\[[^]]*\] AT=\[[^]]*\]' | tail -1)
+    if [ "$seen" = "IN=[shell-2] AT=[$home/deep/er]" ]; then
+        ok "and it opens where you were, knowing its own name"
+    else
+        bad "the new shell says $seen"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm shell shell-2 >/dev/null 2>&1
 
     # ----------------------------------------- watching without being able to touch
     #
