@@ -2117,6 +2117,75 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # -------------------------------------- the status line as a command, and landing where you were
+    #
+    # Two things the document names that nothing here drove. `gozellij stats` is the status line as
+    # a command - byobu-shaped, for a person who wants it in somebody else's bar - and it was
+    # documented as **Verified** on the strength of a by-hand run. `gozellij shell -last` is the
+    # answer to the rename question, and it was checked end to end by hand too. A promise nobody
+    # re-checks is the same as a check that cannot fail: it is true until it is not, and nothing
+    # says when that changed.
+    only
+    "$gz" add lastone -start -restart no -- cat >/dev/null 2>&1
+    sleep 1
+
+    # stats prints the line without a terminal at all, which is the whole point of it being a
+    # command rather than only a row an attach draws.
+    statline=$("$gz" stats 2>&1)
+    if printf '%s' "$statline" | grep -q 'lastone'; then
+        ok "stats prints the status line as a command, naming the service"
+    else
+        bad "stats said: $(printf '%s' "$statline" | head -2 | tr '\n' '|')"
+    fi
+    if printf '%s' "$statline" | grep -qE '[0-9]+/[0-9]+'; then
+        ok "and it says which of how many, the way the attached line does"
+    else
+        bad "stats printed no service count: $(printf '%s' "$statline" | head -1)"
+    fi
+
+    # Now land somewhere, so there is a "where you were" to come back to. The record is written
+    # when an attach starts showing something, not on the way out - people leave by closing the
+    # window, and a client killed by a signal runs nothing on its way out.
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach lastone'"
+    sleep 3
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    sleep 1
+
+    # -last follows it.
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz shell -last'"
+    sleep 4
+    if pane | grep -q '\[lastone\]'; then
+        ok "gozellij shell -last lands in what a terminal was last showing"
+    else
+        bad "-last landed elsewhere: $(pane | tail -2 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+
+    # And without the flag nothing changed, which is the half that makes it safe to have: a login
+    # still lands in the service called shell, whatever anybody was last looking at.
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz shell'"
+    sleep 4
+    if pane | grep -q '\[shell\]'; then
+        ok "and a plain gozellij shell still lands in shell, as it always did"
+    else
+        bad "a plain shell landed elsewhere: $(pane | tail -2 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop lastone shell >/dev/null 2>&1
+    "$gz" rm lastone shell >/dev/null 2>&1
+
     # ------------------------------------------ the prefix you configured is the prefix you get
     #
     # Every other check in this file presses Ctrl-], which is the default. The person this program
