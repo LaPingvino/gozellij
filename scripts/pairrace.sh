@@ -37,8 +37,49 @@
 #   - the resize. split-window resizes the first pane, but one attach resized six times over loses
 #     nothing: 0 failures in 10.
 #
-# It is a heisenbug so far: logging every frame in the client, or every write in the buffer, drops
-# it to 0 in 24 both times. Whatever the window is, a file write per frame is wider than it.
+# WHAT THE DAEMON DOES, MEASURED
+#
+# Atomic counters on the daemon side - cheap enough not to perturb it, unlike everything else
+# tried - said "offered=199 wrote=199" and "offered=118 wrote=118", neither lagged, in a failing
+# run. Every byte the daemon had, it wrote to both clients. So the daemon is not dropping anything
+# and the bytes reach the client that does not show them.
+#
+# AND NOT A DATA RACE
+#
+# Twenty-four runs of both binaries built with -race, GORACE=log_path so the reports survive the
+# per-run cleanup: no report at all. Together with the counters that places the fault in the
+# *terminal's* state - where the cursor is, which scrolling region is in force - and not in Go
+# memory. That is a class the race detector can never report, so its silence is a result rather
+# than a disappointment, and it matches the shape of the thing: a permanently blank body under a
+# status line that is still ticking is what a cursor parked on the reserved row looks like, every
+# repaint painting over what just arrived.
+#
+# On a passing run the cursor ends at row 8 of a 10-row pane, the status line being row 9. A
+# failing run has never been captured with the cursor query in place, which is the measurement
+# this is waiting for.
+#
+# WHY IT IS HARD TO SEE
+#
+# Every attempt to observe it from inside the client made it stop: per-frame logging, an
+# in-memory ring, and a single atomic add, 0 in 96 between them. Daemon-side instrumentation did
+# *not* hide it, which is part of why the client is the suspect.
+#
+# And then it stopped anyway. About five failures were seen in the first hundred runs and none in
+# the two hundred after, with the same pre-fix binary, at six- and ten-way parallelism, idle and
+# alongside a running acceptance suite. So the conditions are not pinned down, and one honest
+# possibility is that the earlier reproductions owed something to whatever else this machine was
+# doing at the time - several full acceptance suites were running through that period.
+#
+# A confound worth remembering: running thirty copies of this script at once is a
+# *self-synchronising* load. Same code, same sleeps, same points reached together. The acceptance
+# suite is heterogeneous - tmux servers starting and dying, daemons upgrading, ptys opening, vim
+# redrawing - and a better generator of odd interleavings. Eighty runs went into learning that the
+# two are not the same thing.
+#
+# 04fda77 fixed a real defect found while looking for this - the status line built its scrolling
+# region from a size read outside the lock guarding the write - but there is no evidence that it
+# was this. It cannot be told apart from perturbation by counting, which is why it was proved
+# deterministically instead and claimed narrowly.
 set -u
 
 runs=${1:-24}
