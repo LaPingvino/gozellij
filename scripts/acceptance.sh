@@ -2495,6 +2495,92 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ------------------------------------------ the last two keys, and what they say without panes
+    #
+    # x closes a pane and f scrolls forward, and neither had ever been pressed. Both need panes,
+    # so both have a second job: saying why they did nothing when there are none. A key that
+    # silently does nothing is rule 1's exact case, and the one place a person is most likely to
+    # meet it - pressing a key the help offers, in the mode they happen to be running.
+    only
+    "$gz" add pane1 -start -- sh -c 'i=1; while [ $i -le 40 ]; do printf "one-%02d\r\n" $i; i=$((i+1)); done; sleep 120' >/dev/null 2>&1
+    "$gz" add pane2 -start -- sh -c 'printf "TWO-IS-HERE\r\n"; sleep 120' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render pane1'"
+    sleep 3
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 3
+    if pane | grep -q 'TWO-IS-HERE'; then
+        ok "two panes to press the last two keys in"
+
+        # Focus lands on the *new* pane after a split - the status line marks it, [pane2] - so the
+        # keys below would otherwise be pressed at the pane with one line in it while the check
+        # read the other pane's column and saw nothing move. That is how the first version of this
+        # failed, twice over: f looked broken and x looked like it closed the wrong pane, and both
+        # were this.
+        tmux -L "$tmuxSock" send-keys C-] 'o'
+        sleep 2
+
+        # f is the inverse of b: back into the scrollback, then forward out of it again. Only b
+        # and g were ever pressed, so an f that did nothing - or that went the same way as b -
+        # looked exactly like a working one.
+        tmux -L "$tmuxSock" send-keys C-] 'b'
+        sleep 2
+        backTo=$(pane | grep -o 'one-[0-9][0-9]' | head -1)
+        tmux -L "$tmuxSock" send-keys C-] 'f'
+        sleep 2
+        fwdTo=$(pane | grep -o 'one-[0-9][0-9]' | head -1)
+        if [ -n "$backTo" ] && [ -n "$fwdTo" ] && [ "$fwdTo" \> "$backTo" ]; then
+            ok "Ctrl-] f comes forward again from where Ctrl-] b went ($backTo then $fwdTo)"
+        else
+            bad "b then f showed $backTo then $fwdTo"
+        fi
+
+        # x closes the focused pane, leaving the other one and the attach.
+        tmux -L "$tmuxSock" send-keys C-] 'g'
+        sleep 1
+        tmux -L "$tmuxSock" send-keys C-] 'x'
+        sleep 3
+        if pane | grep -q 'TWO-IS-HERE' && ! pane | grep -q 'one-40'; then
+            ok "Ctrl-] x closes the pane you are in and leaves the other"
+        else
+            bad "after x the screen is: $(pane | grep -v '^$' | tail -3 | tr '\n' '|')"
+        fi
+        # Asked of the daemon rather than the screen. The first version looked for the status
+        # line's usual text and failed, because closing a pane makes gozellij say something and a
+        # message owns that row for messageLinger seconds - the same trap that had just been fixed
+        # in goto(). A viewer the daemon still counts is the same question with no such window.
+        if [ "$("$gz" ls 2>/dev/null | awk '$1 == "pane2" {print $6}')" = "1" ]; then
+            ok "and closing one pane of two leaves the attach standing"
+        else
+            bad "after closing a pane, viewers on pane2 reads [$("$gz" ls 2>/dev/null | awk '$1 == "pane2" {print $6}')]"
+        fi
+    else
+        bad "the split this needs did not happen: $(pane | head -2 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+
+    # And in a byte pipe, where there are no panes at all, they say so rather than doing nothing.
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach pane2'"
+    sleep 3
+    tmux -L "$tmuxSock" send-keys C-] 'x'
+    sleep 2
+    if pane | grep -q 'would close a pane'; then
+        ok "and in a byte pipe they say why they did nothing, rather than doing nothing"
+    else
+        bad "Ctrl-] x in a byte pipe said: $(pane | tail -2 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop pane1 pane2 >/dev/null 2>&1
+    "$gz" rm pane1 pane2 >/dev/null 2>&1
+
     # ------------------------------------------- the prefix keys nobody had pressed
     #
     # Found by counting: the suite presses | o n g d b > < z r l c ? and -, and never k, u, x, f,
