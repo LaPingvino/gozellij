@@ -501,7 +501,7 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 only
 mkdir -p "$home/somewhere"
 "$gz" add placed -dir "$home/somewhere" -env ONE=first -env TWO=second -start -restart no -- \
-    sh -c 'echo "AT=[$PWD] ONE=[$ONE] TWO=[$TWO] PATH=[${PATH:+set}]"; sleep 120' >/dev/null 2>&1
+    sh -c 'echo "AT=[$PWD] ONE=[$ONE] TWO=[$TWO] HOME=[$HOME]"; sleep 120' >/dev/null 2>&1
 sleep 2
 saw=$("$gz" logs placed 2>/dev/null | grep 'AT=' | tail -1)
 
@@ -520,10 +520,16 @@ else
 fi
 
 # Added, not substituted. The service still has the environment it would have had.
-if printf '%s' "$saw" | grep -q 'PATH=\[set\]'; then
+#
+# HOME, not PATH, and that is the whole check. The first version asked for PATH and passed against
+# a build that inherited nothing at all: a shell started with an empty environment invents a
+# default PATH for itself, so ${PATH:+set} is true either way and the assertion could not fail.
+# Measured: `env -i /bin/sh -c 'echo $PATH $HOME'` prints a PATH and an empty HOME. HOME is the
+# one the shell will not make up.
+if printf '%s' "$saw" | grep -q "HOME=\[$home\]"; then
     ok "and it adds to the environment rather than replacing it"
 else
-    bad "setting -env left the service without a PATH: $saw"
+    bad "setting -env cost the service the rest of its environment: $saw"
 fi
 "$gz" stop placed >/dev/null 2>&1
 "$gz" rm placed >/dev/null 2>&1
