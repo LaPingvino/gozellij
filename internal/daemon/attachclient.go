@@ -749,6 +749,28 @@ func revive(socket, service string) (string, bool) {
 	return fmt.Sprintf("%s was not running - started it again", service), true
 }
 
+// unctrl forgives a Ctrl still held down from the prefix.
+//
+// The natural way to type a prefix command is to press Ctrl-B, keep Ctrl down, and press the
+// next key - which turns d into Ctrl-D and shift+/ into Ctrl-/, a byte that is neither. Found in
+// use: `Ctrl-B ?` showed "'\x1f' does nothing", because 0x1f is what a held Ctrl makes of the key
+// that types a question mark. tmux answers this with a C- binding for every command; this reads
+// the key the person meant.
+//
+// Four bytes keep their own meaning: the prefix itself (pressed twice sends it through), Tab and
+// Ctrl-L (already bound, to switching panes and to redraw), and Esc, which is a key of its own.
+func (t *terminalInput) unctrl(b byte) byte {
+	switch {
+	case b == t.prefix, b == 0x09, b == 0x0c, b == 0x1b:
+		return b
+	case b >= 0x01 && b <= 0x1a:
+		return b + 0x60 // Ctrl-D is d
+	case b == 0x1f:
+		return '?' // Ctrl-/, which is what a held Ctrl makes of shift+/
+	}
+	return b
+}
+
 // noPanes explains a pane key pressed where there are no panes.
 //
 // These keys are in the help and do something in a rendered attach, and in the byte pipe they fell
@@ -807,6 +829,7 @@ func (t *terminalInput) run(in *os.File) {
 
 			if prefixed {
 				prefixed = false
+				b = t.unctrl(b)
 				switch b {
 				case t.prefix:
 					// A literal, for the programs that want this key themselves.
