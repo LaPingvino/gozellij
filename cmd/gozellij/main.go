@@ -17,6 +17,7 @@ import (
 
 	"github.com/LaPingvino/gozellij/internal/daemon"
 	"github.com/LaPingvino/gozellij/internal/ipc"
+	"github.com/LaPingvino/gozellij/internal/status"
 )
 
 // Version is set at build time with -ldflags "-X main.Version=...".
@@ -32,7 +33,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `gozellij %s - a host-native process fabric
+	fmt.Fprintf(os.Stderr, `gozellij %[1]s - a host-native process fabric
 
 Usage:
   gozellij                             land in your shell (starts one if there is none)
@@ -70,18 +71,19 @@ buffer - which holds a few hundred KiB and dies with the daemon.
 The status line at the bottom of an attach is byobu-shaped: the same widget names, and a leading
 # in the config switches one off. See gozellij stats -example.
 
-While attached, Ctrl-] is gozellij's own key:
-  Ctrl-] d         detach; the service keeps running
-  Ctrl-] n / p     next / previous service, in this same terminal
-  Ctrl-] l         list the services and pick one by number
-  Ctrl-] ?         show these keys
-  Ctrl-] Ctrl-]    send a literal Ctrl-] to the service
+While attached, %[2]s is gozellij's own key. Set prefix=C-b in the config file
+to change it; gozellij doctor says which key is in force.
+  %[2]s d         detach; the service keeps running
+  %[2]s n / p     next / previous service, in this same terminal
+  %[2]s l         list the services and pick one by number
+  %[2]s ?         show these keys
+  %[2]s %[2]s    send a literal %[2]s to the service
 
 Global:
   -socket <path>   daemon socket (default $XDG_RUNTIME_DIR/gozellij/fabric.sock)
 
 The daemon is gozellijd. Services keep running when it stops.
-`, Version)
+`, Version, status.PrefixLabel(status.Load().Prefix))
 }
 
 func run(args []string) error {

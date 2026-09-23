@@ -18,6 +18,8 @@ type Config struct {
 	Left, Right []string
 	// Every is how often the line is redrawn.
 	Every time.Duration
+	// Prefix is the key that addresses gozellij rather than the service. See prefix.go.
+	Prefix byte
 	// Problems are the things in the file that were not understood. They travel with the config
 	// rather than replacing it: one misspelt widget must not cost you the other eleven, and must
 	// not vanish either.
@@ -41,7 +43,7 @@ const (
 // which service you are looking at, how many are up, and - first, because it is what somebody
 // meeting this for the first time actually needs - that Ctrl-] is a key and Ctrl-] ? explains it.
 var (
-	DefaultLeft  = []string{"keys", "session", "services"}
+	DefaultLeft  = []string{"keys", "tabs", "services"}
 	DefaultRight = []string{"uptime", "load_average", "cpu_count", "memory", "disk", "date", "time"}
 )
 
@@ -59,10 +61,11 @@ const MinEvery = 250 * time.Millisecond
 // DefaultConfig is what you get having configured nothing.
 func DefaultConfig() Config {
 	return Config{
-		Where: Bottom,
-		Left:  append([]string(nil), DefaultLeft...),
-		Right: append([]string(nil), DefaultRight...),
-		Every: DefaultEvery,
+		Where:  Bottom,
+		Left:   append([]string(nil), DefaultLeft...),
+		Right:  append([]string(nil), DefaultRight...),
+		Every:  DefaultEvery,
+		Prefix: DefaultPrefix,
 	}
 }
 
@@ -128,6 +131,14 @@ func parse(r io.Reader, cfg Config, path string) Config {
 				cfg.Problems = append(cfg.Problems,
 					fmt.Sprintf("%s:%d: where=%q; it takes bottom, title or off", path, line, value))
 			}
+		case "prefix":
+			b, err := ParsePrefix(value)
+			if err != nil {
+				cfg.Problems = append(cfg.Problems,
+					fmt.Sprintf("%s:%d: prefix=%q: %v", path, line, value, err))
+				break
+			}
+			cfg.Prefix = b
 		case "left":
 			cfg.Left, cfg.Problems = fields(value, path, line, cfg.Problems)
 		case "right":
@@ -196,6 +207,11 @@ func Example() string {
 #           vim and top - but you only see it if your terminal shows titles.
 #   off     nothing.
 where=%s
+
+# The key that talks to gozellij rather than to the program you are attached to.
+# Ctrl-] by default, as telnet has used for decades. Write it any of these ways:
+# C-b, ^B, Ctrl-b, ctrl+b, 0x02. It has to be a control character.
+#prefix=C-b
 
 # Widgets, in order, as byobu names them. A leading # switches one off without
 # deleting it. Everything available:

@@ -26,7 +26,7 @@ import (
 // It was a bare detach key until services became switchable. A prefix costs one extra keystroke to
 // detach and buys every other command there will ever be, which is the trade tmux and zellij both
 // made; `Ctrl-] Ctrl-]` sends a literal Ctrl-] through for the programs that do want it.
-const PrefixKey = 0x1d
+const PrefixKey = status.DefaultPrefix
 
 // DetachKey is the old name for PrefixKey, kept because it is referenced from docs and tests.
 const DetachKey = PrefixKey
@@ -73,7 +73,14 @@ const (
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
 // was showing.
-const prefixHelp = "Ctrl-] d detach · n/p next/previous · l list and pick · | split beside · - split below · < > resize · o switch pane · x close pane · b/f scroll back/forward · g live · r redraw · ? this · Ctrl-] sends a literal Ctrl-]"
+// prefixHelp is what `<prefix> ?` prints. Short on purpose: it is displayed over whatever the
+// service was showing. Built from the configured key rather than spelling Ctrl-] out, because a
+// help text that names a key the user has changed is worse than none.
+func prefixHelp(label string) string {
+	return label + " d detach · n/p next/previous · l list and pick · | split beside · - split below · " +
+		"< > resize · o switch pane · x close pane · b/f scroll back/forward · g live · r redraw · ? this · " +
+		label + " sends a literal " + label
+}
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
 //
@@ -136,7 +143,10 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	}
 	defer restore()
 
-	input := startTerminalInput(in)
+	// The configuration before the reader, because the reader needs the prefix key and runs for
+	// the whole life of the attach.
+	cfg := status.Load()
+	input := startTerminalInput(in, cfg.Prefix)
 	defer input.stop()
 
 	// The first attach on this machine says how to get out of it. See firstrun.go.
@@ -151,7 +161,6 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	// The status line, if it is switched on. It writes to the same terminal as the service's
 	// output, so everything that draws goes through one lock from here on.
 	screen := &lockedWriter{w: out}
-	cfg := status.Load()
 	for _, p := range cfg.Problems {
 		fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", p)
 	}
@@ -251,7 +260,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	// Said once the screen exists and whatever is drawing it is ready, so that it lands on the
 	// status line rather than on a terminal that is about to be repainted over.
 	if greet {
-		say(firstRunGreeting)
+		say(firstRunGreeting(input.label))
 	}
 
 	first := true
@@ -564,7 +573,7 @@ func waitForDaemonClient(socket string, within time.Duration) (*Client, error) {
 // in and out are normally os.Stdin and os.Stdout; they are parameters so this is testable without
 // a controlling terminal.
 func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool) error {
-	input := startTerminalInput(in)
+	input := startTerminalInput(in, status.Load().Prefix)
 	defer input.stop()
 	// No status line on this path, so no reserved row: Attach is the plain one-shot form, used
 	// by tests and by anything embedding this that draws its own furniture.
@@ -582,6 +591,12 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 // per session that was a rare lost keystroke after a daemon upgrade; with a key that switches
 // services it would be every other press.
 type terminalInput struct {
+	// prefix is the key that addresses gozellij rather than the service, and label is how to
+	// write it. Carried rather than looked up, because the reader runs for the whole life of an
+	// attach and the configuration is read once at the start of it.
+	prefix byte
+	label  string
+
 	// sayMu guards say, which is where messages to the user go and which changes once the attach
 	// knows whether it is rendering. See sayTo.
 	sayMu sync.Mutex
@@ -607,9 +622,11 @@ type terminalInput struct {
 // onto a screen that erased it. The same went for the message saying that the key you just
 // pressed does nothing. The sink starts as standard error and is redirected by sayTo once the
 // attach knows whether it is drawing the screen itself.
-func startTerminalInput(in *os.File) *terminalInput {
+func startTerminalInput(in *os.File, prefix byte) *terminalInput {
 	t := &terminalInput{
-		say: sayToStderr,
+		prefix: prefix,
+		label:  status.PrefixLabel(prefix),
+		say:    sayToStderr,
 		// Buffered so a burst read is not held up by a session that is mid-switch.
 		data:  make(chan []byte, 64),
 		cmds:  make(chan attachOutcome, 1),
@@ -689,7 +706,7 @@ func (t *terminalInput) run(in *os.File) {
 			if prefixed {
 				prefixed = false
 				switch b {
-				case PrefixKey:
+				case t.prefix:
 					// A literal, for the programs that want this key themselves.
 					pending = append(pending, b)
 				case 'd', 'D':
@@ -752,19 +769,19 @@ func (t *terminalInput) run(in *os.File) {
 					if !flush() {
 						return
 					}
-					t.tell(prefixHelp)
+					t.tell(prefixHelp(t.label))
 				default:
 					// Say what to do rather than swallowing it. A prefix key that silently
 					// eats the next keystroke is indistinguishable from a dropped one.
 					if !flush() {
 						return
 					}
-					t.tell(fmt.Sprintf("Ctrl-] %q does nothing. %s", b, prefixHelp))
+					t.tell(fmt.Sprintf("%s %q does nothing. %s", t.label, b, prefixHelp(t.label)))
 				}
 				continue
 			}
 
-			if b == PrefixKey {
+			if b == t.prefix {
 				prefixed = true
 				continue
 			}

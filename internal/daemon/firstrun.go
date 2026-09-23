@@ -45,4 +45,6 @@ func FirstAttach() bool {
 
 // firstRunGreeting is what a first-time user is told, in one line, because it lands on a status
 // line that is one line.
-const firstRunGreeting = "welcome - this is gozellij. " + prefixHelp
+func firstRunGreeting(label string) string {
+	return "welcome - this is gozellij. " + prefixHelp(label)
+}

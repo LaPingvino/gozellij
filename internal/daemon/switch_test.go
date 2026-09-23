@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/LaPingvino/gozellij/internal/status"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ func feedTerminal(t *testing.T, keys string) (*terminalInput, func()) {
 	if err != nil {
 		t.Fatalf("Pipe: %v", err)
 	}
-	input := startTerminalInput(r)
+	input := startTerminalInput(r, status.DefaultPrefix)
 	go func() {
 		w.WriteString(keys)
 		w.Close()

@@ -230,7 +230,9 @@ func statusLine(cfg status.Config, ctx func() status.Context) func(int) string {
 		if cols <= 0 {
 			return ""
 		}
-		return strings.TrimRight(status.Render(ctx(), cfg.Left, cfg.Right, cols), " ")
+		c := ctx()
+		c.Prefix = cfg.Prefix
+		return strings.TrimRight(status.Render(c, cfg.Left, cfg.Right, cols), " ")
 	}
 }
 

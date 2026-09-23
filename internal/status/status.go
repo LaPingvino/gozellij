@@ -43,6 +43,10 @@ type Context struct {
 	Service  string
 	Position int
 	Of       int
+	// Names is every service, sorted, so the line can show them rather than count them. A tab bar
+	// that says "2/5" tells you there are others and nothing about what they are, which is the
+	// difference between knowing you can switch and knowing what you would be switching to.
+	Names []string
 	// Running and Services count what the fabric is looking after.
 	Running  int
 	Services int
@@ -52,6 +56,9 @@ type Context struct {
 	LogBytes int64
 	// StateDir is what `disk` reports on: the filesystem gozellij is actually spending.
 	StateDir string
+	// Prefix is the key that addresses gozellij, so the line can name the one in force rather
+	// than the one that was compiled in.
+	Prefix byte
 	// Now is the clock, injectable so tests do not depend on what time it is.
 	Now time.Time
 }
@@ -62,6 +69,7 @@ type Widget func(Context) string
 // widgets is the registry. Names match byobu's.
 var widgets = map[string]Widget{
 	"keys":         keys,
+	"tabs":         tabs,
 	"session":      session,
 	"services":     services,
 	"viewers":      viewers,
@@ -214,8 +222,46 @@ func Dropped(ctx Context, left, right []string, width int) []string {
 // to read the README to find out how to leave - which they cannot do, because they are inside it.
 //
 // Four characters plus a question mark. It is small enough to keep on a narrow terminal and it
-// leads to the rest: Ctrl-] ? prints the whole table.
-func keys(c Context) string { return "Ctrl-] ?" }
+// leads to the rest: `<prefix> ?` prints the whole table. Built from the key in force, not the
+// default, because a hint naming a key somebody has changed is worse than no hint.
+func keys(c Context) string {
+	b := c.Prefix
+	if b == 0 {
+		b = DefaultPrefix
+	}
+	return PrefixLabel(b) + " ?"
+}
+
+// tabs is every service, with the one you are looking at picked out.
+//
+// The thing a multiplexer is expected to have and this did not: something that shows there is more
+// than one of anything. `session` says "[shell 2/5]", which tells you others exist and nothing
+// about what they are - so switching meant pressing Ctrl-] l to find out, every time.
+//
+// Brackets rather than colour for the current one, because the whole row is already drawn in
+// inverse video and a second attribute inside it is a coin toss on a real terminal.
+func tabs(c Context) string {
+	if len(c.Names) == 0 {
+		// Fall back to what session would have said, so a line configured with tabs and nothing
+		// else is not blank while the daemon is being replaced.
+		return session(c)
+	}
+	if len(c.Names) == 1 {
+		return "[" + c.Names[0] + "]"
+	}
+	var b strings.Builder
+	for i, n := range c.Names {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		if n == c.Service {
+			b.WriteString("[" + n + "]")
+			continue
+		}
+		b.WriteString(n)
+	}
+	return b.String()
+}
 
 func session(c Context) string {
 	if c.Service == "" {

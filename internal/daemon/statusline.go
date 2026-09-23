@@ -257,6 +257,7 @@ func (p *statusPainter) paint() {
 		return
 	}
 	ctx := p.info()
+	ctx.Prefix = p.cfg.Prefix
 
 	if p.cfg.Where == status.Title {
 		// OSC 2. Nothing can draw over a title bar, which is the whole appeal; the cost is that
@@ -356,5 +357,6 @@ func StatusContext(socket, service string) status.Context {
 		}
 	}
 	ctx.Of = len(names)
+	ctx.Names = names
 	return ctx
 }
