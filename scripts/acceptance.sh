@@ -1543,7 +1543,19 @@ else
     if [ "${first:-0}" -gt 0 ] && [ "${second:-0}" -gt 0 ]; then
         ok "output reaches both terminals, not just the one that typed"
     else
-        bad "the answer appeared in pane0=$first pane1=$second; both should have it"
+        # Everything the hunt in scripts/pairrace.sh could not get, recorded here because this is
+        # where it actually happens: the suite reproduces it and a hundred parallel copies of the
+        # reproducer alone did not. The cursor is the one measurement still missing - a client
+        # whose cursor sits on the reserved row would have every line it receives painted over by
+        # the next status repaint, which is what a live status line above a blank body looks like.
+        bad "the answer appeared in pane0=$first pane1=$second; both should have it$(printf '\n        cursor0=%s cursor1=%s of %s rows; scrollback0=%s scrollback1=%s\n        pane0: %s\n        pane1: %s' \
+            "$(tmux -L "$tmuxSock" display-message -p -t 0 '#{cursor_y}' 2>/dev/null)" \
+            "$(tmux -L "$tmuxSock" display-message -p -t 1 '#{cursor_y}' 2>/dev/null)" \
+            "$(tmux -L "$tmuxSock" display-message -p -t 0 '#{pane_height}' 2>/dev/null)" \
+            "$(tmux -L "$tmuxSock" capture-pane -p -S -200 -t 0 2>/dev/null | grep -c 'BOTH-42-SEE')" \
+            "$(tmux -L "$tmuxSock" capture-pane -p -S -200 -t 1 2>/dev/null | grep -c 'BOTH-42-SEE')" \
+            "$(tmux -L "$tmuxSock" capture-pane -p -t 0 2>/dev/null | grep -v '^$' | tail -3 | tr '\n' '|')" \
+            "$(tmux -L "$tmuxSock" capture-pane -p -t 1 2>/dev/null | grep -v '^$' | tail -3 | tr '\n' '|')")"
     fi
 
     # And the other direction: typing in the second one also arrives.
@@ -2482,6 +2494,123 @@ PROFILE
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
+
+    # ------------------------------------------- the prefix keys nobody had pressed
+    #
+    # Found by counting: the suite presses | o n g d b > < z r l c ? and -, and never k, u, x, f,
+    # comma or p. Six of the keys the help offers had nothing driving them, including the one that
+    # destroys something. A key that stopped working would be discovered by the person who pressed
+    # it, which for `k` means discovering it on a service they wanted removed and still have, or
+    # one they did not and no longer do.
+    only
+    "$gz" add first -start -restart no -- sh -c 'printf "FIRST-IS-UP\r\n"; sleep 300' >/dev/null 2>&1
+    "$gz" add second -start -restart no -- sh -c 'printf "SECOND-IS-UP\r\n"; sleep 300' >/dev/null 2>&1
+    "$gz" add doomed -start -restart no -- sh -c 'printf "DOOMED-IS-UP\r\n"; sleep 300' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; $gz attach first; printf \"THE-ATTACH-ENDED\\n\"; sleep 120'"
+    sleep 3
+
+    # Not exec'd, unlike every other attach in this file, and on purpose: these checks press keys
+    # that can end the attach, and with exec the client leaving takes the pane, the window and the
+    # tmux server with it - so the next check reads an empty screen and reports "could not get to
+    # X", which is true and says nothing about why. Leaving a shell behind means the screen can
+    # still be read, and it says THE-ATTACH-ENDED.
+    sleep 0
+
+    # Go to a named service by pressing n until the status line says so, rather than counting
+    # presses. The first version of these checks assumed positions, and when the rename below
+    # changed the order every later check failed for a reason that had nothing to do with the key
+    # it was testing.
+    goto() {
+        for _ in 1 2 3 4 5 6; do
+            pane | tail -1 | grep -q "\[$1\]" && return 0
+            tmux -L "$tmuxSock" send-keys C-] 'n'
+            sleep 1.5
+        done
+        pane | tail -1 | grep -q "\[$1\]"
+    }
+
+    # p, the other half of n. Only n was ever pressed, so a p that had stopped moving - or that
+    # moved the same way as n - would have looked perfectly healthy.
+    tmux -L "$tmuxSock" send-keys C-] 'n'
+    sleep 2
+    afterN=$(pane | tail -1)
+    tmux -L "$tmuxSock" send-keys C-] 'p'
+    sleep 2
+    afterP=$(pane | tail -1)
+    if printf '%s' "$afterN" | grep -q '\[second\]' && printf '%s' "$afterP" | grep -q '\[first\]'; then
+        ok "Ctrl-] p goes back the way Ctrl-] n came"
+    else
+        bad "n then p gave [$afterN] then [$afterP]"
+    fi
+
+    # comma: rename what you are looking at, from inside it.
+    #
+    # The prompt starts with the name you already have - tmux does the same for a window - and
+    # Ctrl-U clears it. Written without the Ctrl-U first, which produced a service called
+    # "firstrenamed-inside": the typing went on the end of what was already there. That is the
+    # behaviour, not a bug, and now something says so.
+    if goto first; then
+        tmux -L "$tmuxSock" send-keys C-] ','
+        sleep 1
+        prompt=$(pane | tail -1)
+        if printf '%s' "$prompt" | grep -q 'first'; then
+            ok "Ctrl-] , offers the name you already have, to edit"
+        else
+            bad "the rename prompt said: $prompt"
+        fi
+        tmux -L "$tmuxSock" send-keys C-u
+        sleep 1
+        tmux -L "$tmuxSock" send-keys 'renamed-inside' Enter
+        sleep 2
+        if "$gz" status renamed-inside >/dev/null 2>&1 && ! "$gz" status first >/dev/null 2>&1; then
+            ok "and Ctrl-U then a new name renames it"
+        else
+            bad "after renaming from inside, the services are: $("$gz" ls 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')"
+        fi
+    else
+        bad "could not get to first to rename it"
+    fi
+
+    # k: remove what you are looking at, which is the one that cannot be undone. With other
+    # services still there, it removes this one and moves on rather than dropping you out.
+    if goto doomed; then
+        tmux -L "$tmuxSock" send-keys C-] 'k'
+        sleep 3
+        if ! "$gz" status doomed >/dev/null 2>&1; then
+            ok "Ctrl-] k removes the service you are looking at"
+        else
+            bad "after k, doomed is still there: $("$gz" status doomed 2>/dev/null | head -2 | tr '\n' '|')"
+        fi
+        if ! pane | grep -q 'THE-ATTACH-ENDED'; then
+            ok "and it moves on to another service rather than dropping you out"
+        else
+            bad "removing one service of three ended the attach"
+        fi
+    else
+        bad "could not get to doomed to remove it: $(pane | tail -2 | tr '\n' '|')"
+    fi
+
+    # u, revive, is NOT checked here, and that is a finding rather than an omission.
+    #
+    # Arriving at a stopped service ends the attach - the daemon sends EventFinished the moment a
+    # client attaches to something already stopped, and the client's outcomeFinished returns from
+    # the whole loop. So pressing n onto a stopped tab drops you back to your shell, and u, which
+    # the help offers in both modes, cannot be reached in the case it exists for: by the time you
+    # would press it the attach is over. Measured in both modes; the rendered one ends too when
+    # the service it is showing is the only one.
+    #
+    # Left as it is rather than changed from inside a coverage pass: staying on a stopped service,
+    # skipping stopped ones while cycling, and moving to a running neighbour are three different
+    # answers with different costs, and picking one quietly here would be the wrong way to decide.
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop renamed-inside second >/dev/null 2>&1
+    "$gz" rm renamed-inside second doomed >/dev/null 2>&1
 
     # -------------------------------------- the status line as a command, and landing where you were
     #
