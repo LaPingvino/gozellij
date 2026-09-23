@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -66,6 +67,16 @@ const (
 	// outcomeGrow and outcomeShrink change the focused pane's share of the screen.
 	outcomeGrow
 	outcomeShrink
+	// outcomeRemove removes the service being looked at - stops it and forgets it, the way
+	// `gozellij rm` does. Not merely stop: a stopped service lingers in the list and on the tab
+	// bar, and "I am done with this" means gone. A multiplexer that can show you a thing and not
+	// get rid of it is asking you to leave and use another command for it.
+	outcomeRemove
+	// outcomeRevive reconnects the pane you are looking at to its service, starting the service
+	// only if it is not running. For a pane that has frozen by accident - a connection that went
+	// stale across a daemon crash, or the two-readers bug - while the process behind it is fine.
+	// Not the undo of k: k removes a service on purpose, and there is nothing left to revive.
+	outcomeRevive
 	// outcomeRedraw paints everything again from the grid. The recovery for a screen that looks
 	// wrong, which is the first thing anybody reaches for.
 	outcomeRedraw
@@ -192,6 +203,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			// Anything the keyboard reader has to say now goes on the status line, where a paint
 			// will not erase it a moment later.
 			input.sayTo(rendered.Say)
+			input.panes.Store(true)
 			say = rendered.Say
 			// Ask the terminal what colour it is, once, before any pane needs to know. The
 			// answer arrives whenever it arrives; see AskColours.
@@ -314,6 +326,31 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			case outcomeFinished:
 				restore()
 				return nil
+
+			case outcomeRevive:
+				// A fresh connection is the revival - the one the session used is closed by now -
+				// with the service started first if it needs to be, so typing reaches a process.
+				msg, _ := revive(socket, service)
+				say(msg)
+				first, replay = true, true
+				break dispatch
+
+			case outcomeRemove:
+				// Gone, so there is nothing to go back to. On to the next service if there is
+				// one, which is what closing a tab does; out of the terminal with a line saying
+				// so if that was the last.
+				next, msg := removeAndMoveOn(socket, service)
+				if next == "" {
+					restore()
+					fmt.Fprintf(os.Stderr, "\r\n[%s]\r\n", msg)
+					return nil
+				}
+				say(msg)
+				service = next
+				showService(out, service)
+				painter.Repaint()
+				first, replay = true, true
+				break dispatch
 
 			case outcomeNext, outcomePrev:
 				// Tabs, the cheap way. Switching which service this terminal is showing needs no
@@ -591,6 +628,11 @@ func (c *Client) Attach(service string, in *os.File, out io.Writer, replay bool)
 // per session that was a rare lost keystroke after a daemon upgrade; with a key that switches
 // services it would be every other press.
 type terminalInput struct {
+	// panes is whether the session this reader feeds can have more than one of them. The
+	// split, focus, close and scrollback keys mean nothing without it, and this is what lets the
+	// reader say so instead of letting the key do nothing - which is what it did, under a comment
+	// claiming otherwise.
+	panes atomic.Bool
 	// prefix is the key that addresses gozellij rather than the service, and label is how to
 	// write it. Carried rather than looked up, because the reader runs for the whole life of an
 	// attach and the configuration is read once at the start of it.
@@ -656,6 +698,66 @@ func (t *terminalInput) tell(msg string) {
 // because nothing there is drawing over it.
 func sayToStderr(msg string) {
 	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
+}
+
+// removeAndMoveOn removes a service and says which one to show instead, or "" when none is left.
+//
+// The next one in the same rotation Ctrl-] n walks, worked out *before* the removal, because
+// afterwards the service being removed is not in the list to count from.
+func removeAndMoveOn(socket, service string) (next, msg string) {
+	next, _ = neighbourService(socket, service, true)
+	if next == service {
+		next = ""
+	}
+	c, err := Dial(socket)
+	if err != nil {
+		return service, "could not reach the daemon: " + err.Error()
+	}
+	defer c.Close()
+	if _, err := c.Remove(service, false); err != nil {
+		// Still there, so stay on it rather than pretending it went.
+		return service, fmt.Sprintf("could not remove %s: %v", service, err)
+	}
+	if next == "" {
+		return "", fmt.Sprintf("removed %s; nothing else is running", service)
+	}
+	return next, fmt.Sprintf("removed %s", service)
+}
+
+// revive gets a service ready to be reattached to, and says which of two things happened.
+//
+// The ordinary case is that nothing is wrong with the service at all: the pane froze because its
+// connection went stale, and reconnecting is the whole cure. Starting the service is only for
+// when it has actually stopped - and saying "started it again" about a process that had been
+// running all along is the kind of message that makes the next real problem harder to read.
+func revive(socket, service string) (string, bool) {
+	c, err := Dial(socket)
+	if err != nil {
+		return "could not reach the daemon: " + err.Error(), false
+	}
+	defer c.Close()
+	st, err := c.Status(service)
+	if err != nil {
+		return fmt.Sprintf("cannot revive %s: %v", service, err), false
+	}
+	if st.State == "running" {
+		return fmt.Sprintf("reconnected to %s", service), true
+	}
+	if _, err := c.Start(service); err != nil {
+		return fmt.Sprintf("%s was not running and would not start: %v", service, err), false
+	}
+	return fmt.Sprintf("%s was not running - started it again", service), true
+}
+
+// noPanes explains a pane key pressed where there are no panes.
+//
+// These keys are in the help and do something in a rendered attach, and in the byte pipe they fell
+// through the loop's dispatch and did nothing at all - under a comment on the outcomes saying the
+// reader would say so. It did not. Found in use: "x does nothing".
+func (t *terminalInput) noPanes(b byte, what string) {
+	t.tell(fmt.Sprintf("%s %c would %s, but this attach has only one: panes need the one that "+
+		"draws the screen itself - gozellij attach -render <name>, or login-setup -render",
+		t.label, b, what))
 }
 
 // stop abandons the reader. It does not interrupt the read in progress - nothing can - but it does
@@ -726,18 +828,46 @@ func (t *terminalInput) run(in *os.File) {
 						return
 					}
 				case '|', 's', 'S':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "split the screen")
+						continue
+					}
 					if !command(outcomeSplit) {
 						return
 					}
 				case '-', '_':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "split the screen")
+						continue
+					}
 					if !command(outcomeSplitRows) {
 						return
 					}
 				case 'o', 'O', '\t':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "move between panes")
+						continue
+					}
 					if !command(outcomeFocus) {
 						return
 					}
 				case 'x', 'X':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "close a pane")
+						continue
+					}
 					if !command(outcomeClosePane) {
 						return
 					}
@@ -746,23 +876,73 @@ func (t *terminalInput) run(in *os.File) {
 						return
 					}
 				case '>', '+', '=':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "resize a pane")
+						continue
+					}
 					if !command(outcomeGrow) {
 						return
 					}
 				case '<':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "resize a pane")
+						continue
+					}
 					if !command(outcomeShrink) {
 						return
 					}
 				case 'b', 'B':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "scroll back")
+						continue
+					}
 					if !command(outcomeScrollBack) {
 						return
 					}
 				case 'f', 'F':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "scroll forward")
+						continue
+					}
 					if !command(outcomeScrollForward) {
 						return
 					}
 				case 'g', 'G':
+					if !t.panes.Load() {
+						if !flush() {
+							return
+						}
+						t.noPanes(b, "return to the live screen")
+						continue
+					}
 					if !command(outcomeScrollLive) {
+						return
+					}
+				case 'k', 'K':
+					// Remove what you are looking at. Both modes, because getting rid of a thing
+					// is not a split-screen feature - it is the thing a multiplexer is least
+					// allowed to make you leave for.
+					if !command(outcomeRemove) {
+						return
+					}
+				case 'u', 'U':
+					// Revive: reconnect this pane, and start its service if it is not running.
+					// For a pane that has frozen by accident with a perfectly good process behind
+					// it, which is not something detaching and attaching again should be the
+					// only cure for.
+					if !command(outcomeRevive) {
 						return
 					}
 				case '?', 'h':

@@ -33,9 +33,16 @@ type livePane struct {
 	client  *Client
 	term    *grid.Term
 	rect    layout.Rect
-	// finished marks a service that has ended. Its pane stays on screen with its last output,
-	// because a pane that vanishes takes the error message with it.
+	// finished marks a pane whose process has exited. It closes - natural death - unless it is
+	// the last one, which ends the session.
 	finished bool
+	// frozen marks a pane that lost its connection and could not get it back, while its process
+	// may be perfectly alive. The two used to be one flag, so a reconnect that failed looked like
+	// a process that had exited - and once panes closed themselves on exit, a live shell's pane
+	// would have closed because the daemon was slow to come back. A frozen pane stays, and says
+	// that Ctrl-] u reconnects it.
+	frozen bool
+
 	// scroll is how many lines back this pane is being looked at. Zero is live.
 	scroll int
 	// told is which unimplemented sequences the user has already been told about, so that a
@@ -131,6 +138,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	// something the user did changes the file.
 	written := ""
 	saidReadOnly := false
+	saidFrozen := false
 	if l, ok, err := loadLayout(service); err != nil {
 		restored = append(restored, err.Error())
 	} else if ok {
@@ -221,6 +229,17 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			// else looks at it; everything that is not an answer carries on as typing.
 			chunk = screen.TakeColourReplies(chunk)
 			if len(chunk) == 0 {
+				continue
+			}
+			if panes[focus].frozen {
+				// Its connection is gone, so a write would fail - and a failed write used to end
+				// the whole session, every other pane with it. Say how to get it back instead.
+				if !saidFrozen {
+					saidFrozen = true
+					note(fmt.Sprintf("%s has lost its connection - %s u reconnects it",
+						panes[focus].service, input.label))
+					paint()
+				}
 				continue
 			}
 			if panes[focus].client.ReadOnly() {
@@ -316,6 +335,48 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeRemove:
+				// Remove the focused pane's service and close its pane. With one pane there
+				// is nothing left on screen to keep, so it goes to the loop outside, which knows
+				// how to move on to the next service or leave.
+				if len(panes) == 1 {
+					return want, nil
+				}
+				gone := panes[focus].service
+				c, err := Dial(socket)
+				if err == nil {
+					_, err = c.Remove(gone, false)
+					c.Close()
+				}
+				if err != nil {
+					note(fmt.Sprintf("could not remove %s: %v", gone, err))
+					paint()
+					continue
+				}
+				panes[focus].client.Close()
+				panes = append(panes[:focus], panes[focus+1:]...)
+				focus = focus % len(panes)
+				layoutPanes(panes, screen, how)
+				resizePanes(panes)
+				note("removed " + gone)
+				paint()
+
+			case outcomeRevive:
+				// Make a frozen pane typeable again. The pane is reattached on a fresh
+				// connection, the same way a switch reattaches, with its own reader on it - and
+				// its service is started first only if it had actually stopped. Usually it had
+				// not: the connection went stale and the process was fine all along.
+				msg, ok := revive(socket, panes[focus].service)
+				if ok {
+					if err := swapPane(socket, panes[focus], panes[focus].service); err != nil {
+						msg = err.Error()
+					} else {
+						go readFrames(panes[focus], panes[focus].client, events)
+					}
+				}
+				note(msg)
+				paint()
+
 			case outcomeGrow, outcomeShrink:
 				if len(panes) == 1 {
 					note("nothing to share the screen with")
@@ -372,7 +433,39 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			// removed: it changed neither the time nor the bytes written (see the measurement in
 			// internal/vt/render), and an optimisation that cannot be shown to optimise anything
 			// is a claim with code attached.
-			applyEvent(socket, ev, events, note, screen.ColourAnswer)
+			applyEvent(socket, ev, events, note, screen.ColourAnswer, input.label)
+
+			// Natural death. When the process in a pane exits, the pane goes - the way `exit`
+			// or Ctrl-D closes a pane in every other multiplexer. It used to stay on screen with
+			// its last output, on the theory that the error message would be in it, and what that
+			// produced in use was panes that "refuse to die completely": finished, frozen, taking
+			// space, with nothing to close them. The output is not lost - `gozellij logs` has all
+			// of it - and the status line says where to look.
+			//
+			// Not the last pane, which ends the session instead, below: that is the same thing
+			// the byte pipe does when its one service exits, and it hands you back your prompt.
+			if ev.pane.finished && len(panes) > 1 {
+				for i, p := range panes {
+					if p != ev.pane {
+						continue
+					}
+					p.client.Close()
+					panes = append(panes[:i], panes[i+1:]...)
+					if focus >= len(panes) {
+						focus = len(panes) - 1
+					} else if focus > i {
+						focus--
+					}
+					layoutPanes(panes, screen, how)
+					resizePanes(panes)
+					// A pane that closes itself changes the arrangement just as much as one closed
+					// with a key, so the layout on disk has to hear about it - or the next attach
+					// reopens a pane for a service that has already gone.
+					remember()
+					break
+				}
+			}
+
 			paintSoon()
 			if allDone(panes) {
 				// On the way out, whatever is owed is drawn: the last thing a service said - an
@@ -477,7 +570,9 @@ func resizePanes(panes []*livePane) {
 
 func allDone(panes []*livePane) bool {
 	for _, p := range panes {
-		if !p.finished {
+		// Frozen counts: when every pane has lost its connection the daemon is most likely
+		// gone, and the loop outside knows how to wait for it and come back.
+		if !p.finished && !p.frozen {
 			return false
 		}
 	}
@@ -506,7 +601,7 @@ func openPane(socket, service string, screen *renderedScreen, count int, readOnl
 // applyEvent takes one thing a pane's connection said and does it, without drawing.
 //
 // Drawing is the caller's, once, after a whole batch: see the comment where these are gathered.
-func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string), colour func(int) (string, bool)) {
+func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string), colour func(int) (string, bool), label string) {
 	if ev.from != nil && ev.from != ev.pane.client {
 		// From a connection this pane no longer has. Its reader is on its way out and has
 		// nothing left to say that is true of this pane.
@@ -563,8 +658,26 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 			"passed it to your terminal (gozellij attach -no-render %s)", ev.pane.service, name, ev.pane.service))
 	}
 
-	if ev.finished {
+	if ev.finished && !ev.pane.finished {
 		ev.pane.finished = true
+		// Say what can be done about it, once, where it is being looked at. A pane whose service
+		// has ended stays on screen with its last output - on purpose, because the error message
+		// is usually in it - but it used to stay there in silence, looking frozen, with no way
+		// from inside to bring it back or get rid of it. That is "unrevivable" from the outside,
+		// whatever the code thinks.
+		// The daemon's own words first - "exited with code 3" is the part that says what happened,
+		// and the first version of this replaced them with a generic "exited", so the reason a
+		// service died was the one thing the line no longer said. Caught by the acceptance check
+		// that looks for exactly that.
+		//
+		// Then the command rather than a key: the pane is about to close (natural death, where
+		// events are handled), so a key acting on "this pane" would act on whichever has focus.
+		what := ev.message
+		if what == "" {
+			what = ev.pane.service + " exited"
+		}
+		note(fmt.Sprintf("%s - `gozellij logs %s` has what it said, `gozellij start %s` runs it again",
+			what, ev.pane.service, ev.pane.service))
 	}
 	if ev.gone && !ev.pane.finished {
 		// The connection went away without the service ending, which is what a daemon upgrade
@@ -576,8 +689,9 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 		// both halves of a split froze at the instant of the upgrade and stayed frozen, which
 		// looked exactly like two idle shells.
 		if err := reopenPane(socket, ev.pane); err != nil {
-			note(fmt.Sprintf("%s: %v", ev.pane.service, err))
-			ev.pane.finished = true
+			ev.pane.frozen = true
+			note(fmt.Sprintf("lost the connection to %s and could not get it back (%v) - %s u reconnects",
+				ev.pane.service, err, label))
 		} else {
 			// Say so. The pane comes back working, but whatever the service printed while the
 			// daemon was being replaced is not on this screen and never will be - the byte-pipe
@@ -609,7 +723,7 @@ func swapPane(socket string, p *livePane, service string) error {
 		return err
 	}
 	p.client.Close()
-	p.client, p.service, p.scroll, p.finished = c, service, 0, false
+	p.client, p.service, p.scroll, p.finished, p.frozen = c, service, 0, false, false
 	p.term = grid.New(cols, rows)
 	return nil
 }
