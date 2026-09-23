@@ -781,7 +781,7 @@ var (
 // no GOZELLIJ and started a second gozellij inside the first. It is also what lets `gozellij
 // attach` refuse to attach a service to itself, which draws its own output back into itself.
 func serviceEnv(s Service, opts StartOptions) []string {
-	env := append(os.Environ(), s.Env...)
+	env := append(inheritable(os.Environ()), s.Env...)
 	env = append(env, opts.ExtraEnv...)
 	for _, kv := range append(s.Env, opts.ExtraEnv...) {
 		if strings.HasPrefix(kv, "GOZELLIJ=") {
@@ -797,4 +797,40 @@ func serviceEnv(s Service, opts StartOptions) []string {
 		}
 	}
 	return append(out, "GOZELLIJ="+s.Name)
+}
+
+// daemonOnly are variables that describe the daemon's own relationship with the service manager,
+// and must not be handed on to anything the daemon starts.
+//
+// They were, and it was found the hard way: with gozellij running under systemd, NOTIFY_SOCKET
+// was in every service's environment, so any program in a gozellij shell that speaks sd_notify was
+// talking to systemd as though it were the daemon. The symptom that surfaced it was a test run
+// from inside a gozellij shell whose throwaway daemon handed its listening socket to the real
+// service manager and then could not close it - the whole daemon package hanging until the test
+// timeout. The production unit's NotifyAccess=main is what kept it from reaching further, and
+// that is a setting, not a design.
+//
+// JOURNAL_STREAM says standard error is connected to the journal, which for a process on a pty is
+// false, and a program that believes it switches to a log format meant for journald. The
+// LISTEN_* set describes descriptors that were the daemon's, and INVOCATION_ID, MANAGERPID and
+// the watchdog pair name the daemon's unit, not the service.
+var daemonOnly = []string{
+	"NOTIFY_SOCKET", "LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES",
+	"INVOCATION_ID", "JOURNAL_STREAM", "WATCHDOG_PID", "WATCHDOG_USEC",
+	"MANAGERPID", "SYSTEMD_EXEC_PID",
+}
+
+// inheritable is the daemon's environment with the daemon-only variables taken out.
+func inheritable(env []string) []string {
+	out := make([]string, 0, len(env))
+next:
+	for _, kv := range env {
+		for _, k := range daemonOnly {
+			if strings.HasPrefix(kv, k+"=") {
+				continue next
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
 }

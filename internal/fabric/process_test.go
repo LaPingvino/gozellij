@@ -508,3 +508,36 @@ func lastValue(env []string, key string) string {
 	}
 	return v
 }
+
+// What the daemon knows about its own service manager stays with the daemon.
+//
+// Found when a test run from inside a gozellij shell hung: NOTIFY_SOCKET had leaked into the
+// shell, and a throwaway daemon in the test handed its socket to the real systemd.
+func TestTheDaemonsSystemdVariablesDoNotReachAService(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", "/run/user/1000/systemd/notify")
+	t.Setenv("INVOCATION_ID", "46e35100535c40299fbdb806dbce0b7e")
+	t.Setenv("JOURNAL_STREAM", "8:12345")
+	t.Setenv("LISTEN_FDS", "3")
+	t.Setenv("KEEP_ME", "yes")
+
+	env := serviceEnv(Service{Name: "web"}, StartOptions{})
+	for _, k := range []string{"NOTIFY_SOCKET", "INVOCATION_ID", "JOURNAL_STREAM", "LISTEN_FDS"} {
+		if v := lastValue(env, k); v != "" {
+			t.Errorf("%s=%s reached the service", k, v)
+		}
+	}
+	// And ordinary variables are untouched - this is a filter, not a fresh environment.
+	if lastValue(env, "KEEP_ME") != "yes" {
+		t.Error("an ordinary variable was dropped along with the systemd ones")
+	}
+}
+
+func TestAServiceMaySetOneOfThemOnPurpose(t *testing.T) {
+	// The filter is on what is inherited, not on what a service asks for. A service whose
+	// definition sets NOTIFY_SOCKET meant it.
+	t.Setenv("NOTIFY_SOCKET", "/from/the/daemon")
+	env := serviceEnv(Service{Name: "web", Env: []string{"NOTIFY_SOCKET=/its/own"}}, StartOptions{})
+	if got := lastValue(env, "NOTIFY_SOCKET"); got != "/its/own" {
+		t.Errorf("NOTIFY_SOCKET = %q, want the service's own /its/own", got)
+	}
+}
