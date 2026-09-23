@@ -118,11 +118,55 @@ shell's `LANG`/`HOME`. Those remain verified-by-hand only.
   unit - started by hand from a shell there is nowhere to keep the descriptors, and the daemon says
   so at startup.
 
+  **And then it happened for real**, which is worth more than the check. On 2026-09-23 the daemon
+  died on its own - `NRestarts=1`, no test harness, nobody killing anything on purpose - and the
+  journal says:
+
+  ```
+  gozellijd.service: Found left-over process 633264 (bash) in control group while starting unit.
+  recovering services from a daemon that did not shut down cleanly  count=2
+  ```
+
+  Both shells kept their pids, including the one the person was working in. It also exposed a
+  defect no test had: the recovered services reported their uptime from the adoption rather than
+  from when they started, so a shell up for an hour and a half said twenty minutes. Fixed by
+  reading the kernel's own answer, and `scripts/fdstore.sh` now compares against `ps`.
+
   Including the person who was attached when it happened, which is the scenario the rest of it is
   for: an ssh session on a shell, the daemon killed under it, and the client noticing, waiting for
   the replacement and attaching again by itself - to the same shell, which never stopped. **Verified**
   by setting a variable in that shell before the crash and reading it back afterwards, because a
   client that reattaches to a *fresh* shell looks identical from the outside.
+
+- **You are told how to get out.** The first thing a multiplexer owes you is the key that gives
+  your terminal back, and for a long time nothing said it: the status line reported which service
+  you were in and how much memory the machine had, and the only way to learn `Ctrl-]` was to read
+  the README, which you cannot do from inside. The first attach on a machine now says the whole
+  key table once, and `Ctrl-] ?` sits permanently at the left of the status line. The key itself is
+  configurable - `prefix=C-b` for anybody whose fingers know tmux - and every message that names it
+  is built from the key in force rather than the compiled-in default. `gozellij doctor` says which
+  one is active and where it came from. **Verified** on a real screen for both the greeting and its
+  absence on the second attach, and by rebinding to Ctrl-B and checking that Ctrl-] then does
+  nothing.
+
+- **You can see that there is more than one of anything.** The line used to say `[shell 2/3]`,
+  which tells you others exist and nothing about what they are, so switching meant opening the
+  picker to find out - every time. It reads `Ctrl-] ? logs shell [web] 3/3 up` now. Asked for from
+  use, which is where it should have come from.
+
+- **The byte pipe can talk at all.** Until recently every message in the default mode - a service
+  exiting, a keystroke swallowed by a read-only attach, the reattach notice after an upgrade - went
+  to standard error, where the service's next repaint wrote over it. Only the rendered attach had a
+  voice. The byte-pipe status row carries messages now, and falls back to standard error when the
+  terminal's size is unknown and the row cannot be drawn.
+
+- **What is trapped in the other multiplexer, and how to get it back.** `gozellij takeover` reads
+  `/proc` and reports which terminals another multiplexer is holding, what is running in each and
+  in which directory, then prints the `gozellij add` lines that put you back in those directories
+  and the kill that ends the old session. It marks the session you are reading it in, because the
+  first version cheerfully told you to kill that one. It is **not** a handover and says so: the pty
+  master lives inside that process and the kernel will not copy it out without that process's help
+  or ptrace permission over it, neither of which a program arriving afterwards has.
 
 - **Survives a daemon upgrade.** `gozellij upgrade` replaces the binary with service pids
   unchanged, and an attached client reattaches by itself with a notice. **Verified**, twice, by
@@ -178,6 +222,14 @@ What is missing:
 - **Use.** None of the above is a week of somebody's actual work. The failures that matter now are
   the ones that need a person to notice, and five of the last ten bugs were exactly that: a message
   written where it could not be read, a menu drawn and then painted over, a mode silently dropped.
+
+  This has started, in the *byte pipe* rather than the rendered attach: gozellij replaced gezellij
+  as this machine's login multiplexer on 2026-09-23. The first hours of it produced, in order: a
+  panic from `gozellij add` with no arguments, no way to discover any key at all, no indication
+  that more than one service existed, two goroutines reading one connection after a pane swap, a
+  finaliser closing recovered terminals, a shell that would not die on `stop`, and an uptime that
+  restarted at every crash. Not one of those came from the test suite. The rendered attach has not
+  had its week yet, and on this evidence it should expect a similar list.
 - **A reason to think an unknown sequence is harmless.** Anything the emulator does not implement is
   dropped rather than passed on. For a byte pipe that question does not arise. This is now *visible*
   rather than silent - a pane that emits something unimplemented says so on the status line, once,
@@ -189,10 +241,12 @@ What is missing:
   things between them, and all five are handled now - control strings read to their end instead of
   drawn on the screen, application cursor keys and the keypad passed to the terminal, autowrap, the
   title stack, insert mode, and the colour queries answered from what the real terminal said when
-  the attach started. **Nine of the eleven** report that everything they sent is understood.
+  the attach started, and OSC 8 hyperlinks carried through the grid and drawn again - `man` emits
+  thirty-odd of them on a page and every one used to be lost. **Ten of the eleven** report that
+  everything they sent is understood.
 
-  What is left is named rather than unknown: OSC 8 hyperlinks, which `man` emits and which are
-  lost, and the bodies of DCS strings, which are read and thrown away on purpose.
+  What is left is one thing, named rather than unknown: the bodies of DCS strings, which are read
+  to their terminator and thrown away on purpose. Nothing on this machine needs an answer to one.
 - **The cost.** It was two to three times the byte pipe on a flood, and this entry said the reason
   was not the number of repaints. Counting them said otherwise: twenty thousand lines arrived as
   378 frames and drew 379 whole screens, which was 4.7 of the 5.9 seconds. The earlier experiment
