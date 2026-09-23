@@ -525,10 +525,15 @@ fi
 # rather than the daemon's log, because the log is not where a person goes.
 "$gz" stop editable >/dev/null 2>&1
 printf 'not json at all\n' > "$def"
-if "$gz" doctor 2>/dev/null | grep -q 'service definitions'; then
+#
+# Matched on the file's own name, which only this check prints. Written first as a grep for
+# "service definitions" and that passed with the check deleted: the state-directory warning says
+# "other users can read your service definitions", so the words were already on screen. Four
+# assertions today have passed on something the system produced anyway; this is the fourth.
+if "$gz" doctor 2>/dev/null | grep -q 'editable.json'; then
     ok "and a definition that cannot be read is named by doctor, not just logged"
 else
-    bad "doctor says nothing about an unreadable definition: $("$gz" doctor 2>/dev/null | grep -icE 'definition|json') mentions"
+    bad "doctor does not name the broken file: $("$gz" doctor 2>/dev/null | grep -iE 'definition|json' | tr '\n' '|')"
 fi
 rm -f "$def"
 "$gz" rm editable >/dev/null 2>&1
