@@ -489,6 +489,70 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ----------------------------------------- gozellijd -logs off keeps output off the disk
+#
+# A privacy promise with nothing checking it. A shell you live in has everything you typed and
+# everything it answered in its transcript - which is why `-logs off` exists for the whole daemon
+# and `add -log off` for one service - and a flag that quietly stopped working would write all of
+# it while somebody believed it was not being written. Silence is the failure mode, which is the
+# argument for checking it rather than trusting it.
+#
+# Its own daemon, on its own directories, because the flag is set when the daemon starts and the
+# suite's daemon is already up. None of gozellijd's flags had ever been driven from here: the
+# suite configures it by environment, so -socket, -state, -logs and -v were all untested.
+only
+offrun=$(mktemp -d "$work/offrun.XXXXXX")
+offstate=$(mktemp -d "$work/offstate.XXXXXX")
+env -i PATH="/usr/bin:/bin" HOME="$home" \
+    GOZELLIJ_RUNTIME_DIR="$offrun" GOZELLIJ_STATE_DIR="$offstate" \
+    "$gzd" -logs off >>"$work/daemon-logsoff.log" 2>&1 &
+offpid=$!
+offok=0
+for _ in $(seq 50); do
+    GOZELLIJ_RUNTIME_DIR="$offrun" GOZELLIJ_STATE_DIR="$offstate" "$gz" ping >/dev/null 2>&1 && { offok=1; break; }
+    sleep 0.1
+done
+
+if [ "$offok" = 1 ]; then
+    off() { GOZELLIJ_RUNTIME_DIR="$offrun" GOZELLIJ_STATE_DIR="$offstate" "$gz" "$@"; }
+    # The marker is computed by the service, not written in its command: the command itself is
+    # recorded in the service definition on disk, as it has to be, so a literal would be found
+    # there and read as a leak. Only output can contain the answer.
+    off add hushed -start -restart no -- sh -c 'printf "OFFDISK-%s\r\n" $((6*7)); sleep 120' >/dev/null 2>&1
+    sleep 2
+
+    if [ -z "$(find "$offstate" -name '*.log' -type f 2>/dev/null | head -1)" ]; then
+        ok "gozellijd -logs off writes no log file at all"
+    else
+        bad "it wrote $(find "$offstate" -name '*.log' -type f | head -2 | tr '\n' ' ')"
+    fi
+
+    if [ -z "$(grep -rl 'OFFDISK-42' "$offstate" "$offrun" 2>/dev/null | head -1)" ]; then
+        ok "and what the service printed is nowhere on disk"
+    else
+        bad "the output reached $(grep -rl 'OFFDISK-42' "$offstate" "$offrun" 2>/dev/null | head -2 | tr '\n' ' ')"
+    fi
+
+    # Off the disk is not the same as gone: it is still in memory, which is what makes the flag
+    # usable rather than merely safe.
+    if off logs hushed 2>/dev/null | grep -q 'OFFDISK-42'; then
+        ok "and logs still reads it from memory"
+    else
+        bad "logs said: $(off logs hushed 2>&1 | head -2 | tr '\n' '|')"
+    fi
+
+    if [ "$(off ls 2>/dev/null | awk '$1 == "hushed" {print $7}')" = "-" ]; then
+        ok "and ls says so rather than showing a size that does not exist"
+    else
+        bad "ls shows the log column as [$(off ls 2>/dev/null | awk '$1 == "hushed" {print $7}')]"
+    fi
+
+    off stop hushed >/dev/null 2>&1
+else
+    bad "the -logs off daemon never answered; see $work/daemon-logsoff.log"
+fi
+[ -n "${offpid:-}" ] && kill "$offpid" 2>/dev/null
+
 # ------------------------------------------------- the mistakes you make by typing
 #
 # The errors a person actually meets: a name already taken, a policy spelled wrong, a command
