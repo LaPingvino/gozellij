@@ -42,6 +42,11 @@ type livePane struct {
 	// would have closed because the daemon was slow to come back. A frozen pane stays, and says
 	// that Ctrl-] u reconnects it.
 	frozen bool
+	// wasRunning is whether the service was running when this pane started showing it. Only a
+	// pane whose service dies while shown closes itself: one moved onto a service that had
+	// already stopped is a place somebody chose to go, and closing it threw away the pane they
+	// had just navigated - and the service it was showing before - with nothing to press.
+	wasRunning bool
 
 	// scroll is how many lines back this pane is being looked at. Zero is live.
 	scroll int
@@ -136,7 +141,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	}
 
 	events := make(chan paneEvent, 64)
-	panes := []*livePane{{service: service, client: first, term: grid.New(cols, rows)}}
+	panes := []*livePane{{service: service, client: first, term: grid.New(cols, rows), wasRunning: serviceIsRunning(socket, service)}}
 	// How the panes are arranged, set by whichever split key was pressed last.
 	how := inColumns
 	focus := 0
@@ -502,7 +507,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			//
 			// Not the last pane, which ends the session instead, below: that is the same thing
 			// the byte pipe does when its one service exits, and it hands you back your prompt.
-			if ev.pane.finished && len(panes) > 1 {
+			if ev.pane.finished && ev.pane.wasRunning && len(panes) > 1 {
 				for i, p := range panes {
 					if p != ev.pane {
 						continue
@@ -644,6 +649,7 @@ func openPane(socket, service string, screen *renderedScreen, count int, readOnl
 		return nil, err
 	}
 	c.SetReadOnly(readOnly)
+	running := serviceIsRunning(socket, service)
 	cols, rows := screen.ServiceSize()
 	// A first guess at the size; layoutPanes and resizePanes correct it immediately. Attaching at
 	// the full width for an instant is better than attaching at zero, which some programs read as
@@ -653,7 +659,7 @@ func openPane(socket, service string, screen *renderedScreen, count int, readOnl
 		c.Close()
 		return nil, err
 	}
-	return &livePane{service: service, client: c, term: grid.New(cols, rows)}, nil
+	return &livePane{service: service, client: c, term: grid.New(cols, rows), wasRunning: running}, nil
 }
 
 // applyEvent takes one thing a pane's connection said and does it, without drawing.
@@ -740,8 +746,16 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 		if what == "" {
 			what = ev.pane.service + " exited"
 		}
-		note(fmt.Sprintf("%s - `gozellij logs %s` has what it said, `gozellij start %s` runs it again",
-			what, ev.pane.service, ev.pane.service))
+		if !ev.pane.wasRunning {
+			// This pane stays - it was moved onto a service that had already stopped, and has
+			// the focus it was moved with - so the key is the answer, the same words the byte
+			// pipe uses for a stopped tab.
+			note(fmt.Sprintf("%s is not running: %s u starts it, %s n/p move on",
+				ev.pane.service, label, label))
+		} else {
+			note(fmt.Sprintf("%s - `gozellij logs %s` has what it said, `gozellij start %s` runs it again",
+				what, ev.pane.service, ev.pane.service))
+		}
 	}
 	if ev.gone && !ev.pane.finished {
 		// The connection went away without the service ending, which is what a daemon upgrade
@@ -781,6 +795,7 @@ func swapPane(socket string, p *livePane, service string) error {
 	// The new connection is the old one's replacement, so it watches on the same terms. A pane
 	// that quietly became writable when you pressed n would be the worst possible surprise.
 	c.SetReadOnly(p.client.ReadOnly())
+	running := serviceIsRunning(socket, service)
 	cols, rows := p.rect.Cols, p.rect.Rows
 	if _, err := c.Call(ipc.OpAttach, service, ipc.AttachRequest{Cols: cols, Rows: rows, Replay: true, ReadOnly: c.ReadOnly()}); err != nil {
 		c.Close()
@@ -788,6 +803,7 @@ func swapPane(socket string, p *livePane, service string) error {
 	}
 	p.client.Close()
 	p.client, p.service, p.scroll, p.finished, p.frozen = c, service, 0, false, false
+	p.wasRunning = running
 	p.term = grid.New(cols, rows)
 	return nil
 }
