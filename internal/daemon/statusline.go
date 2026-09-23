@@ -60,6 +60,41 @@ type statusPainter struct {
 	stop chan struct{}
 	done chan struct{}
 	once sync.Once
+
+	// mu guards the message, which is written by whoever has something to say and read by the
+	// painting goroutine.
+	mu sync.Mutex
+	// message is the last thing this attach had to tell the user, and said is when. Until this
+	// existed the byte pipe could not say anything at all: every message went to standard error,
+	// where the service's next repaint wrote over it. Three of them - a service exiting, a
+	// keystroke going nowhere in a read-only attach, and the first-run greeting - were written
+	// to a screen that erased them before anybody could read them.
+	message string
+	said    time.Time
+}
+
+// Say puts a line on the status row for a few seconds.
+//
+// The rendered screen has had this since it existed; this is the byte pipe catching up. Same
+// linger, because it is the same question - long enough to read, short enough not to hide the
+// thing it is drawn on.
+func (p *statusPainter) Say(msg string) {
+	if p == nil || msg == "" {
+		return
+	}
+	// Nowhere to draw it? Then say it the old way. A painter exists as soon as standard input is
+	// a terminal, but it refuses to draw on one whose size it cannot learn - and `script` makes
+	// exactly that kind of pty when its own output is a pipe. Routing messages here without this
+	// did not move them, it deleted them: the acceptance suite caught it as an attached client
+	// that no longer reported reattaching after an upgrade.
+	if cols, _ := p.size(); cols == 0 || p.cfg.Where != status.Bottom {
+		sayToStderr(msg)
+		return
+	}
+	p.mu.Lock()
+	p.message, p.said = msg, time.Now()
+	p.mu.Unlock()
+	p.Repaint()
 }
 
 // newStatusPainter starts painting, or returns nil when there is nothing to paint on.
@@ -234,6 +269,14 @@ func (p *statusPainter) paint() {
 	}
 
 	line := status.Render(ctx, p.cfg.Left, p.cfg.Right, cols)
+	p.mu.Lock()
+	msg, said := p.message, p.said
+	p.mu.Unlock()
+	if msg != "" && time.Since(said) < messageLinger {
+		// The whole row, because a message truncated to fit around a load average is a message
+		// nobody can act on. The line comes back in a few seconds.
+		line = trimToWidth("gozellij: "+msg, cols)
+	}
 	p.out.atomically(func(w io.Writer) {
 		// Save the cursor, re-assert the region (a full-screen program that has exited will have
 		// reset it), go to the last row, draw, and put the cursor back. The service never sees

@@ -139,6 +139,9 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	input := startTerminalInput(in)
 	defer input.stop()
 
+	// The first attach on this machine says how to get out of it. See firstrun.go.
+	greet := FirstAttach()
+
 	// Everything this loop has to tell the user goes through here. Standard error while the byte
 	// pipe owns the terminal, the status line once something is painting over it - the same sink
 	// the keyboard reader uses, for the same reason: three separate messages have already been
@@ -192,6 +195,13 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		})
 		defer painter.Close()
 		out = screen
+		if painter != nil {
+			// The byte pipe can talk now. Everything this loop and the keyboard reader have to
+			// say goes to the status row instead of to standard error, where the service's next
+			// repaint used to wipe it out.
+			input.sayTo(painter.Say)
+			say = painter.Say
+		}
 	}
 
 	// A terminal that is closed, or a client that is told to stop, must still get its screen
@@ -236,6 +246,12 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				}
 			}
 		}()
+	}
+
+	// Said once the screen exists and whatever is drawing it is ready, so that it lands on the
+	// status line rather than on a terminal that is about to be repainted over.
+	if greet {
+		say(firstRunGreeting)
 	}
 
 	first := true

@@ -61,6 +61,7 @@ type Widget func(Context) string
 
 // widgets is the registry. Names match byobu's.
 var widgets = map[string]Widget{
+	"keys":         keys,
 	"session":      session,
 	"services":     services,
 	"viewers":      viewers,
@@ -204,6 +205,17 @@ func Dropped(ctx Context, left, right []string, width int) []string {
 }
 
 // ---------------------------------------------------------------- gozellij's own fields
+
+// keys is the door to every other key, and the reason it is on by default.
+//
+// The first thing a multiplexer has to teach you is how to get out of it, and until this existed
+// the status line said which service you were looking at and how much memory the machine had, and
+// nothing at all about the fact that Ctrl-] is a key. Somebody meeting this for the first time had
+// to read the README to find out how to leave - which they cannot do, because they are inside it.
+//
+// Four characters plus a question mark. It is small enough to keep on a narrow terminal and it
+// leads to the rest: Ctrl-] ? prints the whole table.
+func keys(c Context) string { return "Ctrl-] ?" }
 
 func session(c Context) string {
 	if c.Service == "" {

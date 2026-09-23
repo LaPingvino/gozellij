@@ -37,10 +37,11 @@ const (
 )
 
 // DefaultLeft and DefaultRight follow byobu's own tmux defaults, minus the widgets byobu ships
-// disabled (network, disk_io, temperature, processes) and plus the two things only this program
-// knows: which service you are looking at, and how many are up.
+// disabled (network, disk_io, temperature, processes) and plus the things only this program knows:
+// which service you are looking at, how many are up, and - first, because it is what somebody
+// meeting this for the first time actually needs - that Ctrl-] is a key and Ctrl-] ? explains it.
 var (
-	DefaultLeft  = []string{"session", "services"}
+	DefaultLeft  = []string{"keys", "session", "services"}
 	DefaultRight = []string{"uptime", "load_average", "cpu_count", "memory", "disk", "date", "time"}
 )
 
