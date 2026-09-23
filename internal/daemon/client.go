@@ -326,6 +326,19 @@ func (c *Client) Info() (map[string]string, error) {
 	return out, nil
 }
 
+// Set changes part of a service's definition.
+func (c *Client) Set(name string, req ipc.SetRequest) (ipc.SetReply, error) {
+	resp, err := c.Call(ipc.OpServiceSet, name, req)
+	if err != nil {
+		return ipc.SetReply{}, err
+	}
+	var out ipc.SetReply
+	if derr := resp.Decode(&out); derr != nil {
+		return ipc.SetReply{}, fmt.Errorf("%s was changed, but the reply could not be read: %w", name, derr)
+	}
+	return out, nil
+}
+
 // Rename gives a service a new name.
 func (c *Client) Rename(from, to string) error {
 	_, err := c.Call(ipc.OpServiceRename, from, ipc.RenameRequest{To: to})

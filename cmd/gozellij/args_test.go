@@ -17,7 +17,7 @@ import (
 func TestEverySubcommandWithNoArgumentsSaysWhatItWants(t *testing.T) {
 	// Not the ones that do something without arguments (ls, ping, doctor, stats, shell,
 	// login-setup, upgrade): those talk to a daemon, and this test is about argument handling.
-	for _, cmd := range []string{"add", "attach", "logs", "status", "start", "stop", "restart", "rm", "rename"} {
+	for _, cmd := range []string{"add", "attach", "logs", "status", "start", "stop", "restart", "rm", "rename", "set"} {
 		t.Run(cmd, func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {

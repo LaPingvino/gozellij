@@ -50,6 +50,7 @@ Usage:
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij rename <old> <new>          give a service a new name, running or not; its log goes with it
+  gozellij set <name> [flags] [-- cmd] change its command, -restart, -dir or -env in place
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
   gozellij login-setup                 say how to make it what your login shell starts (-install to do it)
@@ -137,6 +138,8 @@ func run(args []string) error {
 		return cmdRemove(rest)
 	case "rename", "mv":
 		return cmdRename(rest)
+	case "set", "edit":
+		return cmdSet(rest)
 	case "attach":
 		return cmdAttach(rest)
 	case "logs":
@@ -1072,6 +1075,76 @@ func displayVersion(v string) string {
 		return "(unknown)"
 	}
 	return v
+}
+
+// cmdSet changes part of a service's definition in place: the flags given, and the command if one
+// follows. Everything else stays as it was. The fix for a wrong flag used to be rm then add, which
+// stopped the service and deleted its log.
+func cmdSet(args []string) error {
+	fs := flag.NewFlagSet("set", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	restart := fs.String("restart", "", "no|on-failure|always")
+	dir := fs.String("dir", "", "working directory")
+	var env stringList
+	fs.Var(&env, "env", "KEY=VALUE (repeatable); replaces the whole environment list")
+	if err := fs.Parse(hoistName(args)); err != nil {
+		return err
+	}
+	name := fs.Arg(0)
+	var cmdArgs []string
+	if rest := fs.Args(); len(rest) > 1 {
+		cmdArgs = rest[1:]
+	}
+	if len(cmdArgs) > 0 && cmdArgs[0] == "--" {
+		cmdArgs = cmdArgs[1:]
+	}
+	if name == "" {
+		return errors.New("set needs a service name, e.g.\n" +
+			"  gozellij set web -restart always\n" +
+			"  gozellij set web -- caddy run --config /etc/caddy/Caddyfile")
+	}
+
+	var req ipc.SetRequest
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if given["restart"] {
+		req.Restart = restart
+	}
+	if given["dir"] {
+		req.Dir = dir
+	}
+	if given["env"] {
+		e := []string(env)
+		req.Env = &e
+	}
+	if len(cmdArgs) > 0 {
+		if strings.HasPrefix(cmdArgs[0], "-") {
+			return fmt.Errorf("the command is %q, which looks like a flag.\n"+
+				"Put gozellij's own flags before the command and separate the command with --", cmdArgs[0])
+		}
+		command, rest := cmdArgs[0], cmdArgs[1:]
+		req.Command, req.Args = &command, &rest
+	}
+	if req == (ipc.SetRequest{}) {
+		// Rule 1: a set that changes nothing must not answer as though it had.
+		return fmt.Errorf("nothing to change: give -restart, -dir, -env, or -- and a new command")
+	}
+
+	c, err := connect(*sock)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	reply, err := c.Set(name, req)
+	if err != nil {
+		return err
+	}
+	printStatus(reply.Status)
+	if reply.Pending {
+		fmt.Printf("\n%s is still running the previous definition; this applies from its next start.\n"+
+			"  gozellij restart %s\n", name, name)
+	}
+	return nil
 }
 
 // cmdRename gives a service a new name, running or not. See fabric.Rename for what follows it.

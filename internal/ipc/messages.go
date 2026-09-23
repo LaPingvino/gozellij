@@ -20,6 +20,7 @@ const (
 	OpServiceRestrt Op = "service.restart"
 	OpServiceRemove Op = "service.remove"
 	OpServiceRename Op = "service.rename"
+	OpServiceSet    Op = "service.set"
 	// OpAttach turns the connection into a stream: the daemon sends the service's output as
 	// data frames and reads the client's keystrokes as data frames, until the client hangs up.
 	OpAttach Op = "attach"
@@ -198,6 +199,25 @@ type StatusReply struct {
 	// spends, so it should be visible without going looking for the directory.
 	LogPath  string `json:"log_path,omitempty"`
 	LogBytes int64  `json:"log_bytes,omitempty"`
+}
+
+// SetRequest is the payload of OpServiceSet. Only what is present changes: a nil field leaves that
+// part of the definition as it is, which is the difference between fixing one flag and having to
+// restate the whole service.
+type SetRequest struct {
+	Command *string   `json:"command,omitempty"`
+	Args    *[]string `json:"args,omitempty"`
+	Dir     *string   `json:"dir,omitempty"`
+	Env     *[]string `json:"env,omitempty"`
+	Restart *string   `json:"restart,omitempty"`
+}
+
+// SetReply says what the definition is now, and whether the running process is still the old one.
+type SetReply struct {
+	Status StatusReply `json:"status"`
+	// Pending means the service is running the previous definition; the new one applies at the
+	// next start or restart.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // RenameRequest is the payload of OpServiceRename; the request's Service is the current name.

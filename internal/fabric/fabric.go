@@ -293,6 +293,35 @@ func (f *Fabric) Ensure(svc Service) error {
 	return f.startLocked(svc.Name)
 }
 
+// Update changes a service's definition in place and returns the definition as saved.
+//
+// In place, so the service keeps its history, its log and its place in every list; the old way to
+// fix a wrong flag was rm then add, which stopped it and deleted its log unless you remembered
+// -keep-logs. The change takes effect at the next start - restart already builds from the file on
+// disk - and not before: a definition that swapped itself under a running process would describe
+// something that is not what is running.
+//
+// The name cannot change here (that is Rename), and neither can whether it logs: the log writer
+// belongs to the output buffer, which outlives restarts, so the flag would not take effect when
+// the caller was told it would.
+func (f *Fabric) Update(name string, change func(*Service)) (Service, error) {
+	l := f.lock(name)
+	l.Lock()
+	defer l.Unlock()
+
+	def, err := f.reg.Get(name)
+	if err != nil {
+		return Service{}, err
+	}
+	next := def
+	change(&next)
+	next.Name, next.NoLog, next.CreatedAt, next.Enabled = def.Name, def.NoLog, def.CreatedAt, def.Enabled
+	if err := f.reg.Put(next); err != nil {
+		return Service{}, fmt.Errorf("updating %s: %w", name, err)
+	}
+	return next, nil
+}
+
 // lock returns the lifecycle lock for one service, creating it on first use.
 //
 // Locks are never removed, even when the service is. There is one small mutex per service name

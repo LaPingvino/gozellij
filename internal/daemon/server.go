@@ -342,6 +342,8 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 
 	case ipc.OpServiceRename:
 		return s.rename(req)
+	case ipc.OpServiceSet:
+		return s.set(req)
 	case ipc.OpServiceRemove:
 		return s.remove(req)
 
@@ -498,6 +500,46 @@ func (s *Server) viewerCount(service string) int {
 		}
 	}
 	return n
+}
+
+// set changes part of a service's definition.
+func (s *Server) set(req ipc.Request) ipc.Response {
+	var sr ipc.SetRequest
+	if err := json.Unmarshal(req.Payload, &sr); err != nil {
+		return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+	}
+	var policy fabric.RestartPolicy
+	if sr.Restart != nil {
+		p, err := fabric.ParseRestartPolicy(*sr.Restart)
+		if err != nil {
+			return ipc.Err(req.ID, err)
+		}
+		policy = p
+	}
+	if _, err := s.fab.Update(req.Service, func(d *fabric.Service) {
+		if sr.Command != nil {
+			d.Command = *sr.Command
+		}
+		if sr.Args != nil {
+			d.Args = *sr.Args
+		}
+		if sr.Dir != nil {
+			d.Dir = *sr.Dir
+		}
+		if sr.Env != nil {
+			d.Env = *sr.Env
+		}
+		if sr.Restart != nil {
+			d.Restart = policy
+		}
+	}); err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	st, err := s.fab.Status(req.Service)
+	if err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	return ipc.OKResponse(req.ID, ipc.SetReply{Status: s.statusReply(st), Pending: st.Live()})
 }
 
 // rename gives a service a new name.
