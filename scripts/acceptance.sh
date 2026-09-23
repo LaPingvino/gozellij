@@ -1984,6 +1984,55 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm laya layb >/dev/null 2>&1
 
+    # ------------------------------------- the same comparison, with a pager rather than an editor
+    #
+    # vim and less stress different parts of an emulator. vim paints absolutely, positioning the
+    # cursor for every change; less scrolls, draws a reverse-video prompt on the bottom row and
+    # rewrites it in place as you move. One of them agreeing with tmux says less than both do.
+    #
+    # The same file under the same *basename* in two directories, so the prompt line - which
+    # contains the name less was given - is identical on both sides. Pointing them at wide-one and
+    # wide-two would make the screens differ by the filename and nothing else, which is the kind of
+    # check that gets "fixed" by loosening it until it proves nothing.
+    only
+    mkdir -p "$home/g" "$home/t"
+    # Wide characters on every line, not only the first few. The first version put them at the top
+    # and then paged down past them, so the guard below - "the reference did not draw the wide
+    # characters" - fired on a screen that was scrolled somewhere else entirely. The guard was
+    # right and the file was wrong.
+    seq 1 40 | sed 's/$/ \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e caf\xc3\xa9/' > "$home/g/doc.txt"
+    cp "$home/g/doc.txt" "$home/t/doc.txt"
+    "$gz" add pager -dir "$home/g" -start -- sh -c "TERM=xterm-256color LANG=C.UTF-8 exec less doc.txt" >/dev/null 2>&1
+    sleep 1
+    plain2="${tmuxSock}-plain2"
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 24 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_RENDER=1 -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach pager'"
+    tmux -L "$plain2" new-session -d -x 80 -y 23 -e TERM=xterm-256color -e LANG=C.UTF-8 \
+        "sh -c 'cd $home/t && stty -echo && exec less doc.txt'"
+    sleep 3
+    # Down a page and back up one line: scrolling is the part vim never exercises.
+    tmux -L "$tmuxSock" send-keys Space; tmux -L "$plain2" send-keys Space
+    sleep 1
+    tmux -L "$tmuxSock" send-keys k; tmux -L "$plain2" send-keys k
+    sleep 2
+
+    tmux -L "$tmuxSock" capture-pane -pe | head -22 > "$home/pager-gozellij.txt"
+    tmux -L "$plain2" capture-pane -pe | head -22 > "$home/pager-tmux.txt"
+    if ! grep -q '日本語' "$home/pager-tmux.txt"; then
+        bad "the reference pager did not draw the wide characters, so this comparison proves less than it claims"
+    elif diff -q "$home/pager-gozellij.txt" "$home/pager-tmux.txt" >/dev/null; then
+        ok "gozellij's emulator and tmux's draw a scrolling pager identically"
+    else
+        bad "the two emulators disagree on the pager: $(diff "$home/pager-gozellij.txt" "$home/pager-tmux.txt" | head -4 | tr '\n' ' ')"
+    fi
+
+    tmux -L "$plain2" kill-server 2>/dev/null
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm pager >/dev/null 2>&1
+
     # Not checked here: that attaching does not overwrite the line you typed the command on.
     #
     # It is a real bug when it happens - reserving the bottom row used to land the cursor on the
