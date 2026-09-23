@@ -297,10 +297,19 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
     else
         bad "pids changed across the upgrade: before [$before] after [$after]"
     fi
+    # Ask the daemon directly as well as reading what upgrade printed. This check has failed twice
+    # with "did not report the new version" while the replacement binary was demonstrably on disk
+    # and the upgrade path works deterministically when driven on its own - so the question is
+    # whether the daemon failed to exec, or exec'd and the client reported the wrong thing. One
+    # message cannot say which, and a check that fails occasionally and cannot explain itself gets
+    # ignored, which is worse than not having it.
+    daemon_says=$("$gz" doctor 2>/dev/null | awk '/^ok    daemon version/{print $4}')
     if grep -q 'acceptance-v2' "$work/upgrade.out" 2>/dev/null; then
         ok "the daemon really is the new binary afterwards"
+    elif [ "$daemon_says" = "acceptance-v2" ]; then
+        bad "the daemon IS the new binary (it says $daemon_says) but the upgrade command did not say so: $(cat "$work/upgrade.out" 2>/dev/null | tr '\n' ' ')"
     else
-        bad "the upgrade did not report the new version: $(cat "$work/upgrade.out" 2>/dev/null | tr '\n' ' ')"
+        bad "the daemon is still [$daemon_says] after the upgrade, so the exec did not take: $(cat "$work/upgrade.out" 2>/dev/null | tr '\n' ' ')"
     fi
     # "reattached;" and not "reattaching...": the latter is printed on any disconnect, before any
     # attempt has been made, so matching it passed even when the client then gave up entirely.
@@ -1983,6 +1992,97 @@ PROFILE
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm laya layb >/dev/null 2>&1
+
+    # --------------------------------- changing a service in place, and renaming a running one
+    #
+    # Story A5 and its neighbour. Both were reviewed adversarially at the fabric level and five
+    # things came out of it; what nothing drives is the whole path - the command, the daemon, and
+    # a process that is actually running while you change the definition underneath it.
+    only
+    "$gz" add setme -start -restart no -- sh -c 'echo FIRST; sleep 300' >/dev/null 2>&1
+    sleep 2
+    setpid=$("$gz" status setme 2>/dev/null | awk '/^pid:/{print $2}')
+
+    # A set with nothing to change is refused rather than answered as though it had.
+    if "$gz" set setme >/dev/null 2>&1; then
+        bad "a set with no flags was accepted"
+    else
+        ok "a set that would change nothing is refused"
+    fi
+
+    # And one that does change something says the running process is still the old definition,
+    # and what to type. Saying "done" while the service runs the previous command is the failure
+    # this message exists to prevent.
+    said=$("$gz" set setme -restart always 2>&1)
+    if printf '%s' "$said" | grep -q 'previous definition' && printf '%s' "$said" | grep -q 'restart setme'; then
+        ok "set says the running service is still the old definition, and what to type"
+    else
+        bad "set said: $(printf '%s' "$said" | tail -2 | tr '\n' '|')"
+    fi
+    if [ "$("$gz" status setme 2>/dev/null | awk '/^pid:/{print $2}')" = "$setpid" ]; then
+        ok "and it did not restart the service behind your back"
+    else
+        bad "the service was restarted by a set: $setpid became $("$gz" status setme 2>/dev/null | awk '/^pid:/{print $2}')"
+    fi
+
+    # Renaming a *running* service: it keeps its pid, answers to the new name, and its log goes
+    # with it. A rename that left the log behind would lose everything the service had said.
+    "$gz" rename setme renamed >/dev/null 2>&1
+    sleep 1
+    if [ "$("$gz" status renamed 2>/dev/null | awk '/^pid:/{print $2}')" = "$setpid" ]; then
+        ok "a running service keeps its pid across a rename"
+    else
+        bad "the pid changed across the rename: $setpid became $("$gz" status renamed 2>/dev/null | awk '/^pid:/{print $2}')"
+    fi
+    if "$gz" status setme >/dev/null 2>&1; then
+        bad "the old name still answers after a rename"
+    else
+        ok "and the old name is gone"
+    fi
+    if [ -f "$state/logs/renamed.log" ] && [ ! -f "$state/logs/setme.log" ]; then
+        ok "and its log went with it"
+    else
+        bad "logs after the rename: $(ls "$state/logs" 2>/dev/null | tr '\n' ' ')"
+    fi
+    if "$gz" logs renamed 2>/dev/null | grep -q FIRST; then
+        ok "and what it said before the rename is still readable"
+    else
+        bad "the output from before the rename is gone"
+    fi
+    "$gz" rm renamed >/dev/null 2>&1
+
+    # ------------------------------------------- Ctrl-C stops watching, not the service
+    #
+    # The README promises this in its first twenty lines, and nothing checked the half that
+    # matters. The suite runs `logs -f` three times and every one of them ends it with `timeout`,
+    # which sends SIGTERM and asks a different question. "Ctrl-C killed the thing I was only
+    # looking at" is the kind of surprise that ends somebody's trust in a tool immediately.
+    only
+    "$gz" add watched_f -start -restart no -- sh -c 'i=0; while :; do echo "WATCHED-$i"; i=$((i+1)); sleep 1; done' >/dev/null 2>&1
+    sleep 2
+    before_pid=$("$gz" status watched_f 2>/dev/null | awk '/^pid:/{print $2}')
+
+    # A real SIGINT to the follower, the way the terminal would deliver it.
+    "$gz" logs -f watched_f > "$work/follow.out" 2>&1 &
+    follower=$!
+    sleep 2
+    kill -INT "$follower" 2>/dev/null
+    wait "$follower" 2>/dev/null
+    sleep 2
+
+    after_pid=$("$gz" status watched_f 2>/dev/null | awk '/^pid:/{print $2}')
+    if [ -n "$before_pid" ] && [ "$before_pid" = "$after_pid" ]; then
+        ok "Ctrl-C at a follower leaves the service running, with the same pid"
+    else
+        bad "the service went from pid [$before_pid] to [$after_pid] when the follower was interrupted"
+    fi
+    if [ -s "$work/follow.out" ]; then
+        ok "and the follower had been showing output before it stopped"
+    else
+        bad "the follower printed nothing, so this proves nothing about stopping it"
+    fi
+    "$gz" rm watched_f >/dev/null 2>&1
+    rm -f "$work/follow.out"
 
     # ------------------------------------- the same comparison, with a pager rather than an editor
     #
