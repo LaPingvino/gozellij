@@ -80,6 +80,8 @@ $ gozellij logs clock -n 40      # what it printed, from disk; survives the daem
 $ gozellij logs -f clock         # follow it live; Ctrl-C stops watching, not the service
 $ gozellij attach clock          # watch it live; Ctrl-] d detaches, it keeps running
                                  # Ctrl-] n / p switch services; Ctrl-] l lists them and picks one
+                                 # the first attach on a machine spells the keys out once, and
+                                 # `Ctrl-] ?` is on the status line from then on
 ```
 
 Now upgrade the daemon under it:
@@ -133,6 +135,9 @@ screen](#splitting-the-screen).
 | `gozellij attach <name> [-render]` | connect your terminal; `Ctrl-] d` detaches without stopping anything, `Ctrl-] n`/`p` switch services, `Ctrl-] l` picks one from a list, `Ctrl-] ?` lists the keys |
 | `gozellij upgrade` | replace the daemon binary, keeping every process |
 | `gozellij doctor` | check the promises that depend on the host, and say what to type |
+| `gozellij attach -r <name>` | watch without touching: your keystrokes and your window size do not reach the service, and the daemon enforces it rather than the client |
+| `gozellij login-setup` | say how to make gozellij what your login shell starts; `-install` does it, `-undo -install` puts your files back |
+| `gozellij takeover` | what another multiplexer is holding, what is running in each of its terminals, and the commands to recreate them here |
 | `gozellij rm <name>... [-keep-logs]` | stop them, forget them, delete their logs |
 
 ### Splitting the screen
