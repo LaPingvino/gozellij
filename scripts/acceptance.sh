@@ -489,6 +489,45 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# --------------------------------------------- where a service runs, and what it runs with
+#
+# -dir and -env, neither of them driven. -dir appears once further down, but only because a `less`
+# needs to find its file: it would fail if the flag were ignored, which is coverage by accident and
+# says nothing about the flag if that check is ever rewritten. -env had nothing at all.
+#
+# Measured before it was written down. The interesting part is not that the variables arrive, it
+# is that they are *added*: a service whose PATH disappeared because somebody set one variable
+# would be a long afternoon, and nothing here would have noticed.
+only
+mkdir -p "$home/somewhere"
+"$gz" add placed -dir "$home/somewhere" -env ONE=first -env TWO=second -start -restart no -- \
+    sh -c 'echo "AT=[$PWD] ONE=[$ONE] TWO=[$TWO] PATH=[${PATH:+set}]"; sleep 120' >/dev/null 2>&1
+sleep 2
+saw=$("$gz" logs placed 2>/dev/null | grep 'AT=' | tail -1)
+
+if printf '%s' "$saw" | grep -q "AT=\[$home/somewhere\]"; then
+    ok "-dir runs the service where you said"
+else
+    bad "the service ran in: $(printf '%s' "$saw" | sed 's/ .*//')"
+fi
+
+# Repeatable, and both survive: one -env overwriting the other is the obvious way to get this
+# half-right.
+if printf '%s' "$saw" | grep -q 'ONE=\[first\]' && printf '%s' "$saw" | grep -q 'TWO=\[second\]'; then
+    ok "and -env is repeatable, with every one of them arriving"
+else
+    bad "the service saw: $saw"
+fi
+
+# Added, not substituted. The service still has the environment it would have had.
+if printf '%s' "$saw" | grep -q 'PATH=\[set\]'; then
+    ok "and it adds to the environment rather than replacing it"
+else
+    bad "setting -env left the service without a PATH: $saw"
+fi
+"$gz" stop placed >/dev/null 2>&1
+"$gz" rm placed >/dev/null 2>&1
+
 # ------------------------------------------- the restart policy you asked for is the one you get
 #
 # The policies themselves are well covered by unit tests - no, on-failure and always, the backoff,
