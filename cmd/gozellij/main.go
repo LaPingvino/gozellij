@@ -49,6 +49,7 @@ Usage:
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
   gozellij login-setup                 say how to make it what your login shell starts (-install to do it)
+  gozellij takeover                    what is trapped in another multiplexer, and how to get it back
   gozellij stats                       print the status line once and exit
 
 Flags for add:
@@ -127,6 +128,8 @@ func run(args []string) error {
 		return cmdDoctor(rest)
 	case "login-setup":
 		return cmdLoginSetup(rest)
+	case "takeover":
+		return cmdTakeover(rest)
 	case "stats":
 		return cmdStats(rest)
 	default:
@@ -485,8 +488,14 @@ func cmdAdd(args []string) error {
 		return err
 	}
 
+	// Before the slice, not after it. `gozellij add` on its own - which is what somebody types to
+	// find out what add wants - panicked with a Go stack trace on fs.Args()[1:] of an empty
+	// slice, and the helpful message four lines below never got the chance to run.
 	name := fs.Arg(0)
-	cmdArgs := fs.Args()[1:]
+	var cmdArgs []string
+	if rest := fs.Args(); len(rest) > 1 {
+		cmdArgs = rest[1:]
+	}
 	if len(cmdArgs) > 0 && cmdArgs[0] == "--" {
 		cmdArgs = cmdArgs[1:]
 	}
