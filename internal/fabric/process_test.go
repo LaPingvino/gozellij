@@ -226,7 +226,10 @@ func TestStopKillsAProcessThatIgnoresSIGTERM(t *testing.T) {
 	p, err := Start(Service{
 		Name:    "stubborn",
 		Command: "sh",
-		Args:    []string{"-c", "trap '' TERM; echo TRAP_SET; while :; do sleep 0.2; done"},
+		// TERM and HUP both, because both are asked politely now: a process that only ignores
+		// TERM goes when the SIGHUP arrives a quarter of a second later - see the test below -
+		// and the point of this one is what happens to something that ignores everything polite.
+		Args: []string{"-c", "trap '' TERM HUP; echo TRAP_SET; while :; do sleep 0.2; done"},
 	}, StartOptions{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -247,6 +250,38 @@ func TestStopKillsAProcessThatIgnoresSIGTERM(t *testing.T) {
 	}
 	if exit.Signal != syscall.SIGKILL.String() {
 		t.Errorf("exit = %+v, want it killed with %v", exit, syscall.SIGKILL)
+	}
+}
+
+// An interactive shell ignores SIGTERM on purpose, and used to take the whole five-second grace to
+// stop. It goes on SIGHUP - the signal a closing terminal sends - a quarter of a second in.
+//
+// Found in use: removing a shell from inside an attach looked like the key did nothing, because it
+// did its work five seconds later.
+func TestAProcessThatOnlyIgnoresSIGTERMGoesQuickly(t *testing.T) {
+	p, err := Start(Service{
+		Name:    "shell-like",
+		Command: "sh",
+		Args:    []string{"-c", "trap '' TERM; echo TRAP_SET; while :; do sleep 0.2; done"},
+	}, StartOptions{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer p.Close()
+	waitFor(t, 10*time.Second, "the shell to install its TERM trap", func() bool {
+		out, _ := p.Output.Snapshot()
+		return strings.Contains(string(out), "TRAP_SET")
+	})
+
+	start := time.Now()
+	exit := p.Stop()
+	took := time.Since(start)
+	if exit.Signal != syscall.SIGHUP.String() {
+		t.Errorf("exit = %+v, want it ended by %v", exit, syscall.SIGHUP)
+	}
+	// Well under the grace period, which is the whole point.
+	if took > StopGrace/2 {
+		t.Errorf("stopping it took %s; something that goes on SIGHUP should not wait out the grace", took)
 	}
 }
 

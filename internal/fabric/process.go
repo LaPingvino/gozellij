@@ -25,6 +25,11 @@ const DrainGrace = 250 * time.Millisecond
 // StopGrace is how long a process gets to exit after SIGTERM before it is sent SIGKILL.
 const StopGrace = 5 * time.Second
 
+// hangupAfter is how long a stopping service has to act on SIGTERM before it is also sent SIGHUP.
+// Long enough for anything that handles SIGTERM to have started doing so; short enough that an
+// interactive shell, which ignores SIGTERM, goes when you ask rather than five seconds later.
+const hangupAfter = 250 * time.Millisecond
+
 // DrainAbandon is how long reap waits for the pty reader to finish *after* closing the pty, before
 // giving up on it.
 //
@@ -607,10 +612,27 @@ func (p *Process) Stop() Exit {
 	p.stopSignal(syscall.SIGTERM)
 	p.signalCgroup(syscall.SIGTERM, true)
 
+	// Then, if it is still there after a moment, the signal a closing terminal sends.
+	//
+	// An interactive shell ignores SIGTERM - deliberately, so that a stray kill does not end
+	// somebody's session - which meant stopping one sat out the entire grace period before the
+	// SIGKILL. Five seconds of nothing after pressing a key. Found in use as "k does nothing":
+	// it did, five seconds later, by which time the key had been pressed again.
+	//
+	// SIGHUP is what a shell expects when its terminal goes away, and every service here runs on
+	// a pty, so it is the honest signal for "this terminal is being closed". It comes second, not
+	// first, because a daemon run in the foreground may read SIGHUP as "reload your config": by
+	// now it has already been asked to shut down, and a reload during a shutdown is harmless where
+	// one instead of a shutdown would not be.
 	select {
 	case <-p.done:
-	case <-time.After(time.Until(deadline)):
-		p.stopSignal(syscall.SIGKILL)
+	case <-time.After(hangupAfter):
+		p.stopSignal(syscall.SIGHUP)
+		select {
+		case <-p.done:
+		case <-time.After(time.Until(deadline)):
+			p.stopSignal(syscall.SIGKILL)
+		}
 	}
 
 	// The leader is gone; the rest of the service may not be. Give it what is left of the grace
