@@ -98,9 +98,18 @@ func TestTheLogWriterKeepsAnIndexThroughRotation(t *testing.T) {
 		if len(marks) == 0 {
 			t.Fatalf("%s has no index", p)
 		}
-		for _, m := range marks {
+		for i, m := range marks {
 			if m.offset > int64(len(body)) {
-				t.Errorf("%s: a mark points past the end (%d > %d)", p, m.offset, len(body))
+				t.Fatalf("%s: a mark points past the end (%d > %d)", p, m.offset, len(body))
+			}
+			// Every write is marked here (MarkEvery is zero), so every mark must be further on
+			// than the one before, and each must land where a write began.
+			if i > 0 && m.offset <= marks[i-1].offset {
+				t.Errorf("%s: mark %d is at %d, not after the previous one at %d", p, i, m.offset, marks[i-1].offset)
+			}
+			rest := string(body[m.offset:])
+			if !strings.HasPrefix(rest, "line-") && !strings.HasPrefix(rest, "\r\n[gozellij]") {
+				t.Errorf("%s: mark %d points into the middle of a write: %q", p, i, rest[:min(len(rest), 12)])
 			}
 		}
 	}
