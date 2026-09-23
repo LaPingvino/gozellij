@@ -456,6 +456,13 @@ the one you get without asking.
   you actually press. **Verified** end to end against `cat`, which has no keymap of its own —
   checked at a shell first, where readline's own `Ctrl-]` binding made it look like gozellij was
   eating the key.
+- **A stopped tab is somewhere you can be, not a way out.** Pressing `Ctrl-] n` onto a service
+  that is not running used to end the attach and drop you back to your shell - and `Ctrl-] u`,
+  which the help offers, could never be reached in the one case it exists for. Now you stay: its
+  last output is still on screen, `u` starts it again, `n`/`p` move on, `k` removes it, `d`
+  detaches. **Verified** in both modes, and in a pane of a split. A service that ends *under* you
+  is still the end of the attach, because that is `exit` in the shell you were working in and the
+  terminal has to come back - the two were one case and are now two.
 - **The package replaces the other multiplexer.** **Verified** from the recipe with
   `makepkg --printsrcinfo`: it declares `replaces` and `conflicts` against `gezellij-git`, every
   file its `package()` step installs is in the repository, and the systemd user unit it generates
@@ -469,25 +476,26 @@ grid has to reimplement those and then be worse at them.
 
 ## What is missing, in the order it would bite
 
-1. **Splitting the screen.** Two things *visible at once* still needs a terminal emulator, and
-   that has not changed. What has changed is that the common case did not need one: gezellij's
-   daily value is tabs, and tabs are switching which service this terminal shows — which a byte
-   pipe does for free, because the escape sequences that drew the screen are in the bytes being
-   replayed. `Ctrl-] n` does it today.
+1. ~~**Splitting the screen.**~~ Done, and this entry argued against doing it. It is left here
+   rather than deleted, because the argument was not wrong - it was answered.
 
-   Whether to build the grid at all is now a real question rather than an assumed yes:
+   What it said: side-by-side is genuinely different from switching, but a grid is the expensive
+   98.8% this project exists to avoid, and owning it costs the accidental advantage below - your
+   own terminal's scrollback, search and copy/paste. The recommendation was to wait until the lack
+   actually bit.
 
-   - **For:** side-by-side is genuinely different from switching — watching a log while you type
-     in a shell is the case tabs cannot cover.
-   - **Against:** it is the expensive 98.8% this project exists to avoid (see DESIGN.md), the Go
-     VTE landscape is poor enough that the one Go multiplexer with real users ships two emulators
-     behind one interface, and owning the grid *costs* the accidental advantage below — your own
-     terminal's scrollback, search and copy/paste stop working and have to be reimplemented worse.
-     Meanwhile gozellij already composes with tmux, precisely because the attach is a byte pipe.
+   What happened: it bit, the oracle came first as DESIGN.md said it should, and the cost was
+   roughly what this entry feared - an emulator is now the largest thing in the repository. The
+   mitigation is that it is opt-in. `gozellij attach <name>` is still a byte pipe and still
+   composes with tmux; `-render` is the mode that owns the screen, with `Ctrl-] |` to split,
+   `Ctrl-] -` to stack, `o` to move between panes, `< >` to resize, `x` to close, `b`/`f`/`g` for
+   scrollback, and an arrangement that is written down while you are in it so you come back to it.
+   The emulator is checked against tmux on a corpus rather than believed, and surveyed against
+   twenty-three real programs.
 
-   The recommendation is to leave it here until the lack of splitting actually bites in daily use,
-   and if it does, to do Phase 2 (the oracle) first as DESIGN.md says. This is Joop's call, and it
-   is no longer blocking the replacement.
+   The entry's own recommendation - leave it until it bites, and build the oracle first if it does
+   - turned out to be the right order. The part it got wrong was treating "expensive" as
+   "avoidable": the expense was real and was paid.
 
 2. ~~**Scrollback is 256 KiB of RAM and dies with the daemon.**~~ Done — see above. What it cost:
    for a shell you live in, the log file now holds everything you typed at it and everything it
