@@ -33,10 +33,12 @@ func main() {
 }
 
 func usage() {
+	prefix := status.Load().Prefix
 	fmt.Fprintf(os.Stderr, `gozellij %[1]s - a host-native process fabric
 
 Usage:
   gozellij                             land in your shell (starts one if there is none)
+  gozellij shell [-name <n>] [-render] the same, with a different service name
   gozellij ls                          list services
   gozellij status <name>...            show one service, or several
   gozellij add <name> -- <cmd> [args]  define a service
@@ -45,7 +47,6 @@ Usage:
   gozellij logs <name>                 print its recent output and exit
   gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
-  gozellij shell [-name <n>] [-render] the same, with a different service name
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
@@ -71,8 +72,8 @@ buffer - which holds a few hundred KiB and dies with the daemon.
 The status line at the bottom of an attach is byobu-shaped: the same widget names, and a leading
 # in the config switches one off. See gozellij stats -example.
 
-While attached, %[2]s is gozellij's own key. Set prefix=C-b in the config file
-to change it; gozellij doctor says which key is in force.
+While attached, %[2]s is gozellij's own key. Put a line like prefix=%[3]s in
+%[4]s to change it; gozellij doctor says which key is in force.
   %[2]s d         detach; the service keeps running
   %[2]s n / p     next / previous service, in this same terminal
   %[2]s l         list the services and pick one by number
@@ -86,7 +87,17 @@ Global:
   -socket <path>   daemon socket (default $XDG_RUNTIME_DIR/gozellij/fabric.sock)
 
 The daemon is gozellijd. Services keep running when it stops.
-`, Version, status.PrefixLabel(status.Load().Prefix))
+`, Version, status.PrefixLabel(prefix), otherPrefix(prefix), status.ConfigPath())
+}
+
+// otherPrefix is the example the usage text offers for changing the key. It has to be a key other
+// than the one in force: the text used to say prefix=C-b to somebody who had already set exactly
+// that, which reads as an instruction that did not work.
+func otherPrefix(current byte) string {
+	if current == 0x02 {
+		return "C-]"
+	}
+	return "C-b"
 }
 
 func run(args []string) error {
