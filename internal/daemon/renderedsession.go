@@ -335,6 +335,26 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeCreate:
+				// In the focused pane, the way n and p change what it shows. With one pane the
+				// loop outside does it, the same as it does for n and p.
+				if len(panes) == 1 {
+					return want, nil
+				}
+				name, err := newShell(socket, panes[focus].service)
+				if err != nil {
+					note(err.Error())
+					paint()
+					continue
+				}
+				if err := swapPane(socket, panes[focus], name); err != nil {
+					note(err.Error())
+				} else {
+					go readFrames(panes[focus], panes[focus].client, events)
+					note("new shell: " + name)
+				}
+				paint()
+
 			case outcomeRemove:
 				// Remove the focused pane's service and close its pane. With one pane there
 				// is nothing left on screen to keep, so it goes to the loop outside, which knows

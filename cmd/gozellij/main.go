@@ -76,6 +76,9 @@ to change it; gozellij doctor says which key is in force.
   %[2]s d         detach; the service keeps running
   %[2]s n / p     next / previous service, in this same terminal
   %[2]s l         list the services and pick one by number
+  %[2]s c         a new shell, in the directory you are in
+  %[2]s k         remove the service you are looking at
+  %[2]s u         revive a pane that has frozen: reconnect it, starting its service if needed
   %[2]s ?         show these keys
   %[2]s %[2]s    send a literal %[2]s to the service
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +95,36 @@ func TestTheUnctrlledKeysThatKeepTheirMeaning(t *testing.T) {
 	}
 	if got := in.unctrl(0x1f); got != '?' {
 		t.Errorf("Ctrl-/ became %q, want ?", got)
+	}
+}
+
+func TestTheNewShellKeyBecomesACommand(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	in := startTerminalInput(r, status.DefaultPrefix)
+	defer in.stop()
+	_, _ = w.Write([]byte{status.DefaultPrefix, 'c'})
+	select {
+	case got := <-in.cmds:
+		if got != outcomeCreate {
+			t.Errorf("prefix c arrived as %d, want outcomeCreate", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("prefix c never arrived as a command")
+	}
+}
+
+func TestEveryCommandKeyIsInTheHelp(t *testing.T) {
+	// A key nobody can find might as well not exist. c, k and u went in without being added here,
+	// which is how they would have stayed undiscoverable.
+	help := prefixHelp("Ctrl-]")
+	for _, want := range []string{" c new shell", " k remove", " u revive", " d detach", " l list"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("the help does not mention %q:\n%s", strings.TrimSpace(want), help)
+		}
 	}
 }

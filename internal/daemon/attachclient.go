@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -77,6 +78,8 @@ const (
 	// stale across a daemon crash, or the two-readers bug - while the process behind it is fine.
 	// Not the undo of k: k removes a service on purpose, and there is nothing left to revive.
 	outcomeRevive
+	// outcomeCreate starts a new shell and shows it - the new-tab key every other multiplexer has.
+	outcomeCreate
 	// outcomeRedraw paints everything again from the grid. The recovery for a screen that looks
 	// wrong, which is the first thing anybody reaches for.
 	outcomeRedraw
@@ -88,9 +91,9 @@ const (
 // service was showing. Built from the configured key rather than spelling Ctrl-] out, because a
 // help text that names a key the user has changed is worse than none.
 func prefixHelp(label string) string {
-	return label + " d detach · n/p next/previous · l list and pick · | split beside · - split below · " +
-		"< > resize · o switch pane · x close pane · b/f scroll back/forward · g live · r redraw · ? this · " +
-		label + " sends a literal " + label
+	return label + " d detach · c new shell · n/p next/previous · l list and pick · k remove · u revive · " +
+		"| split beside · - split below · < > resize · o switch pane · x close pane · " +
+		"b/f scroll back/forward · g live · r redraw · ? this · " + label + " sends a literal " + label
 }
 
 // pickTimeout is how long the list waits for a choice before giving up and going back.
@@ -332,6 +335,20 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				// with the service started first if it needs to be, so typing reaches a process.
 				msg, _ := revive(socket, service)
 				say(msg)
+				first, replay = true, true
+				break dispatch
+
+			case outcomeCreate:
+				name, err := newShell(socket, service)
+				if err != nil {
+					say(err.Error())
+					first, replay = true, true
+					break dispatch
+				}
+				say("new shell: " + name)
+				service = name
+				showService(out, service)
+				painter.Repaint()
 				first, replay = true, true
 				break dispatch
 
@@ -700,6 +717,64 @@ func sayToStderr(msg string) {
 	fmt.Fprintf(os.Stderr, "\r\n[gozellij: %s]\r\n", msg)
 }
 
+// newShell defines and starts a shell beside the one you are in, and returns its name.
+//
+// Where you are, in both senses. The same environment as the shell the key was pressed in -
+// less GOZELLIJ, which names that shell and would name this one wrongly; the daemon sets the
+// right one - and the same working directory, read from the running process rather than from
+// wherever the attach happened to be started. tmux does this with pane_current_path, and a new
+// shell that opens in your home directory when you were three directories deep is a small
+// irritation repeated every time.
+func newShell(socket, from string) (string, error) {
+	c, err := Dial(socket)
+	if err != nil {
+		return "", fmt.Errorf("could not reach the daemon: %w", err)
+	}
+	defer c.Close()
+
+	list, err := c.List()
+	if err != nil {
+		return "", fmt.Errorf("could not list services: %w", err)
+	}
+	taken := map[string]bool{}
+	for _, s := range list.Services {
+		taken[s.Service] = true
+	}
+	name := ""
+	for i := 2; i < 1000; i++ {
+		if n := fmt.Sprintf("shell-%d", i); !taken[n] {
+			name = n
+			break
+		}
+	}
+	if name == "" {
+		return "", errors.New("no free shell-N name below shell-1000")
+	}
+
+	dir, _ := os.UserHomeDir()
+	if st, err := c.Status(from); err == nil && st.Pid > 0 {
+		if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", st.Pid)); err == nil {
+			dir = cwd
+		}
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GOZELLIJ=") {
+			env = append(env, kv)
+		}
+	}
+	if _, err := c.Add(name, ipc.AddRequest{
+		Command: shell, Args: []string{"-l"}, Dir: dir, Env: env, Start: true,
+	}); err != nil {
+		return "", fmt.Errorf("could not start a new shell: %w", err)
+	}
+	return name, nil
+}
+
 // removeAndMoveOn removes a service and says which one to show instead, or "" when none is left.
 //
 // The next one in the same rotation Ctrl-] n walks, worked out *before* the removal, because
@@ -951,6 +1026,13 @@ func (t *terminalInput) run(in *os.File) {
 						continue
 					}
 					if !command(outcomeScrollLive) {
+						return
+					}
+				case 'c', 'C':
+					// A new shell, where you are. The key tmux uses for a new window, and the
+					// thing there was otherwise no way to do from inside: typing `gozellij shell
+					// -name x` in a shell is nesting, which is refused.
+					if !command(outcomeCreate) {
 						return
 					}
 				case 'k', 'K':
