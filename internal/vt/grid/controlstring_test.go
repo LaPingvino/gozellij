@@ -24,8 +24,8 @@ func TestControlStringsReportOnlyWhatWentUnanswered(t *testing.T) {
 		{"sixel with none", "\x1bPq#0~~\x1b\\", "DCS sixel image"},
 		{"a long body that is not sixel", "\x1bP1234567890123456789zz\x1b\\", ""},
 		{"a start of string", "\x1bXwhatever\x1b\\", ""},
-		{"DECRQSS, unanswered", "\x1bP$qm\x1b\\", "DCS $q request"},
-		{"XTGETTCAP, unanswered", "\x1bP+q544e\x1b\\", "DCS +q request"},
+		{"DECRQSS, which is answered rather than reported", "\x1bP$qm\x1b\\", ""},
+		{"XTGETTCAP, likewise", "\x1bP+q544e\x1b\\", ""},
 		{"a DCS that states rather than asks", "\x1bP$rm\x1b\\", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -65,6 +65,56 @@ func TestControlStringSplitAcrossWrites(t *testing.T) {
 				t.Fatalf("%q cut at %d: whole reported %v, split reported %v",
 					in, cut, whole.Unknown(), piece.Unknown())
 			}
+		}
+	}
+}
+
+// A query gets an answer, not silence. vim asks on startup and waits out a timeout for a reply
+// that never comes, which is a pause on every attach and nothing to show for it. "0" is the
+// standard "I do not have that", and it is true: none of these are implemented.
+func TestQueriesAreAnswered(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		// DECRQSS names no capability, so the answer does not have to either.
+		{"the current SGR", "\x1bP$qm\x1b\\", "\x1bP0$r\x1b\\"},
+		{"the scrolling region", "\x1bP$qr\x1b\\", "\x1bP0$r\x1b\\"},
+		// XTGETTCAP's answer has to say which capability it is about, or it answers nothing.
+		// 544e is "TN", the terminal name, which is what a program asks for most often.
+		{"the terminal name", "\x1bP+q544e\x1b\\", "\x1bP0+r544e\x1b\\"},
+		{"several at once", "\x1bP+q544e;526742\x1b\\", "\x1bP0+r544e;526742\x1b\\"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			term := New(20, 4)
+			term.Write([]byte(c.in))
+			if got := string(term.TakeReplies()); got != c.want {
+				t.Fatalf("answered %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// And nothing else provokes one. A terminal that replies to a control string it was meant to
+// swallow writes bytes into the program's input that the program never asked for, which is worse
+// than not answering: vim's probe would read them as typing.
+func TestOnlyQueriesAreAnswered(t *testing.T) {
+	for _, in := range []string{
+		"\x1bPzz\x1b\\",
+		"\x1bP\x1b\\",
+		"\x1bP0;0;0q#0~~\x1b\\",
+		"\x1b_Ga=T,f=100;AAAA\x1b\\",
+		"\x1b^anything\x1b\\",
+		"\x1bXwhatever\x1b\\",
+		// $ and + without the q: neither is a query.
+		"\x1bP$rm\x1b\\",
+		"\x1bP+pm\x1b\\",
+	} {
+		term := New(20, 4)
+		term.Write([]byte(in))
+		if got := term.TakeReplies(); len(got) != 0 {
+			t.Fatalf("%q was answered with %q", in, string(got))
 		}
 	}
 }

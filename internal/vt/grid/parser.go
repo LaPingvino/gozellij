@@ -21,9 +21,9 @@ type parser struct {
 	// string rather than being part of it.
 	strEsc bool
 	// strIntro is the character that opened the current control string - P, X, ^ or _ - and
-	// strHead the start of its body, which is all it takes to tell one kind from another. Kept
-	// because the decision can only be made once the string is over. Sixel needs more than two
-	// bytes: its introducer is a run of numeric parameters and only then the letter q.
+	// strHead the start of its body. Kept because the decision can only be made once the string
+	// is over. Two bytes would classify it; more are kept because XTGETTCAP's answer has to name
+	// the capabilities that were asked about, and they are the body.
 	strIntro byte
 	strHead  []byte
 	params   []byte
@@ -787,23 +787,26 @@ func (p *parser) str(t *Term, c byte) {
 	}
 }
 
-// strHeadMax is how much of a control string's body is kept. Enough for sixel's parameters,
-// which are the longest introducer here; the body itself is not wanted and can be megabytes.
-const strHeadMax = 16
+// strHeadMax is how much of a control string's body is kept. Enough to name the capabilities in
+// an XTGETTCAP query, which is the longest body anything here has to read; a sixel body is an
+// image and is classified from its first few bytes and then thrown away.
+const strHeadMax = 256
 
-// finishStr reports a control string that went nowhere and will be missed.
+// finishStr answers a control string that asked something, and reports one that would have drawn.
 //
-// Two kinds qualify, and the distinction is what the program loses by not being answered:
+// Three outcomes, and which one a body gets is decided by what the program loses:
 //
-//   - it asked something. DECRQSS ("$q", what is the current setting of ...) and XTGETTCAP
-//     ("+q", what does your terminfo say about ...), both DCS. A program that gets no reply
-//     falls back to a default, which is survivable and occasionally wrong.
-//   - it was going to draw. Sixel (DCS, optional numeric parameters then "q") and kitty
-//     graphics (APC "G") put an image on the screen, and dropping one leaves a hole with
-//     nothing to explain it - which is the case this whole mechanism was built for.
-//
-// Everything else is consumed and that is the end of it: vim's "\x1bPzz\x1b\\" probe asks
-// whether the terminal swallows a control string, and swallowing it is the right answer.
+//   - it asked something this terminal does not have. DECRQSS ("$q", what is the current setting
+//     of ...) and XTGETTCAP ("+q", what does your terminfo say about ...), both DCS. Answered,
+//     with the standard "I do not have that" reply rather than a note, because that is what a
+//     terminal without the capability sends and it is the truth. Silence is worse than a no: vim
+//     asks on startup and waits out a timeout for an answer that never comes.
+//   - it was going to draw. Sixel (DCS, optional numeric parameters then "q") and kitty graphics
+//     (APC "G") put an image on the screen, and dropping one leaves a hole with nothing to
+//     explain it - which is the case the report exists for.
+//   - anything else is consumed and that is the end of it. vim opens with "\x1bPzz\x1b\\" to
+//     find out whether the terminal swallows a control string or prints its body, and swallowing
+//     it is the right answer.
 func (p *parser) finishStr(t *Term) {
 	head := p.strHead
 	if p.strIntro == '_' {
@@ -817,9 +820,21 @@ func (p *parser) finishStr(t *Term) {
 	if p.strIntro != 'P' || len(head) == 0 {
 		return
 	}
-	if len(head) >= 2 && head[1] == 'q' && (head[0] == '$' || head[0] == '+') {
-		t.noteUnknown(fmt.Sprintf("DCS %sq request", string(head[0])))
-		return
+	if len(head) >= 2 && head[1] == 'q' {
+		switch head[0] {
+		case '$':
+			// DECRQSS. "0" is the standard answer for a setting this terminal will not report,
+			// and none of them are reported: the request is for the current SGR, scrolling
+			// region and the like, which a program asks in order to put them back afterwards.
+			t.reply("\x1bP0$r\x1b\\")
+			return
+		case '+':
+			// XTGETTCAP. The answer names what was asked about, so it is echoed back: a reply
+			// that does not say which capability it is about answers nothing. "0" is "I do not
+			// have it", which is true for all of them.
+			t.reply("\x1bP0+r%s\x1b\\", string(head[2:]))
+			return
+		}
 	}
 	// Sixel: zero or more numeric parameters, then q. "\x1bPq" and "\x1bP0;0;0q" are both it.
 	i := 0
