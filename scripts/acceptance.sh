@@ -798,7 +798,7 @@ else
     # cursor shape are otherwise only sent when they change, so a terminal that lost them would
     # not get them back until something changed again.
     only
-    "$gz" add drawn -start -- sh -c 'printf "\033]2;TITLE-HERE\007\033[?2004hCONTENT\r\n"; sleep 60' >/dev/null 2>&1
+    "$gz" add drawn -start -- sh -c 'printf "\033]2;TITLE-HERE\007\033]7;file://box/redrawn-here\033\\\\\033[?2004hCONTENT\r\n"; sleep 60' >/dev/null 2>&1
     sleep 1
     newscreen
     tmux -L "$tmuxSock" new-session -d -x 40 -y 6 \
@@ -811,6 +811,7 @@ else
     # many times the string is in it. That misread a working redraw as a broken one once.
     occurrences() { grep -ao "$1" "$home/redraw.bin" | wc -l; }
     titleBefore=$(occurrences 'TITLE-HERE')
+    dirBefore=$(occurrences 'redrawn-here')
     tmux -L "$tmuxSock" send-keys C-] 'r'
     sleep 2
     if [ "$(occurrences 'TITLE-HERE')" -gt "$titleBefore" ] \
@@ -818,6 +819,14 @@ else
         ok "Ctrl-] r repaints and re-sends what the terminal was assumed to have"
     else
         bad "after a redraw the title was sent $(occurrences 'TITLE-HERE') times, want more than $titleBefore"
+    fi
+    # The working directory is in that list too, and was the one thing Forget did not let go of:
+    # everything else came back after a repaint and the terminal was left believing whatever
+    # directory it had been told before it lost its state.
+    if [ "$(occurrences 'redrawn-here')" -gt "$dirBefore" ]; then
+        ok "and the working directory comes back with them"
+    else
+        bad "the directory was sent $dirBefore times before the repaint and $(occurrences 'redrawn-here') after"
     fi
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null

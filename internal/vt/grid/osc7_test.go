@@ -45,6 +45,17 @@ func TestWorkingDirectoryIsNotReportedAsAGap(t *testing.T) {
 	}
 }
 
+// A refused one is said out loud. Rule 1: dropping it silently would leave a terminal quietly
+// believing the wrong directory with nothing to connect that to a sequence that went nowhere -
+// and without this the noteUnknown in the parser is a line nobody has watched run.
+func TestARefusedWorkingDirectoryIsReported(t *testing.T) {
+	term := New(20, 4)
+	term.Write([]byte("\x1b]7;file://box/a\x01b\x07"))
+	if term.Unknown()["OSC 7 with a control byte in it"] == 0 {
+		t.Fatalf("a refused OSC 7 was dropped in silence: %v", term.Unknown())
+	}
+}
+
 // And a program that never says leaves it empty, so the renderer has nothing to pass on and the
 // terminal keeps whatever it had.
 func TestNoWorkingDirectoryIsNoDirectory(t *testing.T) {

@@ -272,6 +272,7 @@ func (s *renderedScreen) Forget() {
 	s.applied = nil
 	s.title = ""
 	s.shape = 0
+	s.dir = ""
 }
 
 // Say puts a message on the status line for a few seconds.
@@ -404,7 +405,16 @@ func (s *renderedScreen) applyTitle(title string) {
 // is a reason not to use the rendered attach.
 //
 // The focused pane's, like the title: a window has one working directory as far as the terminal
-// is concerned, and the keyboard is in one pane.
+// is concerned, and the keyboard is in one pane. Moving the keyboard to a pane whose program
+// never reported one leaves the terminal believing the last one it was told, which is the same
+// choice as the empty case above and right for the same reason: a pane that has said nothing is
+// not a pane saying "nowhere".
+//
+// Nothing is reset on the way out, and that is deliberate. A byte pipe passes OSC 7 to the
+// terminal and does not take it back on detach either; the shell you return to reports its own
+// at its next prompt if it reports one at all. Matching the byte pipe is the whole point of
+// carrying this - inventing a reset the byte pipe does not do would be a new difference, not a
+// removed one.
 func (s *renderedScreen) applyDir(dir string) {
 	if dir == "" || dir == s.dir {
 		return
