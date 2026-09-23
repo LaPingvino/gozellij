@@ -181,6 +181,11 @@ gozellij rm a5
 Or: document that files are read only at load, and make `restart` say so when the file differs.
 Either passes; silence does not.
 
+**Now (2026-09-23).** Both halves hold. The acceptance above passes: `restart` builds from the file on
+disk. And there is a command for it, so the file does not have to be the interface:
+`gozellij set a5 -restart always -- true` changes only what is given, keeps the service and its
+log, and says when the running process is still the old definition.
+
 ### A6. Give it an address
 
 **Story.** Synapse listens on 8008, the proxy talks to it. In Docker I wrote
