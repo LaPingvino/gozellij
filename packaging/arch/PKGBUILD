@@ -9,7 +9,7 @@
 # with a login that starts nothing until you run `gozellij login-setup -install`, which is a state
 # you can log in from.
 pkgname=gozellij-git
-pkgver=0.r0.0000000
+pkgver=0.r165.fc73f67
 pkgrel=1
 pkgdesc="gozellij - a host-native process fabric with a terminal UI, in Go (replaces gezellij)"
 arch=('x86_64' 'aarch64')
@@ -40,15 +40,23 @@ build() {
 check() {
     cd "${srcdir}/gozellij"
     go vet ./...
-    # Named packages rather than ./... on purpose. The terminal emulator's tests drive a real
-    # tmux and compare its screen with ours, and scripts/acceptance.sh drives a real pty; both are
-    # the right thing to run on a machine somebody uses and the wrong thing to require of a build
-    # host, which has neither. Excluded here and listed so that nobody reads a passing build as
-    # "the emulator was checked":
+    # Only the packages that need nothing of the machine they run on.
     #
-    #   internal/vt/...  needs tmux        (make conform, make test)
-    #   scripts/         needs a real pty  (make acceptance)
-    go test ./internal/ipc/ ./internal/status/ ./internal/ula/ ./internal/fabric/ ./internal/daemon/ ./cmd/...
+    # The first version of this ran fabric and daemon too, and on a real build it took most of a
+    # minute and then hung. Those two spawn processes, open ptys, wait for signals and time out
+    # deliberately - which is right on a machine somebody uses and wrong to demand of a build host,
+    # for exactly the reason the emulator's tests were already excluded. A build that hangs is
+    # worse than a build that checks less.
+    #
+    # Left out, and listed so nobody reads a passing build as "it was all checked":
+    #
+    #   internal/fabric   spawns processes and ptys   (make test)
+    #   internal/daemon   unix sockets, signals       (make test)
+    #   internal/vt/...   drives a real tmux          (make conform)
+    #   scripts/          drives a real pty           (make acceptance)
+    #
+    # `make check` on a workstation runs all of it. That is where the promises are kept.
+    go test ./internal/ipc/ ./internal/status/ ./internal/ula/ ./cmd/...
 }
 
 package() {
