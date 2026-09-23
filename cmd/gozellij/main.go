@@ -184,14 +184,6 @@ func captureShellEnv() []string {
 	return env
 }
 
-// cmdShell lands you in a shell, creating one if there is not one already.
-//
-// The rule, which is worth stating because it decides what happens to a customised service: if the
-// shell is running, you are reattached to it, environment and all, exactly as you left it. If it is
-// not running, its definition is updated from the terminal you are typing in now - because a shell
-// that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
-// you end up with a vim that draws garbage. Keep a shell you have customised under another name and
-// attach to it by name.
 // refuseNesting stops an attach from inside a gozellij service, which is almost never what
 // somebody meant and is never what they meant when the target is the service they are in.
 //
@@ -231,6 +223,14 @@ func looksLikeAServiceName(s string) bool {
 	return true
 }
 
+// cmdShell lands you in a shell, creating one if there is not one already.
+//
+// The rule, which is worth stating because it decides what happens to a customised service: if the
+// shell is running, you are reattached to it, environment and all, exactly as you left it. If it is
+// not running, its definition is updated from the terminal you are typing in now - because a shell
+// that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
+// you end up with a vim that draws garbage. Keep a shell you have customised under another name and
+// attach to it by name.
 func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sock := socketFlag(fs)
