@@ -22,11 +22,12 @@ const AttachQueueBytes = 4 << 20 // 4 MiB
 
 // attachSession is one client attached to one service.
 type attachSession struct {
-	srv     *Server
-	conn    net.Conn
-	w       *ipc.Writer
-	r       *ipc.Reader
-	service string
+	srv  *Server
+	conn net.Conn
+	w    *ipc.Writer
+	r    *ipc.Reader
+	// svc is the service, followed rather than named: it can be renamed while this is open.
+	svc *fabric.Handle
 	// readOnly drops this connection's keystrokes and resizes. See ipc.AttachRequest.
 	readOnly bool
 }
@@ -83,7 +84,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// subscription exists, and once the count is zero none do.
 	defer sub.Detach()
 
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service, readOnly: ar.ReadOnly}
+	svc, err := s.fab.Follow(req.Service)
+	if err != nil {
+		return err
+	}
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, readOnly: ar.ReadOnly}
 
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
@@ -102,7 +107,7 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// buffer nobody closes, and readInput only notices a dead process when you type at it. The
 	// first thing anybody does with a login shell is exit it.
 	watchDone := make(chan struct{})
-	stopWatching := sess.watchForExit(req.Service, sub, watchDone)
+	stopWatching := sess.watchForExit(sub, watchDone)
 
 	// One goroutine pumps output to the client; this one reads the client's input. They end
 	// together: whichever notices the connection is gone closes it, and the other unblocks.
@@ -149,17 +154,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 //
 // Returns a function that stops the watch; it must be called, and the done channel waited on,
 // before the attach returns.
-func (a *attachSession) watchForExit(service string, sub *fabric.Subscriber, done chan struct{}) func() {
-	changed, stop, err := a.srv.fab.Watch(service)
-	if err != nil {
-		// The service went away between the lookup above and here. Nothing to watch, and the
-		// attach will end on its own when the buffer closes.
-		close(done)
-		return func() {}
-	}
+func (a *attachSession) watchForExit(sub *fabric.Subscriber, done chan struct{}) func() {
+	changed, stop := a.svc.Watch()
 
 	finished := func() bool {
-		st, serr := a.srv.fab.Status(service)
+		st, serr := a.svc.Status()
 		return serr != nil || st.Finished()
 	}
 
@@ -172,8 +171,8 @@ func (a *attachSession) watchForExit(service string, sub *fabric.Subscriber, don
 				return
 			}
 		}
-		st, _ := a.srv.fab.Status(service)
-		a.notify(ipc.EventFinished, exitWords(service, st))
+		st, _ := a.svc.Status()
+		a.notify(ipc.EventFinished, exitWords(a.svc.Name(), st))
 		sub.Detach()
 	}()
 
@@ -229,7 +228,7 @@ func (a *attachSession) pumpOutput(sub *fabric.Subscriber) {
 		if sub.Lagged() {
 			_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
 				Kind:    ipc.EventLagged,
-				Service: a.service,
+				Service: a.svc.Name(),
 				At:      time.Now(),
 				Message: "output was dropped because this client could not keep up; re-attach to resynchronise",
 			})
@@ -248,7 +247,7 @@ func (a *attachSession) pumpOutput(sub *fabric.Subscriber) {
 			// cannot tell it missed data is worse off than one that is told.
 			_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
 				Kind:    ipc.EventLagged,
-				Service: a.service,
+				Service: a.svc.Name(),
 				At:      time.Now(),
 				Message: "output was dropped because this client could not keep up; re-attach to resynchronise",
 			})
@@ -278,7 +277,7 @@ func (a *attachSession) readInput() error {
 				a.notify(ipc.EventNotice, "this attach is read-only, so your keystrokes went nowhere")
 				continue
 			}
-			p, perr := a.srv.fab.Process(a.service)
+			p, perr := a.svc.Process()
 			if perr != nil {
 				return perr
 			}
@@ -348,7 +347,7 @@ func (a *attachSession) handleInStream(req ipc.Request) {
 			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, fmt.Errorf("malformed resize: %w", err)))
 			return
 		}
-		p, err := a.srv.fab.Process(a.service)
+		p, err := a.svc.Process()
 		if err != nil {
 			_ = a.w.WriteJSON(ipc.KindResponse, ipc.Err(req.ID, err))
 			return
@@ -374,7 +373,7 @@ func (a *attachSession) handleInStream(req ipc.Request) {
 func (a *attachSession) notify(kind, msg string) {
 	_ = a.w.WriteJSON(ipc.KindEvent, ipc.Event{
 		Kind:    kind,
-		Service: a.service,
+		Service: a.svc.Name(),
 		At:      time.Now(),
 		Message: msg,
 	})

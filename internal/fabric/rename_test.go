@@ -2,9 +2,11 @@ package fabric
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -90,18 +92,12 @@ func TestRenameRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.Add(Service{Name: "live", Command: "sleep", Args: []string{"300"}}, true); err != nil {
-		t.Fatal(err)
-	}
-	waitFabric(t, f, "live", 10*time.Second, "running", func(st Status) bool { return st.State == StateRunning })
-
 	cases := []struct {
 		from, to string
 		want     error
 	}{
 		{"a", "b", ErrServiceExists},
 		{"missing", "c", ErrNoSuchService},
-		{"live", "c", ErrRenameRunning},
 		{"a", "a", nil},
 		{"a", "", nil},
 		{"a", "has/slash", nil},
@@ -116,16 +112,13 @@ func TestRenameRefusals(t *testing.T) {
 			t.Errorf("rename %q %q: %v, want %v", c.from, c.to, err, c.want)
 		}
 	}
-	for _, name := range []string{"a", "b", "live"} {
+	for _, name := range []string{"a", "b"} {
 		if _, err := reg.Get(name); err != nil {
 			t.Errorf("%s was lost by a refused rename: %v", name, err)
 		}
 		if _, err := f.Status(name); err != nil {
 			t.Errorf("%s no longer answers after a refused rename: %v", name, err)
 		}
-	}
-	if st, _ := f.Status("live"); st.State != StateRunning {
-		t.Errorf("a refused rename disturbed the running service: %s", st.State)
 	}
 	if _, err := reg.Get("c"); !errors.Is(err, ErrNoSuchService) {
 		t.Errorf("a refused rename left a definition for c: %v", err)
@@ -156,4 +149,99 @@ func TestRenameDoesNotTouchALogItFindsThere(t *testing.T) {
 		t.Errorf("the existing log was changed:\n%s", b)
 	}
 	waitForLog(t, LogPath(logs, "mine"), "MINE")
+}
+
+// The case rename exists for: a shell you are living in. It goes on running as the same process,
+// what it says after the rename lands in the moved log exactly once, and the descriptor kept for
+// a crash is filed under the new name - left under the old one, a crash would resurrect the
+// service as something that no longer exists.
+func TestRenameARunningService(t *testing.T) {
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "services"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := t.TempDir()
+	var mu sync.Mutex
+	var events []string
+	f := NewFabric(reg, StartOptions{
+		LogDir: logs,
+		OnRunning: func(name string, pid int, pty *os.File) {
+			mu.Lock()
+			events = append(events, fmt.Sprintf("running %s %d pty=%v", name, pid, pty != nil))
+			mu.Unlock()
+		},
+		OnEnded: func(name string, pid int) {
+			mu.Lock()
+			events = append(events, fmt.Sprintf("ended %s %d", name, pid))
+			mu.Unlock()
+		},
+	})
+	t.Cleanup(f.Shutdown)
+
+	// Prints a numbered line every 50ms, so a line written twice or lost at the seam shows.
+	script := `i=0; while :; do i=$((i+1)); echo "TICK-$i"; sleep 0.05; done`
+	if err := f.Add(Service{Name: "old", Command: "sh", Args: []string{"-c", script}}, true); err != nil {
+		t.Fatal(err)
+	}
+	st := waitFabric(t, f, "old", 10*time.Second, "running", func(st Status) bool { return st.State == StateRunning })
+	pid := st.Pid
+	waitForLog(t, LogPath(logs, "old"), "TICK-5")
+
+	if err := f.Rename("old", "new"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	now, err := f.Status("new")
+	if err != nil || now.State != StateRunning || now.Pid != pid || now.Service != "new" {
+		t.Fatalf("after the rename: %+v, %v; want the same process (%d) running as new", now, err, pid)
+	}
+	if _, err := f.Status("old"); !errors.Is(err, ErrNoSuchService) {
+		t.Errorf("the old name still answers: %v", err)
+	}
+	hs := f.Handovers()
+	if len(hs) != 1 || hs[0].Name != "new" || hs[0].Pid != pid {
+		t.Errorf("a crash now would hand over %+v", hs)
+	}
+	mu.Lock()
+	got := strings.Join(events, "; ")
+	mu.Unlock()
+	want := fmt.Sprintf("running old %d pty=true; ended old %d; running new %d pty=true", pid, pid, pid)
+	if got != want {
+		t.Errorf("the descriptor store was told:\n  %s\nwant:\n  %s", got, want)
+	}
+
+	// Output from after the rename reaches the moved file, and every line is there exactly once.
+	b, _ := os.ReadFile(LogPath(logs, "new"))
+	last := strings.Count(string(b), "TICK-")
+	waitForLog(t, LogPath(logs, "new"), fmt.Sprintf("TICK-%d\r\n", last+10))
+	if _, err := os.Stat(LogPath(logs, "old")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the old log is back: %v", err)
+	}
+	b, _ = os.ReadFile(LogPath(logs, "new"))
+	seen := map[string]int{}
+	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r", ""), "\n") {
+		if strings.HasPrefix(line, "TICK-") {
+			seen[line]++
+		}
+	}
+	for i := 1; i <= last+10; i++ {
+		if n := seen[fmt.Sprintf("TICK-%d", i)]; n != 1 {
+			t.Errorf("TICK-%d is in the log %d times", i, n)
+		}
+	}
+	if !strings.Contains(string(b), "renamed from old.log") {
+		t.Errorf("nothing in the log marks the rename")
+	}
+
+	// Stopping it under its new name tells the store under its new name.
+	if err := f.Stop("new"); err != nil {
+		t.Fatal(err)
+	}
+	waitFabric(t, f, "new", 10*time.Second, "stopped", func(st Status) bool { return !st.Live() })
+	mu.Lock()
+	lastEvent := events[len(events)-1]
+	mu.Unlock()
+	if lastEvent != fmt.Sprintf("ended new %d", pid) {
+		t.Errorf("stopping told the store %q", lastEvent)
+	}
 }

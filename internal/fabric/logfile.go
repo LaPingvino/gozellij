@@ -1,6 +1,7 @@
 package fabric
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,6 +66,13 @@ type LogSink struct {
 
 // NewLogSink opens path and starts draining out into it. maxBytes <= 0 means DefaultLogBytes.
 func NewLogSink(out *OutputBuffer, path string, maxBytes int64) (*LogSink, error) {
+	return openLogSink(out, path, maxBytes, nil, "log opened")
+}
+
+// openLogSink is NewLogSink, optionally carrying on from where another writer on the same buffer
+// stopped: resume is the stream offset that writer had reached, and only what came after it is
+// written. why is what the header line says happened.
+func openLogSink(out *OutputBuffer, path string, maxBytes int64, resume *int64, why string) (*LogSink, error) {
 	if out == nil {
 		return nil, fmt.Errorf("log sink for %s: no output buffer", path)
 	}
@@ -108,15 +116,23 @@ func NewLogSink(out *OutputBuffer, path string, maxBytes int64) (*LogSink, error
 	// twice in one - and "what did that build print" gets the wrong answer confidently. The
 	// supervisor already writes a line when it restarts a process (see waitBackoff); this is the
 	// same courtesy for the boundary the supervisor cannot see.
-	l.note(fmt.Sprintf("\r\n[gozellij] --- %s: log opened by daemon pid %d at %s ---\r\n",
-		filepath.Base(path), os.Getpid(), time.Now().Format(time.RFC3339)))
+	l.note(fmt.Sprintf("\r\n[gozellij] --- %s: %s by daemon pid %d at %s ---\r\n",
+		filepath.Base(path), why, os.Getpid(), time.Now().Format(time.RFC3339)))
 
 	// Whatever was already in the ring when we opened predates us. Write it: on a fresh daemon
 	// the ring is empty and this is a no-op, and on a sink opened for a service that was already
 	// running it is the difference between the log starting now and the log starting when the
 	// service did.
-	l.emit(snap)
-	l.flushed = sub.From()
+	if resume != nil {
+		// Carrying on from a writer that has just stopped. Most of the ring is already in the
+		// file it wrote, and catchUp writes only the part that is not - or says how much was
+		// lost, if the ring wrapped in between.
+		l.flushed = *resume
+		l.catchUp(snap, sub.From())
+	} else {
+		l.emit(snap)
+		l.flushed = sub.From()
+	}
 
 	// Register with the buffer rather than making the caller do it. The buffer is what outlives
 	// supervisors, so it is where "who is writing this to disk, and what is wrong with it" has
@@ -125,6 +141,39 @@ func NewLogSink(out *OutputBuffer, path string, maxBytes int64) (*LogSink, error
 
 	go l.run()
 	return l, nil
+}
+
+// moveTo renames this writer's files and carries on writing under the new name, for a service
+// renamed while it runs. The writer is stopped first - a writer still open on the old path would
+// recreate it at its next rotation - and a new one picks up at exactly the offset it reached, so
+// nothing is written twice and anything that could not be kept is said.
+//
+// Files that cannot be moved are left where they are and reported; the new writer still goes
+// where the service's name says, because that is where the next reader will look.
+func (l *LogSink) moveTo(to string) (*LogSink, error) {
+	if !l.Close() {
+		return nil, fmt.Errorf("the log writer for %s did not stop in time; the log was left where it is", l.path)
+	}
+	var errs []error
+	for _, suffix := range []string{"", ".1"} {
+		from := l.path + suffix
+		if _, err := os.Stat(from); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if _, err := os.Stat(to + suffix); err == nil {
+			errs = append(errs, fmt.Errorf("%s already exists; %s was left where it is", to+suffix, from))
+			continue
+		}
+		if err := os.Rename(from, to+suffix); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	flushed := l.flushed // the writer has finished, so this is final
+	next, err := openLogSink(l.out, to, l.max, &flushed, "renamed from "+filepath.Base(l.path))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return next, errors.Join(errs...)
 }
 
 func openLog(path string) (*os.File, error) {

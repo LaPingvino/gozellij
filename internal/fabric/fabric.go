@@ -522,19 +522,18 @@ func (f *Fabric) Remove(name string, keepLogs bool) error {
 	return f.removeLogs(name)
 }
 
-// ErrRenameRunning is returned for a service that is running. Its name is also in its process's
-// environment (GOZELLIJ), its cgroup and the descriptor systemd holds for it, and none of those
-// follow a rename yet - so it is refused rather than half done.
-var ErrRenameRunning = errors.New("cannot rename a running service yet; stop it first")
-
-// Rename gives a stopped service a new name: its definition, its log files and its place in the
-// fabric move together, and the old name stops existing.
+// Rename gives a service a new name - running or not. Its definition, its log files and its place
+// in the fabric move together, and the old name stops existing.
+//
+// The supervisor is kept, not replaced: a running service goes on running, its scrollback and
+// status stay, and whoever is attached stays attached. What cannot follow is inside the process -
+// GOZELLIJ in its environment and its cgroup directory keep the old name until it next starts.
 //
 // The definition moves first and is the step that can be undone: written under the new name
 // (which refuses a name already taken), then the old file removed - and if that fails, the new one
-// goes again, so a failed rename never leaves the service defined twice. The logs move after, and
-// a failure there is reported but not rolled back, because the service has been renamed and
-// saying otherwise would be the lie.
+// goes again, so a failed rename never leaves the service defined twice. The log follows, and a
+// failure there is reported but not rolled back, because the service has been renamed and saying
+// otherwise would be the lie.
 func (f *Fabric) Rename(oldName, newName string) error {
 	if err := ValidServiceName(newName); err != nil {
 		return err
@@ -553,17 +552,13 @@ func (f *Fabric) Rename(oldName, newName string) error {
 	l2.Lock()
 	defer l2.Unlock()
 
-	old, err := f.supervisor(oldName)
+	sup, err := f.supervisor(oldName)
 	if err != nil {
 		return err
-	}
-	if old.Status().Live() {
-		return fmt.Errorf("%s: %w", oldName, ErrRenameRunning)
 	}
 	if _, err := f.supervisor(newName); err == nil {
 		return fmt.Errorf("%w: %s", ErrServiceExists, newName)
 	}
-
 	// A log already under the new name - left by a service removed with -keep-logs - is somebody
 	// else's transcript. Moving over it would destroy it, and leaving it would have this service
 	// append to it, so the rename does not start.
@@ -585,26 +580,36 @@ func (f *Fabric) Rename(oldName, newName string) error {
 		return err
 	}
 
-	// The old buffer is closed, which ends its log writer before its file is moved; a writer
-	// still open on the old path would recreate it at the next rotation. Anything attached is
-	// told its stream ended, which is true: the service it was watching no longer has that name.
-	// What the buffer held in memory goes with it. The file on disk does not.
-	old.Output().Close()
-	opts := f.opts
-	opts.Watchers = old.Watchers()
-
-	logErr := f.moveLogs(oldName, newName)
-	fresh := NewSupervisor(def, opts)
-
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
 		return ErrFabricClosed
 	}
 	delete(f.sups, oldName)
-	f.sups[newName] = fresh
+	f.sups[newName] = sup
 	f.mu.Unlock()
 
+	p := sup.rename(newName)
+	// The descriptor systemd holds for a crash is filed under the name. Left there, a crash
+	// after this rename would bring the service back under the name it no longer has.
+	if p != nil {
+		if f.opts.OnEnded != nil {
+			f.opts.OnEnded(oldName, p.Pid())
+		}
+		if f.opts.OnRunning != nil {
+			f.opts.OnRunning(newName, p.Pid(), p.PTY())
+		}
+	}
+
+	var logErr error
+	if f.opts.LogDir != "" {
+		logErr = sup.Output().MoveLog(LogPath(f.opts.LogDir, newName))
+		if errors.Is(logErr, errNoLogWriter) {
+			// Nothing is writing - logging is off, or the file would not open - but a file
+			// from before may still be there, and it belongs to this service.
+			logErr = f.moveLogs(oldName, newName)
+		}
+	}
 	if logErr != nil {
 		return fmt.Errorf("renamed %s to %s, but its log did not follow: %w", oldName, newName, logErr)
 	}
@@ -795,6 +800,73 @@ func (f *Fabric) Watch(name string) (<-chan struct{}, func(), error) {
 	ch, stop := sup.Watch()
 	return ch, stop, nil
 }
+
+// Handle is one service, followed whatever happens to it: a restart replaces its supervisor and a
+// rename changes its name, and a Handle answers for it across both. It stops answering once the
+// service has been removed.
+//
+// It exists for anything that holds on to a service for a while - an attached client above all.
+// That used to ask by the name it started with, for every keystroke and every status change, so
+// the notification a rename sends was answered "no such service" and the attach ended as though
+// the shell had exited, while it went on running under its new name.
+//
+// Not the supervisor, which a restart replaces. The watcher set is what a restart carries across
+// and a rename keeps, so that is what identifies the service.
+type Handle struct {
+	f    *Fabric
+	w    *StatusWatchers
+	name string
+}
+
+// Follow returns a Handle on a service.
+func (f *Fabric) Follow(name string) (*Handle, error) {
+	sup, err := f.supervisor(name)
+	if err != nil {
+		return nil, err
+	}
+	return &Handle{f: f, w: sup.Watchers(), name: name}, nil
+}
+
+func (h *Handle) current() (*Supervisor, error) {
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	for _, s := range h.f.sups {
+		if s.Watchers() == h.w {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", ErrNoSuchService, h.name)
+}
+
+// Name is what the service is called now, or what it was called when it was followed if it has
+// since been removed.
+func (h *Handle) Name() string {
+	if s, err := h.current(); err == nil {
+		return s.Service().Name
+	}
+	return h.name
+}
+
+// Status is the service's status under whatever it is called now.
+func (h *Handle) Status() (Status, error) {
+	s, err := h.current()
+	if err != nil {
+		return Status{}, err
+	}
+	return s.Status(), nil
+}
+
+// Process is the service's live process, or nil when there is none.
+func (h *Handle) Process() (*Process, error) {
+	s, err := h.current()
+	if err != nil {
+		return nil, err
+	}
+	return s.Current(), nil
+}
+
+// Watch fires when the service's status changes. See Supervisor.Watch.
+func (h *Handle) Watch() (<-chan struct{}, func()) { return h.w.Watch() }
 
 // Finished reports whether the supervisor is done with this service.
 //

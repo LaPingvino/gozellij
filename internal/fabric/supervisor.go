@@ -193,9 +193,31 @@ func (s *Supervisor) AdoptRunning(p *Process) {
 	s.adopted = p
 }
 
-// Service returns the definition this supervisor was built from. It is written once at
-// construction and never modified, so the copy is safe to read while the loop runs.
-func (s *Supervisor) Service() Service { return s.svc }
+// Service returns the definition this supervisor was built from.
+//
+// Under the lock, because the name in it can change while the loop runs: a service renamed while
+// it is up keeps its supervisor, its process and its buffer, and only what it is called moves.
+// This used to be documented as written once and read freely, which rename made untrue.
+func (s *Supervisor) Service() Service {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.svc
+}
+
+// rename changes the name this supervisor answers to, and returns the process it is looking after
+// at that moment, if any, so the caller can move whatever else is filed under the old name.
+//
+// The process itself keeps what it was started with: GOZELLIJ in its environment and its cgroup
+// directory carry the old name until it next starts, because neither can be changed from outside.
+// Nothing depends on either being current - the nesting guard asks the process tree.
+func (s *Supervisor) rename(to string) *Process {
+	s.mu.Lock()
+	s.svc.Name = to
+	p := s.cur
+	s.mu.Unlock()
+	s.setStatus(func(st *Status) { st.Service = to })
+	return p
+}
 
 // Output is the buffer every process of this service writes into. It outlives any one process, so
 // a viewer attached across a restart sees the old output, the restart notice and the new output as
@@ -340,7 +362,7 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 
 		var err error
 		if p == nil {
-			p, err = Start(s.svc, s.opts)
+			p, err = Start(s.Service(), s.opts)
 		}
 		if err != nil {
 			// A spawn that fails is reported, not swallowed. Whether we try again is the
@@ -351,7 +373,7 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 				st.Pid = 0
 				st.StartedAt = time.Time{}
 			})
-			if s.svc.Restart != RestartAlways {
+			if s.Service().Restart != RestartAlways {
 				s.setStatus(func(st *Status) { st.State = StateFailed })
 				return
 			}
@@ -373,7 +395,7 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		// Outside the lock, and before the status goes out: whoever is keeping this descriptor
 		// safe should have it before anything can act on the service being up.
 		if s.opts.OnRunning != nil {
-			s.opts.OnRunning(s.svc.Name, p.Pid(), p.PTY())
+			s.opts.OnRunning(s.Service().Name, p.Pid(), p.PTY())
 		}
 		s.setStatus(func(st *Status) {
 			st.State = StateRunning
@@ -406,7 +428,7 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		// Told before anything else, because this is what stops a descriptor for a process that
 		// no longer exists being kept for the next daemon to adopt.
 		if s.opts.OnEnded != nil {
-			s.opts.OnEnded(s.svc.Name, endedPid)
+			s.opts.OnEnded(s.Service().Name, endedPid)
 		}
 
 		// Work out where we are going *before* publishing, so the snapshot a watcher sees is
@@ -420,7 +442,7 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		switch {
 		case ctx.Err() != nil:
 			next = StateStopped
-		case !s.svc.Restart.ShouldRestart(exit):
+		case !s.Service().Restart.ShouldRestart(exit):
 			// Terminal, and say so plainly. A service that has finished is not "stopped" -
 			// stopped is something an operator did - and it has not failed if it exited
 			// cleanly.
@@ -478,7 +500,7 @@ func (s *Supervisor) waitBackoff(ctx context.Context, delay time.Duration, resta
 	// is not a service, it is a process nobody can see - so stop, and record why, instead of
 	// looping forever in the dark.
 	if _, werr := fmt.Fprintf(s.out, "\r\n[gozellij] %s restarting in %s (restart %d)\r\n",
-		s.svc.Name, delay.Round(time.Millisecond), restarts); werr != nil {
+		s.Service().Name, delay.Round(time.Millisecond), restarts); werr != nil {
 		s.setStatus(func(st *Status) {
 			st.State = StateFailed
 			st.LastError = fmt.Sprintf("cannot write to this service's output buffer (%v); "+

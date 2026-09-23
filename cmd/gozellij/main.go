@@ -49,7 +49,7 @@ Usage:
   gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
-  gozellij rename <old> <new>          give a stopped service a new name; its log goes with it
+  gozellij rename <old> <new>          give a service a new name, running or not; its log goes with it
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
   gozellij login-setup                 say how to make it what your login shell starts (-install to do it)
@@ -1061,7 +1061,7 @@ func displayVersion(v string) string {
 	return v
 }
 
-// cmdRename gives a service a new name. Only a stopped one, for now: see fabric.ErrRenameRunning.
+// cmdRename gives a service a new name, running or not. See fabric.Rename for what follows it.
 func cmdRename(args []string) error {
 	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
 	sock := socketFlag(fs)

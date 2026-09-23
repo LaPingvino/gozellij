@@ -1,6 +1,7 @@
 package fabric
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -243,6 +244,23 @@ func (o *OutputBuffer) SetSink(s *LogSink) {
 	defer o.mu.Unlock()
 	o.sink = s
 	o.sinkErr = ""
+}
+
+// errNoLogWriter is MoveLog's answer for a buffer nothing is writing to disk.
+var errNoLogWriter = errors.New("no log writer")
+
+// MoveLog moves this buffer's log to a new path and carries on writing there. A buffer with no
+// disk writer answers errNoLogWriter, because it does not know where any old file is.
+func (o *OutputBuffer) MoveLog(to string) error {
+	o.mu.Lock()
+	sink := o.sink
+	o.mu.Unlock()
+	if sink == nil {
+		return errNoLogWriter
+	}
+	// moveTo registers its successor with SetSink when it opens; nothing to do here on success.
+	_, err := sink.moveTo(to)
+	return err
 }
 
 // SetSinkError records that this buffer has no disk writer, and why.

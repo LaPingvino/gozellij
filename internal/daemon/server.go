@@ -35,8 +35,11 @@ type Server struct {
 	// Only the daemon can answer "is anyone watching this?", and it is worth answering: it is
 	// the difference between a service nobody has looked at in a week and the one your other
 	// terminal is sitting in. A client asking about itself could only ever count to one.
-	viewers  map[string]int
-	watchers map[string]int
+	//
+	// A set of viewers rather than a count per name, because a service can be renamed while
+	// somebody is attached, and a count filed under the old name would go on being decremented
+	// there when they leave.
+	viewers map[*viewer]struct{}
 
 	// upgrades carries an in-band upgrade request out to whoever owns the process (main), since
 	// replacing the binary is not something a connection handler can do to itself.
@@ -112,8 +115,7 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 		path:     path,
 		ln:       ln,
 		conns:    make(map[net.Conn]struct{}),
-		viewers:  make(map[string]int),
-		watchers: make(map[string]int),
+		viewers:  make(map[*viewer]struct{}),
 		upgrades: make(chan struct{}, 1),
 	}, nil
 }
@@ -440,39 +442,6 @@ func (s *Server) ensure(req ipc.Request) ipc.Response {
 	return s.statusAfter(req)
 }
 
-// watching records that a client has attached, and returns the function that records it leaving.
-func (s *Server) watching(service string, readOnly bool) func() {
-	s.mu.Lock()
-	s.viewers[service]++
-	if readOnly {
-		s.watchers[service]++
-	}
-	s.mu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			s.mu.Lock()
-			if s.viewers[service] > 0 {
-				s.viewers[service]--
-			}
-			if s.viewers[service] == 0 {
-				delete(s.viewers, service)
-			}
-			if readOnly {
-				if s.watchers[service] > 0 {
-					s.watchers[service]--
-				}
-				if s.watchers[service] == 0 {
-					delete(s.watchers, service)
-				}
-			}
-			s.mu.Unlock()
-		})
-	}
-}
-
-// viewerCount reports how many clients are attached to a service.
 // exitSignalOf is the signal that ended a service, and nothing for one nobody could observe: the
 // marker fabric uses for that is not a signal name and must not be printed as one.
 func exitSignalOf(e fabric.Exit) string {
@@ -482,17 +451,53 @@ func exitSignalOf(e fabric.Exit) string {
 	return e.Signal
 }
 
+// viewer is one attached client: which service it is looking at, under its current name.
+type viewer struct {
+	service  string
+	readOnly bool
+}
+
+// watching records that a client has attached, and returns the function that records it leaving.
+func (s *Server) watching(service string, readOnly bool) func() {
+	v := &viewer{service: service, readOnly: readOnly}
+	s.mu.Lock()
+	s.viewers[v] = struct{}{}
+	s.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.viewers, v)
+			s.mu.Unlock()
+		})
+	}
+}
+
 // watcherCount reports how many of a service's viewers are read-only.
 func (s *Server) watcherCount(service string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.watchers[service]
+	n := 0
+	for v := range s.viewers {
+		if v.service == service && v.readOnly {
+			n++
+		}
+	}
+	return n
 }
 
+// viewerCount reports how many clients are attached to a service.
 func (s *Server) viewerCount(service string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.viewers[service]
+	n := 0
+	for v := range s.viewers {
+		if v.service == service {
+			n++
+		}
+	}
+	return n
 }
 
 // rename gives a service a new name.
@@ -504,6 +509,15 @@ func (s *Server) rename(req ipc.Request) ipc.Response {
 	if err := s.fab.Rename(req.Service, rr.To); err != nil {
 		return ipc.Err(req.ID, err)
 	}
+	// Whoever is attached is still attached - the stream is the same buffer - and is now looking
+	// at the new name.
+	s.mu.Lock()
+	for v := range s.viewers {
+		if v.service == req.Service {
+			v.service = rr.To
+		}
+	}
+	s.mu.Unlock()
 	return ipc.OKResponse(req.ID, nil)
 }
 
@@ -574,7 +588,11 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 		return err
 	}
 
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, service: req.Service}
+	svc, err := s.fab.Follow(req.Service)
+	if err != nil {
+		return err
+	}
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc}
 
 	// A terminal tailing a service is watching it. The column is called VIEWERS and the question
 	// it answers is "is anyone looking at this?" - and someone running `logs -f` in another
