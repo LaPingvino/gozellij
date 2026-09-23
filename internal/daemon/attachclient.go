@@ -493,7 +493,7 @@ func showService(out io.Writer, service string) {
 // pickService shows the services and returns the one chosen, or the current one if the user
 // changes their mind.
 func pickService(socket, current string, input *terminalInput, out io.Writer) (string, *attachOutcome, error) {
-	list, err := serviceStatuses(socket)
+	list, err := settledStatuses(socket, current)
 	if err != nil {
 		return "", nil, err
 	}
@@ -597,6 +597,37 @@ func serviceStatuses(socket string) ([]ipc.StatusReply, error) {
 	out := append([]ipc.StatusReply(nil), list.Services...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out, nil
+}
+
+// settledStatuses is serviceStatuses once this terminal's own session has stopped being counted.
+//
+// The session was closed a moment ago, but the daemon uncounts a viewer only once it has noticed
+// the connection end, and a list asked for straight away counted this terminal as "open in 1
+// other terminal" about half the time. Only the service it was looking at can be affected, so
+// while that one shows a viewer, ask again briefly: this terminal's count goes within
+// milliseconds, and one that is still there after that is somebody else.
+func settledStatuses(socket, current string) ([]ipc.StatusReply, error) {
+	viewersOf := func(list []ipc.StatusReply) int {
+		for _, s := range list {
+			if s.Service == current {
+				return s.Viewers
+			}
+		}
+		return 0
+	}
+	list, err := serviceStatuses(socket)
+	for tries := 0; err == nil && tries < 6 && viewersOf(list) > 0; tries++ {
+		time.Sleep(50 * time.Millisecond)
+		again, aerr := serviceStatuses(socket)
+		if aerr != nil {
+			break
+		}
+		if viewersOf(again) < viewersOf(list) {
+			return again, nil
+		}
+		list = again
+	}
+	return list, err
 }
 
 // pickLine is one entry in the Ctrl-] l list: enough to choose by. A list of names alone could

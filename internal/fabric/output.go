@@ -423,8 +423,9 @@ func (s *Subscriber) Detach() {
 // Once the ring has wrapped, the oldest byte kept is wherever the dropping happened to stop: the
 // middle of an escape sequence, so that "[38;5;196m" arrives as text, or the middle of a UTF-8
 // character. Replayed into a terminal, that is garbage at the top of its scrollback on every attach.
-// Starting after the first newline costs at most the partial line and is never inside a sequence a
-// terminal cares about.
+// Starting after the first newline costs at most one line - the partial one, or a whole one when the
+// cut happened to fall exactly at a line's start, which cannot be told from here - and is never
+// inside a sequence a terminal cares about.
 //
 // Only for bytes on their way to a terminal. The snapshot itself must keep every byte, because the
 // log writer's resume depends on its offsets.

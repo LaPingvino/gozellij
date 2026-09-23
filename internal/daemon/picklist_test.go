@@ -29,3 +29,39 @@ func TestPickLineSaysStateAgeAndOtherTerminals(t *testing.T) {
 		}
 	}
 }
+
+// The terminal that opened the list has just closed its own session, and must not appear in the
+// list as somebody else. Asked for at once, it did about half the time.
+func TestTheListDoesNotCountTheTerminalAskingForIt(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	if _, err := dial(t, sock).Add("here", ipc.AddRequest{Command: "sleep", Args: []string{"60"}, Start: true}); err != nil {
+		t.Fatal(err)
+	}
+	miscounted := 0
+	for i := 0; i < 30; i++ {
+		a, err := Dial(sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Call(ipc.OpAttach, "here", ipc.AttachRequest{}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for viewersOf(t, sock, "here") != 1 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		a.Close()
+		list, err := settledStatuses(sock, "here")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range list {
+			if s.Service == "here" && s.Viewers != 0 {
+				miscounted++
+			}
+		}
+	}
+	if miscounted > 0 {
+		t.Errorf("the closed session was listed as another terminal in %d of 30 lists", miscounted)
+	}
+}
