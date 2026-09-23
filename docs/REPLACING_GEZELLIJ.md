@@ -236,17 +236,35 @@ What is missing:
   with the way back to the byte pipe - which turns it from a mystery into a limitation.
 
   And the limitation has been measured rather than imagined. `internal/vt/grid/probe_test.go` runs
-  eleven real programs on a real pty and reports what each of them sends that this emulator does
-  not implement: bash, vim, nvim, less, htop, top, man, git, python3, nano, mc. They sent five
-  things between them, and all five are handled now - control strings read to their end instead of
-  drawn on the screen, application cursor keys and the keypad passed to the terminal, autowrap, the
-  title stack, insert mode, and the colour queries answered from what the real terminal said when
-  the attach started, and OSC 8 hyperlinks carried through the grid and drawn again - `man` emits
-  thirty-odd of them on a page and every one used to be lost. **Ten of the eleven** report that
-  everything they sent is understood.
+  real programs on a real pty and reports what each of them sends that this emulator does not
+  implement. The first eleven were bash, vim, nvim, less, htop, top, man, git, python3, nano and
+  mc. They sent five things between them, and all five are handled now - control strings read to
+  their end instead of drawn on the screen, application cursor keys and the keypad passed to the
+  terminal, autowrap, the title stack, insert mode, the colour queries answered from what the real
+  terminal said when the attach started, and OSC 8 hyperlinks carried through the grid and drawn
+  again - `man` emits thirty-odd of them on a page and every one used to be lost. **All eleven**
+  now report that everything they sent is understood.
 
-  What is left is one thing, named rather than unknown: the bodies of DCS strings, which are read
-  to their terminator and thrown away on purpose. Nothing on this machine needs an answer to one.
+  Which meant the survey had stopped surveying, so twelve more were added, chosen to be unlike the
+  first eleven rather than more of them: emacs, helix, w3m, weechat, whiptail, screen, fish, zsh,
+  gdb, sqlite3, node, nethack. Eleven of those are silent too. What is left is named rather than
+  unknown, and almost all of it comes from one program:
+
+  - **OSC 133**, semantic prompt marks (fish). Deliberately not carried. They say where a prompt
+    begins and ends on the screen they were sent for, so passing them out of a pane would describe
+    rows that are not where the outer terminal thinks they are.
+  - **CSI ?2031**, ask to be told when the colour scheme changes (fish). A promise this terminal
+    cannot make.
+  - **XTGETTCAP**, `DCS +q` (fish, nvim - vim does not send it). Unanswered here, as it is under
+    tmux, which was measured: `scripts/queryprobe.sh` asks and prints what comes back. Its sibling
+    DECRQSS *is* answered, with the same bytes tmux sends.
+  - **Sixel and kitty graphics**, which nothing surveyed here sends but which are reported rather
+    than dropped in silence, because an image that does not arrive leaves a hole with nothing to
+    explain it.
+
+  OSC 7, the working directory, was on that list until it was carried: a byte pipe hands it to your
+  terminal and that is why a new tab opens where the last one was, so an attach that reads the
+  stream had to pass it on or be the path that quietly takes the feature away.
 - **The cost.** It was two to three times the byte pipe on a flood, and this entry said the reason
   was not the number of repaints. Counting them said otherwise: twenty thousand lines arrived as
   378 frames and drew 379 whole screens, which was 4.7 of the 5.9 seconds. The earlier experiment
