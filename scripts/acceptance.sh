@@ -489,6 +489,71 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ------------------------------------------------- restart, and what it must not throw away
+#
+# A core lifecycle command with nothing driving it. `restart` is listed in the document among the
+# commands that take several names and is marked **Verified** there on the strength of the others
+# being checked - stop, start and rm all are, restart never was.
+#
+# It carries a promise the others do not, and that promise is the interesting part:
+# replaceSupervisor deliberately reuses the output buffer, so `logs` still shows what a service
+# said before it was restarted. An operator does not care whether a process died or was replaced;
+# losing the transcript at the moment you restart something is losing it exactly when you are
+# trying to find out what went wrong.
+only
+"$gz" add bouncer -start -restart no -- sh -c 'echo SAID-BEFORE-RESTART; sleep 300' >/dev/null 2>&1
+sleep 2
+before=$("$gz" status bouncer 2>/dev/null | awk '/^pid:/{print $2}')
+"$gz" restart bouncer >/dev/null 2>&1
+sleep 2
+after=$("$gz" status bouncer 2>/dev/null | awk '/^pid:/{print $2}')
+
+if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+    ok "restart really replaces the process ($before became $after)"
+else
+    bad "the pid was $before and is now $after"
+fi
+if "$gz" status bouncer 2>/dev/null | grep -q '^state: *running'; then
+    ok "and the service is running afterwards, not merely stopped"
+else
+    bad "after a restart the state is: $("$gz" status bouncer 2>/dev/null | grep '^state:')"
+fi
+
+# The transcript survives. This is what replaceSupervisor carries the output buffer across for,
+# and nothing checked it: a restart that silently emptied the log would look like a working
+# restart right up to the moment somebody needed the log.
+if "$gz" logs bouncer 2>/dev/null | grep -q 'SAID-BEFORE-RESTART'; then
+    ok "and what it said before the restart is still in its log"
+else
+    bad "the log lost everything from before: $("$gz" logs bouncer 2>/dev/null | tail -2 | tr '\n' '|')"
+fi
+
+# Several names at once, like its neighbours - and a bad name among good ones reported without
+# abandoning the rest, which is the rule the whole family follows.
+"$gz" add bounce2 -start -restart no -- sh -c 'sleep 300' >/dev/null 2>&1
+sleep 1
+p1=$("$gz" status bouncer 2>/dev/null | awk '/^pid:/{print $2}')
+p2=$("$gz" status bounce2 2>/dev/null | awk '/^pid:/{print $2}')
+"$gz" restart bouncer bounce2 >/dev/null 2>&1
+sleep 2
+q1=$("$gz" status bouncer 2>/dev/null | awk '/^pid:/{print $2}')
+q2=$("$gz" status bounce2 2>/dev/null | awk '/^pid:/{print $2}')
+if [ "$p1" != "$q1" ] && [ "$p2" != "$q2" ] && [ -n "$q1" ] && [ -n "$q2" ]; then
+    ok "one restart command restarts every service named"
+else
+    bad "restarting two: $p1->$q1 and $p2->$q2"
+fi
+
+restsaid=$("$gz" restart bouncer nosuchthing bounce2 2>&1)
+reststatus=$?
+if [ "$reststatus" != "0" ] && printf '%s' "$restsaid" | grep -q 'nosuchthing'; then
+    ok "and a bad name among good ones is reported, with a non-zero status"
+else
+    bad "restarting a missing service exited $reststatus saying: $(printf '%s' "$restsaid" | tr '\n' '|' | head -c 120)"
+fi
+"$gz" stop bouncer bounce2 >/dev/null 2>&1
+"$gz" rm bouncer bounce2 >/dev/null 2>&1
+
 # ---------------------------------------- a broken environment is reported, not suffered
 #
 # A log directory that cannot be written is not exotic: a full disk, a mode somebody tightened,
