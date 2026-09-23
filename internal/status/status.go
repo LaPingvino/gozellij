@@ -249,18 +249,49 @@ func tabs(c Context) string {
 	if len(c.Names) == 1 {
 		return "[" + c.Names[0] + "]"
 	}
+	// A window around the one you are in, not the whole list.
+	//
+	// The line is truncated from the right when it does not fit, so a long list loses its tail -
+	// and on a narrow terminal that tail included the service you were actually in. Measured with
+	// eight services: below about forty columns the brackets fell off the end and the line showed
+	// five other people's names and not yours, which is worse than the "[shell 2/3]" it replaced.
+	//
+	// Capped by count rather than by width because a widget is not told how much room it has. Two
+	// on each side is enough to see where n and p would take you, which is what the neighbours are
+	// for.
+	const around = 2
+	first, last := 0, len(c.Names)-1
+	if at := indexOf(c.Names, c.Service); at >= 0 && len(c.Names) > 2*around+1 {
+		first = max(at-around, 0)
+		last = min(at+around, len(c.Names)-1)
+	}
 	var b strings.Builder
-	for i, n := range c.Names {
-		if i > 0 {
+	if first > 0 {
+		b.WriteString("…")
+	}
+	for i := first; i <= last; i++ {
+		if i > first {
 			b.WriteString(" ")
 		}
-		if n == c.Service {
-			b.WriteString("[" + n + "]")
+		if c.Names[i] == c.Service {
+			b.WriteString("[" + c.Names[i] + "]")
 			continue
 		}
-		b.WriteString(n)
+		b.WriteString(c.Names[i])
+	}
+	if last < len(c.Names)-1 {
+		b.WriteString("…")
 	}
 	return b.String()
+}
+
+func indexOf(names []string, want string) int {
+	for i, n := range names {
+		if n == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func session(c Context) string {

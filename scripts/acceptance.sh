@@ -641,7 +641,11 @@ else
 
     # Which pane has the keyboard. With two shells on screen there is no other way to tell, and
     # typing into the wrong one is the mistake this prevents.
-    if pane | sed -n '12p' | grep -q 'renderdemo \[rendertwo\]'; then
+    # Anchored to the start of the line, not merely present on it. The tab bar also brackets the
+    # service you are in, so a loose grep would match that instead and this check would pass
+    # whether or not the pane marker existed at all - which is how a check quietly stops checking
+    # when something else on the same row learns to look like it.
+    if pane | sed -n '12p' | grep -q '^renderdemo \[rendertwo\]'; then
         ok "the status line marks which pane the keyboard is going to"
     else
         bad "the pane marker is wrong: $(pane | sed -n '12p')"
@@ -649,7 +653,7 @@ else
 
     tmux -L "$tmuxSock" send-keys C-] 'o'
     sleep 2
-    if pane | sed -n '12p' | grep -q '\[renderdemo\] rendertwo'; then
+    if pane | sed -n '12p' | grep -q '^\[renderdemo\] rendertwo'; then
         ok "Ctrl-] o moves the keyboard to the other pane"
     else
         bad "focus did not move: $(pane | sed -n '12p')"
