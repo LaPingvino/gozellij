@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -159,8 +160,7 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 
 	cmd := exec.Command(path, s.Args...)
 	cmd.Dir = s.Dir
-	cmd.Env = append(os.Environ(), s.Env...)
-	cmd.Env = append(cmd.Env, opts.ExtraEnv...)
+	cmd.Env = serviceEnv(s, opts)
 
 	// Put the child in its own cgroup, at fork rather than afterwards: a process that forks
 	// before we get round to writing its pid leaves grandchildren outside, and those are exactly
@@ -206,8 +206,7 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 		logf("service %s: could not start it in a cgroup (%v); trying again without one", s.Name, err)
 		cmd = exec.Command(path, s.Args...)
 		cmd.Dir = s.Dir
-		cmd.Env = append(os.Environ(), s.Env...)
-		cmd.Env = append(cmd.Env, opts.ExtraEnv...)
+		cmd.Env = serviceEnv(s, opts)
 		f, err = pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 		if err == nil {
 			if aerr := group.Add(cmd.Process.Pid); aerr != nil {
@@ -771,3 +770,31 @@ func logf(format string, args ...any) {
 var (
 	_ io.Writer = (*Process)(nil)
 )
+
+// serviceEnv is what a service's process starts with: the daemon's environment, then the
+// service's own, then anything the caller adds - and GOZELLIJ, naming the service, unless the
+// service already says what it should be.
+//
+// GOZELLIJ is how anything running inside a service knows it is inside gozellij, the way $TMUX
+// and $ZELLIJ do for theirs. It used to be set only for shells made by `gozellij shell`, so a
+// service made with `gozellij add` did not know - and a login shell in one read the profile, found
+// no GOZELLIJ and started a second gozellij inside the first. It is also what lets `gozellij
+// attach` refuse to attach a service to itself, which draws its own output back into itself.
+func serviceEnv(s Service, opts StartOptions) []string {
+	env := append(os.Environ(), s.Env...)
+	env = append(env, opts.ExtraEnv...)
+	for _, kv := range append(s.Env, opts.ExtraEnv...) {
+		if strings.HasPrefix(kv, "GOZELLIJ=") {
+			return env
+		}
+	}
+	// And the daemon's own GOZELLIJ, if it somehow has one, must not leak through as the
+	// service's name: it would name the wrong thing.
+	out := env[:0:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "GOZELLIJ=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "GOZELLIJ="+s.Name)
+}

@@ -463,3 +463,48 @@ func slowChild(done string) {
 	_ = os.WriteFile(done, []byte("finished"), 0o600)
 	os.Exit(0)
 }
+
+// Every service knows it is inside gozellij, and which service it is.
+//
+// It used to be only the shells made by `gozellij shell`, so a login shell in a service made with
+// `gozellij add` read the profile, found no GOZELLIJ, and started a second gozellij inside the
+// first - and `attach` had nothing to check to refuse attaching a service to itself.
+func TestEveryServiceIsToldItsOwnName(t *testing.T) {
+	env := serviceEnv(Service{Name: "web"}, StartOptions{})
+	if got := lastValue(env, "GOZELLIJ"); got != "web" {
+		t.Fatalf("GOZELLIJ = %q, want web", got)
+	}
+}
+
+func TestAServiceThatSaysItsOwnGozellijKeepsIt(t *testing.T) {
+	env := serviceEnv(Service{Name: "shell", Env: []string{"GOZELLIJ=work"}}, StartOptions{})
+	if got := lastValue(env, "GOZELLIJ"); got != "work" {
+		t.Fatalf("GOZELLIJ = %q, want the service's own work", got)
+	}
+}
+
+func TestTheDaemonsOwnGozellijDoesNotLeakIn(t *testing.T) {
+	// If the daemon itself were started from inside a gozellij shell, its GOZELLIJ would name
+	// that shell - the wrong thing to hand every service it starts.
+	t.Setenv("GOZELLIJ", "somewhere-else")
+	env := serviceEnv(Service{Name: "web"}, StartOptions{})
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GOZELLIJ=") {
+			n++
+		}
+	}
+	if n != 1 || lastValue(env, "GOZELLIJ") != "web" {
+		t.Fatalf("env has %d GOZELLIJ entries, last %q; want exactly one, naming web", n, lastValue(env, "GOZELLIJ"))
+	}
+}
+
+func lastValue(env []string, key string) string {
+	v := ""
+	for _, kv := range env {
+		if rest, ok := strings.CutPrefix(kv, key+"="); ok {
+			v = rest
+		}
+	}
+	return v
+}
