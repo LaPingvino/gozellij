@@ -38,6 +38,19 @@ say()  { printf '%s\n' "$*"; }
 ok()   { pass=$((pass + 1)); printf '  PASS  %s\n' "$*"; }
 bad()  { fail=$((fail + 1)); printf '  FAIL  %s\n' "$*"; }
 
+# On the sleeps, because they are the first thing anybody tries to remove.
+#
+# There are about 216 seconds of literal `sleep` in this script and the whole run takes five
+# minutes, so they look like the obvious target. Measured: converting the 24 that follow an attach
+# into "wait until the pane has drawn" saved roughly 50 seconds and broke five checks, because
+# several of those attaches redirect their output to a file and their pane is *meant* to stay
+# blank. Fifty seconds of three hundred, for a heuristic that is right eighty percent of the time,
+# on the script that guards everything else. It was reverted.
+#
+# What is left is inherent rather than lazy: 31 tmux servers, a daemon per section, and real
+# programs drawing on real terminals. A materially faster suite means running sections in parallel,
+# which is a different piece of work and a real one - not a search-and-replace on sleeps.
+#
 # tmuxSock is a private tmux server, so nothing here can touch a session you are using.
 #
 # A new one per screen section, not one for the whole run. Sections used to share a server and rely

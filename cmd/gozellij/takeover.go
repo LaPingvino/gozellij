@@ -218,7 +218,15 @@ func findPTYHolders() ([]ptyHolder, error) {
 		sort.Slice(h.Terminal, func(i, j int) bool { return h.Terminal[i].Pts < h.Terminal[j].Pts })
 		out = append(out, h)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Pid < out[j].Pid })
+	// Most terminals first. Run on a machine that has been working, this finds the multiplexer
+	// you care about alongside every `script` wrapper and leftover test server holding one pane,
+	// and by pid order the thing you came for is somewhere in the middle of the noise.
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].Terminal) != len(out[j].Terminal) {
+			return len(out[i].Terminal) > len(out[j].Terminal)
+		}
+		return out[i].Pid < out[j].Pid
+	})
 	return out, nil
 }
 
