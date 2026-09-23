@@ -258,8 +258,16 @@ func (o *OutputBuffer) MoveLog(to string) error {
 	if sink == nil {
 		return errNoLogWriter
 	}
-	// moveTo registers its successor with SetSink when it opens; nothing to do here on success.
-	_, err := sink.moveTo(to)
+	// moveTo registers its successor with SetSink when it opens. When it could not open one, the
+	// old writer is closed and nothing reaches disk any more - which has to be visible in status,
+	// not only in the one reply to the rename.
+	next, err := sink.moveTo(to)
+	if next == nil && err != nil {
+		o.mu.Lock()
+		o.sink = nil
+		o.sinkErr = "nothing is writing this service's log since it was renamed: " + err.Error()
+		o.mu.Unlock()
+	}
 	return err
 }
 

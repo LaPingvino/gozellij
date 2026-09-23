@@ -510,6 +510,13 @@ grid has to reimplement those and then be worse at them.
    is simply the better model and the muscle memory should move. That is Joop's call to make by
    using it.
 
+   One piece of the session vocabulary did turn out to be missing rather than a naming question:
+   renaming. `gozellij rename <old> <new>` works on a running shell while you are attached to it -
+   same process, same scrollback, the log follows, and a daemon crash afterwards recovers it under
+   the new name (checked against a real systemd unit in `scripts/fdstore.sh`). Inside the process,
+   `GOZELLIJ` keeps the old name until it restarts, which is why the nesting guard asks the
+   process tree instead.
+
 ## Known gaps, written down rather than papered over
 
 - Nothing outstanding here at the moment. The gaps that used to be listed — a swallowed keystroke
