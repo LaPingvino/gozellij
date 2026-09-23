@@ -2130,7 +2130,11 @@ PROFILE
     only
     mkdir -p "$home/.config/gozellij"
     printf 'prefix=C-b\n' > "$home/.config/gozellij/status"
-    "$gz" add prefixed -start -restart no -- sh -c 'PS1=""; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+    # cat, not a shell. Ctrl-] at a shell is readline's character-search, which eats the next
+    # character all by itself - so a check that typed Ctrl-] at `sh -i` reported that gozellij was
+    # still swallowing the key when what swallowed it was bash. cat has no keymap: what reaches it
+    # comes back, which is the whole question here.
+    "$gz" add prefixed -start -restart no -- cat >/dev/null 2>&1
     sleep 1
     newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
@@ -2165,9 +2169,12 @@ PROFILE
     # shadowing this suite has been caught by before. So: send Ctrl-] and then a command. If the
     # key is no longer special the shell sees a harmless control character and runs the command;
     # if it is still being eaten it swallows the "e" and the shell is handed "cho ...".
-    tmux -L "$tmuxSock" send-keys C-] 'echo NOT-SPECIAL-42' Enter
+    #
+    # cat echoes what it is given, so the marker comes back whole if the key was passed through
+    # and missing its first letter if the client ate the key and took the M as a command.
+    tmux -L "$tmuxSock" send-keys C-] 'MARKER-PASSED-THROUGH' Enter
     sleep 2
-    if pane | grep -q 'NOT-SPECIAL-42'; then
+    if pane | grep -q 'MARKER-PASSED-THROUGH'; then
         ok "and Ctrl-] is no longer special, so it goes to the service"
     else
         bad "Ctrl-] was still eaten: $(pane | tail -3 | tr '\n' '|')"
