@@ -35,6 +35,9 @@ type Client struct {
 	// renamedTo is the name the daemon last said the attached service now has, or "". Set by the
 	// output pump and read by the attach loop once the session is over.
 	renamedTo atomic.Pointer[string]
+	// attachedAs is the name this connection attached to a service with, set before the stream
+	// starts and read by its pump.
+	attachedAs string
 
 	// mu serialises request/response pairs. The protocol carries ids so it could multiplex,
 	// but nothing needs that yet and a single in-flight request is far easier to reason about.

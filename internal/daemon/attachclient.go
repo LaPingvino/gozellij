@@ -282,6 +282,11 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 
 	first := true
 	for {
+		// Where this terminal is now, for `gozellij shell -last`. A watcher is not somewhere
+		// anybody was working.
+		if !opts.ReadOnly {
+			RememberShown(service)
+		}
 		c, err := Dial(socket)
 		if err == nil {
 			c.SetReadOnly(opts.ReadOnly)
@@ -1197,6 +1202,7 @@ func (t *terminalInput) run(in *os.File) {
 // things that can happen next, and a loop that names all four is easier to be sure about than
 // three goroutines and a mutex.
 func (c *Client) runSession(service string, input *terminalInput, in *os.File, out io.Writer, replay bool, reserved int) (attachOutcome, error) {
+	c.attachedAs = service
 	cols, rows := 0, 0
 	if term.IsTerminal(int(in.Fd())) {
 		if w, h, err := term.GetSize(int(in.Fd())); err == nil {
@@ -1324,6 +1330,11 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 					// Remembered, not printed: a line written into a byte pipe lands on top of
 					// the service's screen, and the status line shows the new name anyway.
 					name := ev.Service
+					if prev := c.RenamedTo(); prev != "" {
+						followRename(prev, name)
+					} else {
+						followRename(c.attachedAs, name)
+					}
 					c.renamedTo.Store(&name)
 					continue
 				}

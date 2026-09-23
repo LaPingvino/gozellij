@@ -39,7 +39,7 @@ func usage() {
 
 Usage:
   gozellij                             land in your shell (starts one if there is none)
-  gozellij shell [-name <n>] [-render] the same, with a different service name
+  gozellij shell [-name <n>] [-render] the same, with a different service name (-last: where you were)
   gozellij ls                          list services
   gozellij status <name>...            show one service, or several
   gozellij add <name> -- <cmd> [args]  define a service
@@ -286,9 +286,21 @@ func cmdShell(args []string) error {
 	sock := socketFlag(fs)
 	name := fs.String("name", DefaultShellService, "the service to land in")
 	nest := fs.Bool("nest", false, "land even from inside another gozellij service")
+	last := fs.Bool("last", false, "land in whatever a terminal was last showing, if it is still running; otherwise -name")
 	render := renderFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Following a renamed shell is a choice, not a default: without -last a login lands in the
+	// service called -name, as it always has. With it, in the one you were last looking at - but
+	// only while it runs, because a stopped one would be redefined as a fresh shell under a name
+	// that means something else to you.
+	if *last {
+		if n := daemon.LastShown(); n != "" && n != *name {
+			if pid, _ := servicePid(*sock, n); pid > 0 {
+				*name = n
+			}
+		}
 	}
 	// Bare `gozellij`, typed inside a gozellij shell, is the same nesting as `attach` - and the
 	// same feedback loop when the shell it would land in is this one.

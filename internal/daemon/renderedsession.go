@@ -663,6 +663,7 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 	if ev.renamed != "" {
 		// Everything the session does to this pane names its service - remove, revive, the next
 		// one along - and the old name no longer exists.
+		followRename(ev.pane.service, ev.renamed)
 		ev.pane.service = ev.renamed
 	}
 	if ev.message != "" {
