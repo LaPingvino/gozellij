@@ -1027,6 +1027,53 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm sizer >/dev/null 2>&1
 
+    # -------------------------------------- and resizing while you are reading the scrollback
+    #
+    # The case most likely to be wrong, because two things that each rewrite the grid happen at
+    # once: the history is reflowed to the new width while somebody is looking at a particular
+    # place in it. Getting it wrong means the view jumps, or empties, or silently becomes the live
+    # screen while you are still reading.
+    only
+    "$gz" add hist -start -- sh -c 'for i in $(seq 1 60); do echo "LINE-$i"; done; sleep 600' >/dev/null 2>&1
+    sleep 2
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 20 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render hist'"
+    sleep 3
+    newest() { pane | grep -o 'LINE-[0-9]*' | tail -1 | sed 's/.*-//'; }
+
+    live=$(newest)
+    tmux -L "$tmuxSock" send-keys C-] 'b'
+    sleep 2
+    back=$(newest)
+    if [ -n "$back" ] && [ -n "$live" ] && [ "$back" -lt "$live" ]; then
+        ok "Ctrl-] b is showing older output than the live screen (line $back, live was $live)"
+    else
+        bad "scrolling back showed line [$back] where live showed [$live]"
+    fi
+
+    tmux -L "$tmuxSock" resize-window -x 50 -y 14 2>/dev/null
+    sleep 3
+    after=$(newest)
+    if [ -n "$after" ] && [ "$after" -lt "$live" ]; then
+        ok "and it is still showing the scrollback after the window resized under it (line $after)"
+    else
+        bad "after resizing while scrolled back the newest line on screen is [$after], live was [$live]"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] 'g'
+    sleep 2
+    if [ "$(newest)" = "$live" ]; then
+        ok "Ctrl-] g comes back to the live screen at the new size"
+    else
+        bad "after returning to live the newest line is [$(newest)], want $live"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm hist >/dev/null 2>&1
+
     # ------------------------------- the login shell actually lands in gozellij
     #
     # The chain a person meets on their first ssh in after `gozellij login-setup -install`:
