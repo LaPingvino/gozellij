@@ -475,8 +475,8 @@ What they will notice in the first hour:
 the first-hour list below: there is a status line with tabs, the prefix key is configurable
 (`prefix=C-b`), `ls` counts the terminals attached and which of them are read-only, `Ctrl-] c`
 opens another shell and `Ctrl-] ,` renames one. Still true: two terminals of different sizes
-resize the service last-wins, and whether a wrapped replay can start inside an escape sequence is
-still unverified.
+resize the service last-wins. The wrapped replay could start inside an escape sequence - verified,
+"[0m" printed as text - and now starts at a line instead (`replaywrap_test.go`).
 
 **Acceptance.**
 ```sh
