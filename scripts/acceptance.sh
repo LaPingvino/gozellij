@@ -2107,6 +2107,17 @@ PROFILE
     else
         bad "set said: $(printf '%s' "$said" | tail -2 | tr '\n' '|')"
     fi
+    # Setting it to what it already is is not a change, and must not be answered as one. The CLI
+    # refuses a set with no flags at all; this is the case it cannot see - flags were given, and
+    # every value in them matches what the service already holds. Being told to restart a running
+    # service to pick up a change that does not exist is worse than being told nothing: it costs
+    # you the process for no reason.
+    again=$("$gz" set setme -restart always 2>&1)
+    if printf '%s' "$again" | grep -q 'previous definition'; then
+        bad "setting a value to what it already is still asked for a restart"
+    else
+        ok "setting a value to what it already is asks for no restart"
+    fi
     if [ "$("$gz" status setme 2>/dev/null | awk '/^pid:/{print $2}')" = "$setpid" ]; then
         ok "and it did not restart the service behind your back"
     else

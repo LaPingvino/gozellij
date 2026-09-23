@@ -539,7 +539,15 @@ func (s *Server) set(req ipc.Request) ipc.Response {
 		}
 		policy = p
 	}
+	// Whether any of this is actually a change, which is a different question from whether a
+	// field was given. `gozellij set web -restart no` on a service whose policy is already no
+	// went through, and the reply told you to restart it to pick up a change that is not there
+	// - the same failure as an empty set, one level deeper. The CLI catches the empty case
+	// ("nothing to change"); only the daemon can see that the values given match the ones held.
+	changed := false
 	if _, err := s.fab.Update(req.Service, func(d *fabric.Service) {
+		was := definitionSignature(d)
+		defer func() { changed = definitionSignature(d) != was }()
 		if sr.Command != nil {
 			d.Command = *sr.Command
 		}
@@ -562,7 +570,17 @@ func (s *Server) set(req ipc.Request) ipc.Response {
 	if err != nil {
 		return ipc.Err(req.ID, err)
 	}
-	return ipc.OKResponse(req.ID, ipc.SetReply{Status: s.statusReply(st), Pending: st.Live()})
+	return ipc.OKResponse(req.ID, ipc.SetReply{Status: s.statusReply(st), Pending: st.Live() && changed})
+}
+
+// definitionSignature is everything a set can alter, in a form two of which can be compared.
+//
+// Deliberately a string rather than a struct comparison: Args and Env are slices, so a Service is
+// not comparable, and the alternative is a field-by-field equality that silently stops covering a
+// field the day somebody adds one. A signature that misses a new field prints a stale value and is
+// obviously wrong; an equality that misses one reports "nothing changed" about a change.
+func definitionSignature(d *fabric.Service) string {
+	return fmt.Sprintf("%q %q %q %q %v", d.Command, d.Args, d.Dir, d.Env, d.Restart)
 }
 
 // rename gives a service a new name.
