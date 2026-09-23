@@ -1074,6 +1074,59 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm hist >/dev/null 2>&1
 
+    # ---------------------------------------- two terminals on one service, both of them live
+    #
+    # The promise underneath `viewers` in `ls`, and underneath the read-only attach: you can be
+    # attached from your laptop and your desk at once. Counting viewers was checked; that both of
+    # them actually *see* anything was not, which is the difference between a number and a
+    # feature.
+    #
+    # Typing is checked in one direction only on purpose. Both terminals send to the same pty, so
+    # "which one typed it" is not a question the service can answer or that anybody should rely
+    # on; what matters is that a keystroke from either arrives and that the answer reaches both.
+    only
+    "$gz" add pair -start -restart always -- sh -c 'PS1=""; export PS1; exec /bin/sh -i' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 20 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach pair'"
+    tmux -L "$tmuxSock" split-window -d \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach pair'"
+    sleep 3
+
+    if [ "$("$gz" ls 2>/dev/null | awk '$1 == "pair" {print $6}')" = "2" ]; then
+        ok "two terminals attached to one service are both counted"
+    else
+        bad "viewers reads [$("$gz" ls 2>/dev/null | awk '$1 == "pair" {print $6}')], want 2"
+    fi
+
+    # Typed into the first pane; the answer has to appear in both.
+    tmux -L "$tmuxSock" send-keys -t 0 'echo BOTH-$((6*7))-SEE' Enter
+    sleep 3
+    first=$(tmux -L "$tmuxSock" capture-pane -p -t 0 2>/dev/null | grep -c 'BOTH-42-SEE')
+    second=$(tmux -L "$tmuxSock" capture-pane -p -t 1 2>/dev/null | grep -c 'BOTH-42-SEE')
+    if [ "${first:-0}" -gt 0 ] && [ "${second:-0}" -gt 0 ]; then
+        ok "output reaches both terminals, not just the one that typed"
+    else
+        bad "the answer appeared in pane0=$first pane1=$second; both should have it"
+    fi
+
+    # And the other direction: typing in the second one also arrives.
+    tmux -L "$tmuxSock" send-keys -t 1 'echo OTHER-$((6*8))-WAY' Enter
+    sleep 3
+    if tmux -L "$tmuxSock" capture-pane -p -t 0 2>/dev/null | grep -q 'OTHER-48-WAY'; then
+        ok "and either terminal can type at it"
+    else
+        bad "what was typed in the second terminal never reached the service"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm pair >/dev/null 2>&1
+
     # ------------------------------- the login shell actually lands in gozellij
     #
     # The chain a person meets on their first ssh in after `gozellij login-setup -install`:
