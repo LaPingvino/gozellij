@@ -1127,6 +1127,50 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pair >/dev/null 2>&1
 
+    # ------------------------------------------- the status line in the title bar
+    #
+    # `where=title` is what this document recommends to anybody bothered by a full-screen program
+    # drawing over the bottom row: nothing can draw over a title bar. It was recommended and never
+    # checked, which is the wrong way round - it is the escape hatch, so it has to work when the
+    # ordinary thing does not.
+    #
+    # Two halves, and the second is the point: the line has to appear in the title, and the bottom
+    # row must *not* be reserved, or the mode costs a row without using it.
+    only
+    "$gz" add titled -start -- sh -c 'printf "TITLED-UP\r\n"; sleep 60' >/dev/null 2>&1
+    printf 'where=title\n' > "$home/titlecfg"
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e GOZELLIJ_STATUS_CONFIG="$home/titlecfg" -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach titled'"
+    sleep 4
+
+    if [ "$(ask '#{pane_title}')" != "${title_before:-}" ] && ask '#{pane_title}' | grep -q 'titled'; then
+        ok "where=title puts the status line in the terminal's title"
+    else
+        bad "the title is [$(ask '#{pane_title}')], which does not name the service"
+    fi
+
+    # Nothing is reserved, so the service has the whole screen. On a twelve-row terminal that is
+    # 0-11; the bottom-row mode would say 0-10.
+    if [ "$(ask '#{scroll_region_lower}')" = "11" ]; then
+        ok "and it reserves no row, so the service has the whole screen"
+    else
+        bad "the scrolling region ends at $(ask '#{scroll_region_lower}'), want 11 (nothing reserved)"
+    fi
+
+    if pane | grep -q 'TITLED-UP'; then
+        ok "and the service's output is still shown"
+    else
+        bad "the service's output is missing with where=title: $(pane | head -2 | tr '\n' '|')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm titled >/dev/null 2>&1
+    rm -f "$home/titlecfg"
+
     # ------------------------------- the login shell actually lands in gozellij
     #
     # The chain a person meets on their first ssh in after `gozellij login-setup -install`:

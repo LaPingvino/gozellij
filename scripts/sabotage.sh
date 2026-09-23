@@ -14,6 +14,10 @@
 # there, run the suite there, throw the whole directory away. Nothing in the working tree is
 # touched, and an interrupted run leaves a stale worktree rather than a broken checkout.
 #
+# It runs the suite as committed at HEAD, so a check you have just written has to be committed
+# before this can break it. That is the right way round - a check and the behaviour it guards
+# should land together - but it surprises you once.
+#
 # It reports which checks failed. What it cannot tell you is whether those are the *right* ones -
 # that judgement is the point of the exercise and stays with the person doing it.
 set -u
