@@ -52,10 +52,14 @@ func (l *lockedWriter) atomically(f func(io.Writer)) {
 const statusQueryTimeout = 1500 * time.Millisecond
 
 type statusPainter struct {
-	out  *lockedWriter
-	in   *os.File
-	cfg  status.Config
-	info func() status.Context
+	out *lockedWriter
+	// sizeOf overrides how the terminal's size is read. Only tests set it, and they set it to
+	// check the invariant that matters here: that the size is read while the terminal lock is
+	// held, so the sequence built from it cannot describe a screen that has since been resized.
+	sizeOf func() (cols, rows int)
+	in     *os.File
+	cfg    status.Config
+	info   func() status.Context
 
 	stop chan struct{}
 	done chan struct{}
@@ -209,6 +213,9 @@ func (p *statusPainter) Repaint() {
 }
 
 func (p *statusPainter) size() (cols, rows int) {
+	if p.sizeOf != nil {
+		return p.sizeOf()
+	}
 	c, r, err := term.GetSize(int(p.in.Fd()))
 	if err != nil || c <= 0 || r <= 1 {
 		return 0, 0
@@ -230,11 +237,18 @@ func (p *statusPainter) reserve() {
 	if p.cfg.Where != status.Bottom {
 		return
 	}
-	_, rows := p.size()
-	if rows < 2 {
-		return
-	}
+	// The size is read inside the lock, with the write that uses it.
+	//
+	// Read outside, it can be stale by the time the sequence built from it reaches the terminal:
+	// a SIGWINCH in that gap - which is exactly what splitting a window delivers - means a
+	// scrolling region is set for a screen that no longer exists. Holding the lock does not stop
+	// the terminal being resized, but it does stop the gap being wide enough to matter, and it
+	// costs one ioctl on a path that already writes to the terminal.
 	p.out.atomically(func(w io.Writer) {
+		_, rows := p.size()
+		if rows < 2 {
+			return
+		}
 		// Make room before taking the row, rather than landing on whatever is there.
 		//
 		// Reserving the bottom row and then putting the cursor on the row above it meant that on
@@ -252,10 +266,6 @@ func (p *statusPainter) reserve() {
 }
 
 func (p *statusPainter) paint() {
-	cols, rows := p.size()
-	if cols == 0 {
-		return
-	}
 	ctx := p.info()
 	ctx.Prefix = p.cfg.Prefix
 
@@ -269,16 +279,25 @@ func (p *statusPainter) paint() {
 		return
 	}
 
-	line := status.Render(ctx, p.cfg.Left, p.cfg.Right, cols)
 	p.mu.Lock()
 	msg, said := p.message, p.said
 	p.mu.Unlock()
-	if msg != "" && time.Since(said) < messageLinger {
-		// The whole row, because a message truncated to fit around a load average is a message
-		// nobody can act on. The line comes back in a few seconds.
-		line = trimToWidth("gozellij: "+msg, cols)
-	}
+
 	p.out.atomically(func(w io.Writer) {
+		// The size is read here, under the lock, for the reason given in reserve - and the line
+		// is rendered from it here too, because the width it is trimmed to has to be the width
+		// of the screen it is about to be written to. Only p.info() stays outside: it can be
+		// slow, and it is the one part that does not depend on the size.
+		cols, rows := p.size()
+		if cols == 0 || rows < 2 {
+			return
+		}
+		line := status.Render(ctx, p.cfg.Left, p.cfg.Right, cols)
+		if msg != "" && time.Since(said) < messageLinger {
+			// The whole row, because a message truncated to fit around a load average is a
+			// message nobody can act on. The line comes back in a few seconds.
+			line = trimToWidth("gozellij: "+msg, cols)
+		}
 		// Save the cursor, re-assert the region (a full-screen program that has exited will have
 		// reset it), go to the last row, draw, and put the cursor back. The service never sees
 		// any of this: it is written to the terminal, not to the pty.
@@ -292,11 +311,11 @@ func (p *statusPainter) clear() {
 		p.out.atomically(func(w io.Writer) { fmt.Fprint(w, "\x1b]2;\x07") })
 		return
 	}
-	_, rows := p.size()
-	if rows == 0 {
-		return
-	}
 	p.out.atomically(func(w io.Writer) {
+		_, rows := p.size()
+		if rows == 0 {
+			return
+		}
 		// The region reset goes *inside* the save and restore. DECSTBM homes the cursor like
 		// any other DECSTBM, so resetting after the restore undid it: every detach put the
 		// cursor at the top of the screen, and the next shell prompt printed over whatever was
