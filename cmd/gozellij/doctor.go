@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -89,6 +90,7 @@ func cmdDoctor(args []string) error {
 	checks = append(checks, checkVersions(c, dialErr)...)
 	checks = append(checks, checkTreeKill(c, dialErr))
 	checks = append(checks, checkStateDir())
+	checks = append(checks, checkDefinitions()...)
 	checks = append(checks, checkLinger())
 	checks = append(checks, checkUnit())
 	checks = append(checks, checkPrefix())
@@ -303,6 +305,47 @@ func checkStateDir() check {
 		}
 	}
 	return check{name: "state directory", level: levelOK, detail: dir}
+}
+
+// checkDefinitions reports service files the daemon cannot read.
+//
+// A definition that fails to parse is logged by the daemon and mentioned nowhere else: `ls` says
+// "no services defined", which is the same thing it says when you have none. Design rule 1 forbids
+// exactly that - an empty answer has to be distinguishable from "no" - and this is the case where
+// it costs most, because the file is editable by hand on purpose (rule 5) and an editing mistake
+// is how it happens. Somebody whose service vanished after a hand edit would have no way to learn
+// that from the tools, only from the daemon's log.
+func checkDefinitions() []check {
+	dir := filepath.Join(daemon.StateDir(), "services")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Missing is not a fault: nothing has been defined yet.
+		return nil
+	}
+	var bad []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			bad = append(bad, fmt.Sprintf("%s (%v)", e.Name(), rerr))
+			continue
+		}
+		var probe map[string]any
+		if jerr := json.Unmarshal(b, &probe); jerr != nil {
+			bad = append(bad, fmt.Sprintf("%s (%v)", e.Name(), jerr))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return []check{{
+		name:   "service definitions",
+		level:  levelFail,
+		detail: fmt.Sprintf("%d file(s) in %s cannot be read, so those services are not loaded: %s", len(bad), dir, strings.Join(bad, "; ")),
+		fix:    "edit the file, or move it aside and define the service again",
+	}}
 }
 
 // checkLinger is the one that matters most on a VPS. Without it the systemd user manager stops

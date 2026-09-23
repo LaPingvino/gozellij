@@ -489,6 +489,50 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ------------------------------------ a service file you can read, repair, and break
+#
+# Design rule 5: state the fabric must not lose goes on disk, in a format a human can read and
+# repair. That is an escape hatch, and an escape hatch nobody has tried is a decoration. The fabric
+# has a unit test for re-reading a hand-edited definition; what had nothing was the whole path -
+# edit the file with an editor, ask gozellij to restart, get the thing you edited.
+#
+# And the other half, which is where rule 5 meets rule 1: an editing mistake. A definition that
+# does not parse was logged by the daemon and mentioned nowhere a person looks - `ls` said "no
+# services defined", which is exactly what it says when you have none. Somebody whose service
+# vanished after a hand edit could only learn why from the daemon's log.
+only
+"$gz" add editable -start -restart no -- sh -c 'printf "BEFORE-THE-EDIT\r\n"; sleep 300' >/dev/null 2>&1
+sleep 2
+def="$state/services/editable.json"
+
+if [ -f "$def" ] && grep -q '"command"' "$def" && grep -q '^  "' "$def"; then
+    ok "a service is on disk as JSON with one field per line, which a person can edit"
+else
+    bad "the definition is: $(head -3 "$def" 2>/dev/null | tr '\n' '|')"
+fi
+
+# The escape hatch itself: change it with an editor, restart, get what you wrote.
+sed -i 's/BEFORE-THE-EDIT/AFTER-THE-EDIT/' "$def"
+"$gz" restart editable >/dev/null 2>&1
+sleep 2
+if "$gz" logs editable 2>/dev/null | grep -q 'AFTER-THE-EDIT'; then
+    ok "and a hand edit is honoured on the next start"
+else
+    bad "after editing the file the service still said: $("$gz" logs editable 2>/dev/null | tail -2 | tr '\n' '|')"
+fi
+
+# And an editing mistake is reported where somebody would look for it. Checked through doctor
+# rather than the daemon's log, because the log is not where a person goes.
+"$gz" stop editable >/dev/null 2>&1
+printf 'not json at all\n' > "$def"
+if "$gz" doctor 2>/dev/null | grep -q 'service definitions'; then
+    ok "and a definition that cannot be read is named by doctor, not just logged"
+else
+    bad "doctor says nothing about an unreadable definition: $("$gz" doctor 2>/dev/null | grep -icE 'definition|json') mentions"
+fi
+rm -f "$def"
+"$gz" rm editable >/dev/null 2>&1
+
 # ----------------------------------------- gozellijd -logs off keeps output off the disk
 #
 # A privacy promise with nothing checking it. A shell you live in has everything you typed and
