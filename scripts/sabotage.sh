@@ -75,7 +75,13 @@ status=$?
 echo
 if grep -qE "^  FAIL" "$work/out.log"; then
     echo "these promises noticed:"
-    grep -E "^  FAIL" "$work/out.log"
+    # The FAIL line *and* whatever it wrote under it. A check that prints evidence on more than
+    # one line - a cursor position, a screen dump, the two halves of a comparison - had all of it
+    # thrown away here, because this printed only the first line and then the worktree went. That
+    # cost the one measurement a bug hunt had been waiting on, in a run that reproduced it.
+    awk '/^  FAIL/ { show = 1; print; next }
+         show && /^        / { print; next }
+         { show = 0 }' "$work/out.log"
 else
     echo "NOTHING FAILED. Either the sabotage did not reach anything, or the behaviour it broke"
     echo "is not checked by anything - which is worth knowing and is usually the more interesting"
