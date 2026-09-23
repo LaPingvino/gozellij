@@ -338,6 +338,8 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 		}
 		return s.statusAfter(req)
 
+	case ipc.OpServiceRename:
+		return s.rename(req)
 	case ipc.OpServiceRemove:
 		return s.remove(req)
 
@@ -491,6 +493,18 @@ func (s *Server) viewerCount(service string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.viewers[service]
+}
+
+// rename gives a service a new name.
+func (s *Server) rename(req ipc.Request) ipc.Response {
+	var rr ipc.RenameRequest
+	if err := json.Unmarshal(req.Payload, &rr); err != nil {
+		return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+	}
+	if err := s.fab.Rename(req.Service, rr.To); err != nil {
+		return ipc.Err(req.ID, err)
+	}
+	return ipc.OKResponse(req.ID, nil)
 }
 
 // remove deletes a service and, unless asked otherwise, its log.

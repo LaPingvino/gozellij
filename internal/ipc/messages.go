@@ -19,6 +19,7 @@ const (
 	OpServiceStop   Op = "service.stop"
 	OpServiceRestrt Op = "service.restart"
 	OpServiceRemove Op = "service.remove"
+	OpServiceRename Op = "service.rename"
 	// OpAttach turns the connection into a stream: the daemon sends the service's output as
 	// data frames and reads the client's keystrokes as data frames, until the client hangs up.
 	OpAttach Op = "attach"
@@ -193,6 +194,11 @@ type StatusReply struct {
 	// spends, so it should be visible without going looking for the directory.
 	LogPath  string `json:"log_path,omitempty"`
 	LogBytes int64  `json:"log_bytes,omitempty"`
+}
+
+// RenameRequest is the payload of OpServiceRename; the request's Service is the current name.
+type RenameRequest struct {
+	To string `json:"to"`
 }
 
 // RemoveRequest is the payload of OpServiceRemove.

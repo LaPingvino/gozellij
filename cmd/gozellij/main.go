@@ -49,6 +49,7 @@ Usage:
   gozellij logs -f <name>...           follow one or several services until you press Ctrl-C
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
+  gozellij rename <old> <new>          give a stopped service a new name; its log goes with it
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
   gozellij login-setup                 say how to make it what your login shell starts (-install to do it)
@@ -133,6 +134,8 @@ func run(args []string) error {
 		return cmdLifecycle(cmd, rest)
 	case "rm", "remove":
 		return cmdRemove(rest)
+	case "rename", "mv":
+		return cmdRename(rest)
 	case "attach":
 		return cmdAttach(rest)
 	case "logs":
@@ -1056,6 +1059,29 @@ func displayVersion(v string) string {
 		return "(unknown)"
 	}
 	return v
+}
+
+// cmdRename gives a service a new name. Only a stopped one, for now: see fabric.ErrRenameRunning.
+func cmdRename(args []string) error {
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("rename needs the current name and the new one: gozellij rename <old> <new>")
+	}
+	c, err := connect(*sock)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	from, to := fs.Arg(0), fs.Arg(1)
+	if err := c.Rename(from, to); err != nil {
+		return err
+	}
+	fmt.Printf("renamed %s to %s\n", from, to)
+	return nil
 }
 
 func cmdRemove(args []string) error {

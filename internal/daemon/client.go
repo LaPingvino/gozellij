@@ -314,6 +314,12 @@ func (c *Client) Info() (map[string]string, error) {
 	return out, nil
 }
 
+// Rename gives a service a new name.
+func (c *Client) Rename(from, to string) error {
+	_, err := c.Call(ipc.OpServiceRename, from, ipc.RenameRequest{To: to})
+	return err
+}
+
 // Remove deletes a service and, unless keepLogs, its log. It returns the log files it deleted.
 func (c *Client) Remove(name string, keepLogs bool) ([]string, error) {
 	resp, err := c.Call(ipc.OpServiceRemove, name, ipc.RemoveRequest{KeepLogs: keepLogs})

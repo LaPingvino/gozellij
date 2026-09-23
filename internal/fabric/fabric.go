@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -519,6 +520,119 @@ func (f *Fabric) Remove(name string, keepLogs bool) error {
 		return nil
 	}
 	return f.removeLogs(name)
+}
+
+// ErrRenameRunning is returned for a service that is running. Its name is also in its process's
+// environment (GOZELLIJ), its cgroup and the descriptor systemd holds for it, and none of those
+// follow a rename yet - so it is refused rather than half done.
+var ErrRenameRunning = errors.New("cannot rename a running service yet; stop it first")
+
+// Rename gives a stopped service a new name: its definition, its log files and its place in the
+// fabric move together, and the old name stops existing.
+//
+// The definition moves first and is the step that can be undone: written under the new name
+// (which refuses a name already taken), then the old file removed - and if that fails, the new one
+// goes again, so a failed rename never leaves the service defined twice. The logs move after, and
+// a failure there is reported but not rolled back, because the service has been renamed and
+// saying otherwise would be the lie.
+func (f *Fabric) Rename(oldName, newName string) error {
+	if err := ValidServiceName(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return fmt.Errorf("%s is already called that", oldName)
+	}
+	// Both locks, always in the same order, or `rename a b` and `rename b a` at once deadlock.
+	first, second := oldName, newName
+	if second < first {
+		first, second = second, first
+	}
+	l1, l2 := f.lock(first), f.lock(second)
+	l1.Lock()
+	defer l1.Unlock()
+	l2.Lock()
+	defer l2.Unlock()
+
+	old, err := f.supervisor(oldName)
+	if err != nil {
+		return err
+	}
+	if old.Status().Live() {
+		return fmt.Errorf("%s: %w", oldName, ErrRenameRunning)
+	}
+	if _, err := f.supervisor(newName); err == nil {
+		return fmt.Errorf("%w: %s", ErrServiceExists, newName)
+	}
+
+	// A log already under the new name - left by a service removed with -keep-logs - is somebody
+	// else's transcript. Moving over it would destroy it, and leaving it would have this service
+	// append to it, so the rename does not start.
+	if taken := f.LogFiles(newName); len(taken) > 0 {
+		return fmt.Errorf("%s still has a log from before (%s); remove it or pick another name",
+			newName, strings.Join(taken, ", "))
+	}
+
+	def, err := f.reg.Get(oldName)
+	if err != nil {
+		return err
+	}
+	def.Name = newName
+	if err := f.reg.Add(def); err != nil {
+		return err
+	}
+	if err := f.reg.Remove(oldName); err != nil {
+		_ = f.reg.Remove(newName)
+		return err
+	}
+
+	// The old buffer is closed, which ends its log writer before its file is moved; a writer
+	// still open on the old path would recreate it at the next rotation. Anything attached is
+	// told its stream ended, which is true: the service it was watching no longer has that name.
+	// What the buffer held in memory goes with it. The file on disk does not.
+	old.Output().Close()
+	opts := f.opts
+	opts.Watchers = old.Watchers()
+
+	logErr := f.moveLogs(oldName, newName)
+	fresh := NewSupervisor(def, opts)
+
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return ErrFabricClosed
+	}
+	delete(f.sups, oldName)
+	f.sups[newName] = fresh
+	f.mu.Unlock()
+
+	if logErr != nil {
+		return fmt.Errorf("renamed %s to %s, but its log did not follow: %w", oldName, newName, logErr)
+	}
+	return nil
+}
+
+// moveLogs renames a service's log and its rotated generation. Rename has already refused a name
+// with a log of its own; the check here is for a file that appeared since, which is still not
+// this rename's to destroy.
+func (f *Fabric) moveLogs(oldName, newName string) error {
+	if f.opts.LogDir == "" {
+		return nil
+	}
+	from, to := LogPath(f.opts.LogDir, oldName), LogPath(f.opts.LogDir, newName)
+	var errs []error
+	for _, suffix := range []string{"", ".1"} {
+		if _, err := os.Stat(from + suffix); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if _, err := os.Stat(to + suffix); err == nil {
+			errs = append(errs, fmt.Errorf("%s already exists; %s was left where it is", to+suffix, from+suffix))
+			continue
+		}
+		if err := os.Rename(from+suffix, to+suffix); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // removeLogs deletes a service's log and its rotated generation.
