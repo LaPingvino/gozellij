@@ -20,6 +20,11 @@ type parser struct {
 	// strEsc marks an ESC seen inside a control string, so that the backslash after it ends the
 	// string rather than being part of it.
 	strEsc bool
+	// strIntro is the character that opened the current control string - P, X, ^ or _ - and
+	// strHead the first two bytes of its body, which is all it takes to tell a request apart
+	// from a statement. Kept because the decision can only be made once the string is over.
+	strIntro byte
+	strHead  []byte
 	params []byte
 	inter  []byte
 	utf8   []byte
@@ -72,7 +77,7 @@ func (p *parser) feed(t *Term, b []byte) {
 			t.selectCharset(p.charsetSlot, c)
 			p.state = ground
 		case str:
-			p.str(c)
+			p.str(t, c)
 		}
 	}
 }
@@ -242,9 +247,18 @@ func (p *parser) escape(t *Term, c byte) {
 		// them is a terminal's own business - vim asks for the current SGR with a DCS, ncurses
 		// asks for terminfo strings - and a program that is not answered does without. What it
 		// must not do is print the body, which is what happened before this state existed.
+		//
+		// Consuming one is not a gap, so it is not reported as one. vim opens by sending
+		// "\x1bPzz\x1b\\" and then asking where the cursor is: the whole point is to find out
+		// whether the terminal swallows a control string or prints its body, and swallowing it
+		// is the right answer. Reporting that as unimplemented meant every editor in a pane
+		// announced a fault on the status line for behaving correctly - noise that costs the
+		// report the attention the real cases need. What is genuinely unanswered is the subset
+		// that asks a question, and finishStr says which those are.
 		p.state = str
 		p.strEsc = false
-		t.noteUnknown(fmt.Sprintf("ESC %c string", c))
+		p.strIntro = c
+		p.strHead = p.strHead[:0]
 	case '7':
 		t.saveCursor()
 		p.state = ground
@@ -754,16 +768,38 @@ func (p *parser) osc(t *Term, c byte) {
 // An ESC followed by anything else stays inside the string: a stray ESC is not a terminator, and
 // abandoning on it would put the rest of the body on the screen, which is the bug this state
 // exists to prevent.
-func (p *parser) str(c byte) {
+func (p *parser) str(t *Term, c byte) {
 	if p.strEsc {
 		p.strEsc = false
 		if c == '\\' {
 			p.state = ground
+			p.finishStr(t)
 		}
 		return
 	}
 	if c == 0x1b {
 		p.strEsc = true
+		return
+	}
+	if len(p.strHead) < 2 {
+		p.strHead = append(p.strHead, c)
+	}
+}
+
+// finishStr reports a control string that asked something this emulator never answers.
+//
+// Only a DCS can ask: DECRQSS ("$q", what is the current setting of ...) and XTGETTCAP ("+q",
+// what does your terminfo say about ...). A program that gets no reply falls back to a default,
+// which is survivable and occasionally wrong, and that is worth one line on the status line.
+// Everything else - a string that states something, and every SOS, PM and APC, none of which
+// carry a question - is consumed and that is the end of it.
+func (p *parser) finishStr(t *Term) {
+	if p.strIntro != 'P' || len(p.strHead) < 2 || p.strHead[1] != 'q' {
+		return
+	}
+	switch p.strHead[0] {
+	case '$', '+':
+		t.noteUnknown(fmt.Sprintf("DCS %sq request", string(p.strHead[0])))
 	}
 }
 

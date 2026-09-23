@@ -2009,6 +2009,78 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm laya layb >/dev/null 2>&1
 
+    # ------------------------------------- a full-screen program in one pane of a split
+    #
+    # Every split check so far runs services that print a line and stop. A program that positions
+    # the cursor absolutely - vim addresses row 1 column 1 and means it - is the case where pane
+    # clipping has to do real work, and it is what a person actually puts in a pane.
+    #
+    # The failure this is for is not subtle once you see it: an editor that thinks it owns the
+    # screen writes across the seam and over whatever is in the other pane, and what you lose is
+    # the output you split the screen to watch.
+    only
+    printf 'ALPHAWORD\nsecond line\n' > "$home/split-edit.txt"
+    "$gz" add quiet -start -- sh -c 'while :; do printf "QUIETMARK-%s\r\n" "$(stty size 2>/dev/null | cut -d" " -f2)"; sleep 1; done' >/dev/null 2>&1
+    "$gz" add edity -start -- sh -c "TERM=xterm-256color exec vim -u NONE -N -n $home/split-edit.txt" >/dev/null 2>&1
+    sleep 2
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 80 -y 14 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render quiet'"
+    sleep 3
+    wide=$(pane | sed -n 's/.*QUIETMARK-\([0-9]*\).*/\1/p' | tail -1)
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 5
+
+    # Being told the pane's width is what makes a full-screen program work in a pane at all. It
+    # is checked on a window resize already; splitting the screen is the other way a service's
+    # width changes, and nothing checked that one. A service that is not told draws to the width
+    # it last heard - so vim lays out eighty columns of screen inside forty, and every line of it
+    # wraps into the next.
+    narrow=$(pane | sed -n 's/.*QUIETMARK-\([0-9]*\).*/\1/p' | tail -1)
+    if [ -n "$wide" ] && [ -n "$narrow" ] && [ "$wide" -gt 70 ] && [ "$narrow" -lt "$wide" ]; then
+        ok "splitting the screen tells the service its pane is narrower ($wide then $narrow columns)"
+    else
+        bad "the service heard [$wide] before the split and [$narrow] after it"
+    fi
+
+    # Both are on screen at all, or the rest proves nothing.
+    if pane | grep -q 'QUIETMARK' && pane | grep -q 'ALPHAWORD'; then
+        ok "a full-screen program and a plain service share one screen"
+
+        # And each stays on its own side of the seam. The columns are what matters: an editor
+        # writing across the split still *appears*, it just appears where the other service's
+        # output should be.
+        qcol=$(pane | awk '/QUIETMARK/ { print index($0, "QUIETMARK"); exit }')
+        acol=$(pane | awk '/ALPHAWORD/ { print index($0, "ALPHAWORD"); exit }')
+        if [ -n "$qcol" ] && [ -n "$acol" ] && [ "$qcol" -lt 40 ] && [ "$acol" -gt 40 ]; then
+            ok "the editor stays in its own pane (columns $qcol and $acol of 80)"
+        else
+            bad "the panes overlap: QUIETMARK at column $qcol, ALPHAWORD at column $acol"
+        fi
+    else
+        bad "one of them is missing: $(pane | head -3 | tr '\n' '|')"
+    fi
+
+    # And the status line comes back. Attaching to an editor says things - it asks the terminal
+    # what colour it is, and says so when the terminal does not answer - and each of those takes
+    # the status row for messageLinger seconds. Nothing checked that the row is ever given back,
+    # which is the difference between a message and a status line that has been lost: read it too
+    # early and a note looks like a permanent replacement. This waits the linger out first.
+    #
+    # Both of the notes an editor provokes were found here rather than reasoned about: the first
+    # was gozellij calling vim's own DCS probe an unimplemented sequence, which is now fixed.
+    sleep 8
+    if pane | sed -n '14p' | grep -q 'quiet'; then
+        ok "and the status line comes back after what gozellij had to say"
+    else
+        bad "row 14 still reads: [$(pane | sed -n '14p')]"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm quiet edity >/dev/null 2>&1
+
     # --------------------------------- changing a service in place, and renaming a running one
     #
     # Story A5 and its neighbour. Both were reviewed adversarially at the fabric level and five
