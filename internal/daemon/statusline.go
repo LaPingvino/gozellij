@@ -266,15 +266,27 @@ func (p *statusPainter) reserve() {
 }
 
 func (p *statusPainter) paint() {
+	// The status query runs before the size is known, and on a terminal whose size cannot be
+	// learned its answer is thrown away. That is a bounded query per tick on a pty that no
+	// status line can be drawn on at all - accepted rather than hidden, because avoiding it
+	// needs a size read outside the lock, and an unlocked size read is the defect this whole
+	// arrangement exists to prevent.
 	ctx := p.info()
 	ctx.Prefix = p.cfg.Prefix
 
 	if p.cfg.Where == status.Title {
 		// OSC 2. Nothing can draw over a title bar, which is the whole appeal; the cost is that
 		// you only see it if your terminal shows one.
-		line := status.Render(ctx, p.cfg.Left, p.cfg.Right, 0)
 		p.out.atomically(func(w io.Writer) {
-			fmt.Fprintf(w, "\x1b]2;%s\x07", line)
+			// The size is not used to build this sequence - a title has no width - but it is
+			// still asked for, because this file's rule is that nothing draws on a terminal
+			// whose size cannot be learned. Say() says so at the top and routes to stderr
+			// instead; `script` makes exactly that kind of pty when its output is a pipe.
+			// Moving the size read under the lock briefly lost this, silently.
+			if cols, _ := p.size(); cols == 0 {
+				return
+			}
+			fmt.Fprintf(w, "\x1b]2;%s\x07", status.Render(ctx, p.cfg.Left, p.cfg.Right, 0))
 		})
 		return
 	}

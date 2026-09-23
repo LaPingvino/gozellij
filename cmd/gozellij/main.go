@@ -1015,9 +1015,19 @@ func waitForDaemon(path string, within time.Duration) (*daemon.Client, error) {
 		}
 		return c, nil
 	}
-	return nil, fmt.Errorf("the daemon did not come back within %v (last error: %v); check its log",
-		within, lastErr)
+	return nil, fmt.Errorf("%w within %v (last error: %v); check its log",
+		errDaemonNeverAnswered, within, lastErr)
 }
+
+// errDaemonNeverAnswered marks the one failure waitForDaemon reports by itself: it ran out of time
+// without a connection that answered.
+//
+// Worth a sentinel because a caller retrying the whole exchange has to be able to tell it apart
+// from a failure it got *from* the daemon. "Could not reach it" must never replace "reached it,
+// and here is what broke" - the second one is the cause and the first is just the clock. With the
+// deadline clamped, a remaining slice under a round-trip still lets waitForDaemon run zero
+// iterations and return this, which would otherwise overwrite the real error on the way out.
+var errDaemonNeverAnswered = errors.New("the daemon did not come back")
 
 // askTheSuccessor gets the version and the service list from the daemon that came back, retrying
 // the whole exchange rather than any one request in it.
@@ -1074,7 +1084,11 @@ func askTheSuccessor(path string, within time.Duration) (string, ipc.ListReply, 
 		if err == nil {
 			return version, list, nil
 		}
-		lastErr = err
+		// A "could not reach it" never replaces a "reached it, and here is what broke": the
+		// second names a cause and the first names the clock.
+		if lastErr == nil || !errors.Is(err, errDaemonNeverAnswered) {
+			lastErr = err
+		}
 		// Never sleep past the deadline: the next turn of the loop is where it is noticed, and
 		// it has to be noticed with time left to say something true about it.
 		time.Sleep(min(50*time.Millisecond, time.Until(deadline)))
