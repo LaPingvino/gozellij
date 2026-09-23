@@ -489,6 +489,60 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ------------------------------------------------- the mistakes you make by typing
+#
+# The errors a person actually meets: a name already taken, a policy spelled wrong, a command
+# forgotten, a service that is not there. Every one of them is already right - non-zero, and a
+# message naming the thing - and not one was checked. Rule 1 has no exception for the unhappy
+# path, and a command that fails quietly or exits 0 on a refusal is worse than one that fails
+# loudly, because a script around it carries on.
+#
+# Measured first, and the measuring had to be done twice: the first pass read `$?` after a pipe
+# into `head` and got head's status, so every one of these looked like exit 0. That mistake is in
+# this project's notes twice already.
+only
+"$gz" add taken -start -restart no -- sh -c 'sleep 300' >/dev/null 2>&1
+sleep 1
+
+refused() {
+    # refused <what> <expected text> <command...>
+    what=$1; want=$2; shift 2
+    out=$("$@" 2>&1); rc=$?
+    if [ "$rc" != "0" ] && printf '%s' "$out" | grep -q "$want"; then
+        ok "$what"
+    else
+        bad "$what: exit $rc saying $(printf '%s' "$out" | head -2 | tr '\n' '|')"
+    fi
+}
+
+refused "adding a name that is already taken is refused"        'already exists' \
+        "$gz" add taken -- sh -c 'sleep 1'
+refused "and a restart policy that is not one says what the three are" 'no, on-failure or always' \
+        "$gz" add spelt -restart sometimes -- sh -c 'sleep 1'
+refused "and add with no command shows you one"                 'gozellij add' \
+        "$gz" add nocommand
+refused "and status of a service that is not there names it"    'no such service: ghost' \
+        "$gz" status ghost
+refused "and so does stop"                                      'no such service: ghost' \
+        "$gz" stop ghost
+
+"$gz" add mover -restart no -- sh -c 'sleep 300' >/dev/null 2>&1
+refused "and renaming onto a name in use is refused"            'already exists' \
+        "$gz" rename mover taken
+
+# The one that is a behaviour rather than a message: rm on a running service takes the process
+# with it. A remove that forgot the service and left its process running would leak one every
+# time, with nothing left that knows how to stop it.
+takenpid=$("$gz" status taken 2>/dev/null | awk '/^pid:/{print $2}')
+"$gz" rm taken >/dev/null 2>&1
+sleep 1
+if [ -n "$takenpid" ] && ! kill -0 "$takenpid" 2>/dev/null; then
+    ok "and rm takes a running service's process with it, rather than orphaning it"
+else
+    bad "rm left pid $takenpid running"
+fi
+"$gz" rm mover >/dev/null 2>&1
+
 # --------------------------------------------- where a service runs, and what it runs with
 #
 # -dir and -env, neither of them driven. -dir appears once further down, but only because a `less`
