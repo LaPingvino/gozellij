@@ -158,6 +158,11 @@ reach the service, so you can put eyes on something without your Ctrl-C ending i
 enforces it, not the client, and `gozellij ls` says which of the terminals attached can type:
 `2+1r` is two that can and one that cannot.
 
+`Ctrl-]` is gozellij's own key while attached, and it is configurable: put `prefix=C-b` in
+`~/.config/gozellij/status` if that is what your fingers already know. `gozellij doctor` says which
+key is in force, and every message gozellij prints about keys names the one you configured rather
+than the default.
+
 The arrangement is remembered. Attach to the same service again - after a detach, or after your
 connection dropped - and the panes, their orientation and their sizes come back. It is kept in
 `$XDG_STATE_HOME/gozellij/layouts/<service>.json`, which you can read and edit.

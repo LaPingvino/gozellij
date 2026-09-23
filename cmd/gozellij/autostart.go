@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/LaPingvino/gozellij/internal/status"
 	"io"
 	"os"
 	"path/filepath"
@@ -172,6 +173,29 @@ func namedBinaryIn(body string) string {
 func fileIsThere(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
+}
+
+// checkPrefix says which key addresses gozellij, because the usage text promises it does and
+// because a key you configured and mistyped is otherwise silent: the file parses, the default
+// stays in force, and the only symptom is that your new key does nothing.
+func checkPrefix() check {
+	cfg := status.Load()
+	label := status.PrefixLabel(cfg.Prefix)
+	for _, p := range cfg.Problems {
+		if strings.Contains(p, "prefix=") {
+			return check{
+				name:   "prefix key",
+				level:  levelWarn,
+				detail: p + "; using " + label,
+				fix:    "prefix=C-b in " + short(status.ConfigPath()) + "  (also: ^B, Ctrl-b, 0x02)",
+			}
+		}
+	}
+	if cfg.Prefix == status.DefaultPrefix {
+		return check{name: "prefix key", level: levelOK,
+			detail: label + " (the default; set prefix=C-b in " + short(status.ConfigPath()) + " to change it)"}
+	}
+	return check{name: "prefix key", level: levelOK, detail: label + ", from " + short(status.ConfigPath())}
 }
 
 // checkAutostart is the doctor check.

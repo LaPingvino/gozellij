@@ -213,6 +213,11 @@ where=%s
 # C-b, ^B, Ctrl-b, ctrl+b, 0x02. It has to be a control character.
 #prefix=C-b
 
+# The key that talks to gozellij rather than to what you are attached to.
+# Ctrl-] by default, as telnet has used for decades. Write it any of these ways:
+# C-b, ^B, Ctrl-b, ctrl+b, 0x02. It has to be a control character.
+#prefix=C-b
+
 # Widgets, in order, as byobu names them. A leading # switches one off without
 # deleting it. Everything available:
 #
