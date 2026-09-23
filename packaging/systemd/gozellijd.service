@@ -35,10 +35,10 @@ ExecReload=/bin/kill -USR1 $MAINPID
 Restart=on-failure
 RestartSec=2
 
-# Hold descriptors across an automatic restart. So far this is the daemon's own listening socket,
-# which closes the window where `systemctl --user restart gozellijd` makes every gozellij command
-# say "no daemon is running" - connections queue in the socket's backlog instead. The services'
-# pty masters are what this is really for and are not stored yet.
+# Hold descriptors across a restart: the daemon's own listening socket, so connections queue in its
+# backlog instead of being refused while the daemon is replaced, and every service's pty master, so
+# the next daemon can adopt the services rather than lose them. Both after a crash and after
+# `systemctl --user restart`; see scripts/fdstore.sh.
 #
 # The default FileDescriptorStorePreserve=restart is deliberate and not written out: the store is
 # kept across a restart and dropped on an explicit stop, where losing the descriptors is correct.

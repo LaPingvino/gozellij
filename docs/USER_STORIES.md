@@ -351,8 +351,11 @@ Gaps:
 
 **Now (2026-09-23).** The first gap is closed: `gozellij ls` says when the running daemon is not
 this client's version, older or newer (read from pacman's `r<commits>`), with the command that
-fixes it, and says nothing when they match or either is a `dev` build. The second stands; the
-package's post_upgrade message says `reload`, not `restart`.
+fixes it, and says nothing when they match or either is a `dev` build. The second is closed too,
+and was two bugs rather than a missing label: a daemon that had stored its socket hung on SIGTERM
+until systemd killed it, and the old daemon unlinked the socket path the new one inherited, so a
+restart adopted every service into a daemon nobody could reach. `systemctl restart` now keeps every
+service, same pids, in under a second (`scripts/fdstore.sh`).
 
 **Acceptance.**
 ```sh

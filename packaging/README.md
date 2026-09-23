@@ -80,9 +80,12 @@ Both send `SIGUSR1`, which makes the daemon replace its own image while keeping 
 process — same pids, no restart. `gozellij upgrade` additionally compares the pids before and
 after and fails loudly if any process did not survive.
 
-Do **not** use `systemctl --user restart gozellijd` for an upgrade. That stops the daemon, which
-takes its services down with it, and starts them again from scratch. `reload` is the one that
-keeps them.
+Prefer `reload` to `systemctl --user restart gozellijd`. A restart used to take every service down
+with the daemon; it no longer does - the unit's `KillMode=process` leaves the services alone, systemd
+keeps the listening socket and every service's terminal across the restart, and the new daemon
+adopts them (checked in `scripts/fdstore.sh`). But a restart still ends every attached terminal's
+connection for a moment, where `reload` hands the socket straight across. An explicit `stop` is
+different on purpose: it lets systemd drop what it was holding.
 
 ## Where things live
 
