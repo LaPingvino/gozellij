@@ -670,17 +670,10 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	if err != nil {
 		return err
 	}
-
-	snapshot, sub, err := out.Attach(AttachQueueBytes)
-	if err != nil {
-		return err
-	}
-
 	svc, err := s.fab.Follow(req.Service)
 	if err != nil {
 		return err
 	}
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, asked: req.Service}
 
 	// A terminal tailing a service is watching it. The column is called VIEWERS and the question
 	// it answers is "is anyone looking at this?" - and someone running `logs -f` in another
@@ -688,8 +681,18 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	//
 	// Read-only, and not as a policy: a follower has no way to send anything. It is the same
 	// thing `attach -r` asks to be, arrived at from the other direction.
+	//
+	// Counted before the subscription exists and uncounted after it is gone, the order attach
+	// keeps and says why. This used to subscribe first.
 	leaving := s.watching(svc, true)
 	defer leaving()
+
+	snapshot, sub, err := out.Attach(AttachQueueBytes)
+	if err != nil {
+		return err
+	}
+	defer sub.Detach()
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, asked: req.Service}
 
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {
 		sub.Detach()
@@ -712,6 +715,12 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// When the stream ends from this side - `gozellij rm` closing the buffer - the client
+		// has no reason to hang up, and readUntilHangup below would wait for it for ever: the
+		// follower never returned and went on being counted as a viewer, and with viewers
+		// following their service, counted under a name a new service could then take. Closing
+		// the connection is what attach does here, for the same reason.
+		defer conn.Close()
 		sess.pumpOutput(sub)
 	}()
 
