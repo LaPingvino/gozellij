@@ -131,22 +131,39 @@ func adoptListener(path string, log *slog.Logger) (net.Listener, bool) {
 
 // storeListener hands the socket to systemd to hold for the next start. Nothing here is fatal: a
 // daemon that cannot use the store is the daemon we had before it existed.
-func storeListener(ln net.Listener, log *slog.Logger) {
+//
+// It reports whether systemd is now holding it.
+func storeListener(ln net.Listener, log *slog.Logger) bool {
 	ul, ok := ln.(*net.UnixListener)
 	if !ok {
-		return
+		return false
 	}
 	// File() returns a duplicate, so this one is ours to close. It also puts *that* descriptor in
 	// blocking mode, which is right for something that is only going to be handed across a socket.
 	f, err := ul.File()
 	if err != nil {
 		log.Debug("could not duplicate the listening socket for systemd", "err", err)
-		return
+		return false
 	}
 	defer f.Close()
-	if err := StoreFD(socketFDName, f); err != nil && err != ErrNoNotifySocket {
+	err = StoreFD(socketFDName, f)
+	if err != nil && err != ErrNoNotifySocket {
 		log.Debug("systemd would not hold the listening socket", "err", err)
 	}
+	// Put the listener back the way the runtime needs it. O_NONBLOCK belongs to the open file
+	// description, which the duplicate shares - so making the copy blocking made *this* socket
+	// blocking too, and Accept then sat in a raw accept(2) that closing the listener cannot
+	// interrupt. Every daemon that had stored its socket hung in shutdown: SIGTERM logged
+	// "shutting down" and nothing followed, until systemd's stop timeout sent SIGKILL. A daemon
+	// started without systemd never stored anything, which is why nothing else noticed.
+	if rc, rerr := ul.SyscallConn(); rerr == nil {
+		_ = rc.Control(func(fd uintptr) {
+			if nerr := syscall.SetNonblock(int(fd), true); nerr != nil {
+				log.Warn("could not make the listening socket non-blocking again; shutting down may hang", "err", nerr)
+			}
+		})
+	}
+	return err == nil
 }
 
 // pendingFDs is what systemd handed back that nothing has adopted yet.

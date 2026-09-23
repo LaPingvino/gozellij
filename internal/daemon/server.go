@@ -24,6 +24,9 @@ type Server struct {
 	path string
 
 	ln net.Listener
+	// held means systemd is holding this listening socket for the next daemon, so its path must
+	// outlive this one. See Close.
+	held bool
 
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
@@ -88,8 +91,12 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 	// so reads as a live daemon.
 	// An exec-in-place hands its socket over directly; only a fresh start asks systemd for one.
 	ln, adopted := adoptHandedListener(path, log)
+	// A socket handed across an exec was stored by whichever daemon first made it, when there
+	// was a systemd to store it with - and the store keeps its copy after handing one back.
+	held := adopted && os.Getenv(NotifyEnv) != ""
 	if !adopted {
 		ln, adopted = adoptListener(path, log)
+		held = adopted
 	}
 	if !adopted {
 		if err := clearStaleSocket(path); err != nil {
@@ -106,7 +113,7 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 			ln.Close()
 			return nil, fmt.Errorf("securing %s: %w", path, err)
 		}
-		storeListener(ln, log)
+		held = storeListener(ln, log)
 	}
 
 	return &Server{
@@ -114,6 +121,7 @@ func Listen(path string, fab *fabric.Fabric, log *slog.Logger) (*Server, error) 
 		log:      log,
 		path:     path,
 		ln:       ln,
+		held:     held,
 		conns:    make(map[net.Conn]struct{}),
 		viewers:  make(map[*viewer]struct{}),
 		upgrades: make(chan struct{}, 1),
@@ -205,16 +213,28 @@ func (s *Server) Close() error {
 	}
 	s.mu.Unlock()
 
+	// A socket systemd is holding for the next daemon keeps its path. `systemctl restart` used
+	// to lose every service to this: the new daemon took the socket back and adopted every
+	// service, and nobody could reach it, because this daemon had unlinked the file on its way
+	// out - Go's listener does that by default, and the Remove below did it again. A crash never
+	// got as far as either, which is why the crash tests passed. After an explicit stop the
+	// store lets go and the file is stale; the next start clears it, and a client meanwhile is
+	// refused and says no daemon is running, which is true.
+	if ul, ok := s.ln.(*net.UnixListener); ok && s.held {
+		ul.SetUnlinkOnClose(false)
+	}
 	err := s.ln.Close()
 	for _, c := range conns {
 		c.Close()
 	}
 	s.wg.Wait()
 
-	// The listener usually unlinks the socket; make sure, so the next start does not have to
-	// reason about a stale file.
-	if rmErr := os.Remove(s.path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-		s.log.Warn("could not remove socket", "path", s.path, "err", rmErr)
+	if !s.held {
+		// The listener usually unlinks the socket; make sure, so the next start does not have
+		// to reason about a stale file.
+		if rmErr := os.Remove(s.path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			s.log.Warn("could not remove socket", "path", s.path, "err", rmErr)
+		}
 	}
 	return err
 }

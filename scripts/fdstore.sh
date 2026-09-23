@@ -387,6 +387,40 @@ else
 fi
 "$gz" rm aftername >/dev/null 2>&1
 
+# ---------------------------------------------------------- systemctl restart, which people type
+#
+# packaging/README.md said not to, because restart used to take every service down with the
+# daemon. With KillMode=process only the daemon is signalled, and the store is kept across a
+# restart (FileDescriptorStorePreserve's default), so the next daemon should adopt everything. A
+# packager's post-install that runs restart is common enough that which of the two is true matters.
+say
+"$gz" add survivor -start -- sh -c 'while :; do sleep 1; done' >/dev/null 2>&1
+sleep 1
+sv_pid=$("$gz" status survivor 2>/dev/null | awk '/^pid:/{print $2}')
+main=$(systemctl --user show "$unit" -p MainPID --value)
+t0=$(date +%s)
+systemctl --user restart "$unit" 2>/dev/null
+took=$(( $(date +%s) - t0 ))
+# Synchronous, so this is how long the old daemon took to stop. It used to be systemd's whole stop
+# timeout: a daemon that had stored its socket hung in shutdown, and only SIGKILL ended it.
+if [ "$took" -le 5 ]; then
+    ok "and the daemon stops promptly when asked (${took}s)"
+else
+    bad "systemctl restart took ${took}s: the daemon did not stop on SIGTERM and was killed at the timeout"
+fi
+for _ in $(seq 40); do
+    now=$(systemctl --user show "$unit" -p MainPID --value)
+    [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$main" ] && "$gz" ping >/dev/null 2>&1 && break
+    sleep 0.25
+done
+after_sv=$("$gz" status survivor 2>/dev/null | awk '/^pid:/{print $2}')
+if [ -n "$sv_pid" ] && [ "$after_sv" = "$sv_pid" ]; then
+    ok "systemctl restart keeps a running service, same pid (daemon $main then $(systemctl --user show "$unit" -p MainPID --value))"
+else
+    bad "after systemctl restart the service's pid went $sv_pid to [$after_sv]"
+fi
+"$gz" rm survivor >/dev/null 2>&1
+
 # ------------------------------------------- the store must not fill up with terminals of the dead
 #
 # FileDescriptorStoreMax is 64 in the packaged unit. A daemon that hands a terminal over on every
