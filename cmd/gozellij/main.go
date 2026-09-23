@@ -1040,8 +1040,23 @@ func askTheSuccessor(path string, within time.Duration) (string, ipc.ListReply, 
 	deadline := time.Now().Add(within)
 	var lastErr error
 	for {
+		// How long is left, checked before dialling rather than after failing.
+		//
+		// The previous shape checked the deadline and then slept, so the sleep could carry it
+		// past and the next attempt called waitForDaemon with a negative duration. Its loop then
+		// ran zero times and it reported "the daemon did not come back within -50ms (last error:
+		// <nil>)" - which is nonsense on its own, and worse than nonsense in context, because it
+		// overwrote the real error and that is what the person saw. The cause of a failure is the
+		// one thing a message about it has to keep.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("no time left to ask the daemon after the upgrade")
+			}
+			return "", ipc.ListReply{}, lastErr
+		}
 		version, list, err := func() (string, ipc.ListReply, error) {
-			back, err := waitForDaemon(path, time.Until(deadline))
+			back, err := waitForDaemon(path, remaining)
 			if err != nil {
 				return "", ipc.ListReply{}, err
 			}
@@ -1060,10 +1075,9 @@ func askTheSuccessor(path string, within time.Duration) (string, ipc.ListReply, 
 			return version, list, nil
 		}
 		lastErr = err
-		if !time.Now().Before(deadline) {
-			return "", ipc.ListReply{}, lastErr
-		}
-		time.Sleep(50 * time.Millisecond)
+		// Never sleep past the deadline: the next turn of the loop is where it is noticed, and
+		// it has to be noticed with time left to say something true about it.
+		time.Sleep(min(50*time.Millisecond, time.Until(deadline)))
 	}
 }
 

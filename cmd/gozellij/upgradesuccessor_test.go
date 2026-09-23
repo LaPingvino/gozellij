@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,48 @@ func TestAskTheSuccessorOutlivesADaemonThatDiesMidExchange(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&conns); got < 2 {
 		t.Fatalf("it answered from %d connection(s), so it never retried", got)
+	}
+}
+
+// Running out of time says what actually went wrong, not what the clock did.
+//
+// The retry loop checked the deadline and then slept, so the sleep could carry it past and the
+// next attempt asked for a connection within a negative duration. That reported "the daemon did
+// not come back within -50ms (last error: <nil>)" - and because it was the most recent error, it
+// replaced the one that mattered. A person on the rare bad day would have been handed a negative
+// duration instead of the reason.
+//
+// The daemon here answers a ping and then stops answering, so every attempt gets that far and no
+// further, and the deadline arrives mid-exchange rather than while dialling.
+func TestRunningOutOfTimeKeepsTheRealError(t *testing.T) {
+	var conns int32
+	sock := fakeDaemon(t, func(c net.Conn, n int32) {
+		r, w := ipc.NewReader(c), ipc.NewWriter(c)
+		for {
+			var req ipc.Request
+			if err := r.ReadJSON(ipc.KindRequest, &req); err != nil {
+				return
+			}
+			if req.Op == ipc.OpPing {
+				_ = w.WriteJSON(ipc.KindResponse,
+					ipc.OKResponse(req.ID, map[string]string{"version": "whoever"}))
+				continue
+			}
+			// Anything else: go away, the way a daemon on its way out does.
+			_ = c.Close()
+			return
+		}
+	}, &conns)
+
+	_, _, err := askTheSuccessor(sock, 400*time.Millisecond)
+	if err == nil {
+		t.Fatal("a daemon that never answers a list was reported as a success")
+	}
+	if strings.Contains(err.Error(), "within -") {
+		t.Fatalf("gave up with a negative duration in the message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "service.list") {
+		t.Fatalf("the reason was lost on the way out: %v", err)
 	}
 }
 
