@@ -1127,6 +1127,68 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pair >/dev/null 2>&1
 
+    # -------------------------------------- two terminals starting a shell at the same moment
+    #
+    # You ssh in twice at once, or a dropped connection reconnects while the old one is still
+    # closing. Both logins run `gozellij`, both find no shell, both create one - and the loser's
+    # attach fails with "no such service" because the winner's service was replaced underneath it.
+    #
+    # That is why the client asks the daemon to Ensure rather than looking and then adding. The
+    # comment in cmdShell says it was measured with three at once; it was measured by hand, and
+    # then nothing checked it again. This is the same measurement, kept.
+    only
+    # Waited for by pid, not with a bare `wait`. This script starts its daemon in the background
+    # and keeps it there, so `wait` with no arguments waits for the daemon too - which never exits
+    # and wedges the suite at this line for ever.
+    racers=""
+    for i in 1 2 3; do
+        ( timeout 8 "$gz" shell -name raced < /dev/null > "$work/race.$i" 2>&1 ) &
+        racers="$racers $!"
+    done
+    for r in $racers; do wait "$r" 2>/dev/null; done
+    made=$("$gz" ls 2>/dev/null | awk '$1 == "raced"' | wc -l)
+    if [ "$made" = "1" ]; then
+        ok "three terminals starting the same shell at once leave exactly one service"
+    else
+        bad "$made services called raced exist after three simultaneous starts"
+    fi
+    if grep -haq "no such service" "$work"/race.* 2>/dev/null; then
+        bad "one of them lost the race: $(grep -ha 'no such service' "$work"/race.* | head -1)"
+    else
+        ok "and none of them was told its service had vanished"
+    fi
+    "$gz" rm raced >/dev/null 2>&1
+    rm -f "$work"/race.*
+
+    # ------------------------------------------------ doctor is itself a promise
+    #
+    # The document points at `gozellij doctor` four times - for linger, for the unit, for which
+    # prefix key is in force, for what tree-kill can do here - and one line of this script ever
+    # ran it. A diagnostic that crashes, or that reports failure on a healthy machine, is worse
+    # than none: it is the thing you reach for when you already believe something is wrong.
+    only
+    "$gz" add doc -start -- sh -c 'sleep 60' >/dev/null 2>&1
+    sleep 1
+    out=$("$gz" doctor 2>&1); status=$?
+    if [ "$status" = "0" ]; then
+        ok "doctor exits zero on a healthy daemon"
+    else
+        bad "doctor exited $status on a working setup: $(printf '%s' "$out" | grep -E '^(FAIL|warn)' | head -1)"
+    fi
+    if printf '%s' "$out" | grep -q "^ok    daemon "; then
+        ok "and it reports the daemon it just talked to"
+    else
+        bad "doctor did not report the daemon: $(printf '%s' "$out" | head -2 | tr '\n' '|')"
+    fi
+    # Every line it prints is one of its four levels. A malformed row means a check returned
+    # something the printer did not expect, which is how a diagnostic starts lying.
+    if [ -z "$(printf '%s' "$out" | grep -vE '^(ok|note|warn|FAIL)  |^$|^[a-z].*:$|^  ')" ]; then
+        ok "and every line it prints is a level it knows"
+    else
+        bad "doctor printed a line in no known shape: $(printf '%s' "$out" | grep -vE '^(ok|note|warn|FAIL)  |^$|^[a-z].*:$|^  ' | head -1)"
+    fi
+    "$gz" rm doc >/dev/null 2>&1
+
     # ------------------------------------------------ logs are rotated, and only one is kept
     #
     # "appended as the service runs and rotated at 16 MiB with one generation kept" has been in the
