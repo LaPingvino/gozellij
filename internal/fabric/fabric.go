@@ -48,6 +48,9 @@ func NewFabric(reg *Registry, opts StartOptions) *Fabric {
 	// Each supervisor makes its own shared output buffer; a single buffer handed to all of them
 	// would interleave every service's output into one stream.
 	opts.Output = nil
+	// Likewise the watcher set, which is also how a Handle recognises its service: shared, every
+	// supervisor would answer as every service.
+	opts.Watchers = nil
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fabric{
@@ -585,6 +588,8 @@ func (f *Fabric) Rename(oldName, newName string) error {
 	l2.Lock()
 	defer l2.Unlock()
 
+	// supervisor() refuses on a closed fabric, so a shutdown is noticed here - before anything
+	// moves on disk - rather than after the definition has moved and the log has not.
 	sup, err := f.supervisor(oldName)
 	if err != nil {
 		return err

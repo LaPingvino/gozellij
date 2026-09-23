@@ -473,15 +473,18 @@ func exitSignalOf(e fabric.Exit) string {
 	return e.Signal
 }
 
-// viewer is one attached client: which service it is looking at, under its current name.
+// viewer is one attached client and the service it is looking at - followed, not named, so that
+// counting it under a service's current name needs no bookkeeping when the name changes. A name
+// stored here had to be relabelled on every rename, outside any fabric lock, and two renames in
+// quick succession could leave the count under the name in between.
 type viewer struct {
-	service  string
+	svc      *fabric.Handle
 	readOnly bool
 }
 
 // watching records that a client has attached, and returns the function that records it leaving.
-func (s *Server) watching(service string, readOnly bool) func() {
-	v := &viewer{service: service, readOnly: readOnly}
+func (s *Server) watching(svc *fabric.Handle, readOnly bool) func() {
+	v := &viewer{svc: svc, readOnly: readOnly}
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.mu.Unlock()
@@ -502,7 +505,7 @@ func (s *Server) watcherCount(service string) int {
 	defer s.mu.Unlock()
 	n := 0
 	for v := range s.viewers {
-		if v.service == service && v.readOnly {
+		if v.readOnly && v.svc.Name() == service {
 			n++
 		}
 	}
@@ -515,7 +518,7 @@ func (s *Server) viewerCount(service string) int {
 	defer s.mu.Unlock()
 	n := 0
 	for v := range s.viewers {
-		if v.service == service {
+		if v.svc.Name() == service {
 			n++
 		}
 	}
@@ -577,15 +580,6 @@ func (s *Server) rename(req ipc.Request) ipc.Response {
 		// Renamed, with a log left behind. Still renamed, so everything below still applies.
 		warning = partial.Error()
 	}
-	// Whoever is attached is still attached - the stream is the same buffer - and is now looking
-	// at the new name.
-	s.mu.Lock()
-	for v := range s.viewers {
-		if v.service == req.Service {
-			v.service = rr.To
-		}
-	}
-	s.mu.Unlock()
 	if warning == "" {
 		return ipc.OKResponse(req.ID, nil)
 	}
@@ -671,7 +665,7 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	//
 	// Read-only, and not as a policy: a follower has no way to send anything. It is the same
 	// thing `attach -r` asks to be, arrived at from the other direction.
-	leaving := s.watching(req.Service, true)
+	leaving := s.watching(svc, true)
 	defer leaving()
 
 	if err := w.WriteJSON(ipc.KindResponse, ipc.OKResponse(req.ID, nil)); err != nil {

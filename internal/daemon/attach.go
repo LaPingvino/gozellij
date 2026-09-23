@@ -50,6 +50,10 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	if err != nil {
 		return err
 	}
+	svc, err := s.fab.Follow(req.Service)
+	if err != nil {
+		return err
+	}
 
 	// Size the pty to the attaching client before replaying anything, so a full-screen program
 	// repaints at the right size rather than at whatever the last client used. Not for a
@@ -67,7 +71,7 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// can exist. Counting after would leave a window in which a handler holds a subscription
 	// nobody is counted for, and "no viewers" would not mean "nothing attached" - which it has
 	// to, because that is the only signal anything else has for when the attaches are done.
-	leaving := s.watching(req.Service, ar.ReadOnly)
+	leaving := s.watching(svc, ar.ReadOnly)
 	defer leaving()
 
 	// Snapshot and subscription are taken together, so nothing written in between is lost. See
@@ -86,10 +90,6 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	// subscription exists, and once the count is zero none do.
 	defer sub.Detach()
 
-	svc, err := s.fab.Follow(req.Service)
-	if err != nil {
-		return err
-	}
 	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, asked: req.Service, readOnly: ar.ReadOnly}
 
 	// The attach itself succeeded: say so before the stream starts, so the client can tell

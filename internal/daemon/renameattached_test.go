@@ -126,3 +126,25 @@ func TestARenameWhoseLogStaysBehindIsStillARename(t *testing.T) {
 		t.Errorf("ls counts %d viewers under the new name, want 1", n)
 	}
 }
+
+// Viewers used to be relabelled by name on each rename, outside any fabric lock, so two renames in
+// quick succession could leave them counted under the name in between. They follow the service now.
+func TestViewersFollowAServiceThroughTwoRenames(t *testing.T) {
+	_, _, sock := newTestDaemon(t)
+	c := dial(t, sock)
+	if _, err := c.Add("before", ipc.AddRequest{Command: "sh", Args: []string{"-i"}, Start: true}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := attachRaw(t, sock, "before", ipc.AttachRequest{Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	for _, step := range [][2]string{{"before", "middle"}, {"middle", "after"}} {
+		if _, err := dial(t, sock).Rename(step[0], step[1]); err != nil {
+			t.Fatalf("rename %s %s: %v", step[0], step[1], err)
+		}
+	}
+	if n := viewersOf(t, sock, "after"); n != 1 {
+		t.Errorf("ls counts %d viewers under the final name, want 1", n)
+	}
+}
