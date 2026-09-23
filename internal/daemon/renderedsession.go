@@ -347,6 +347,27 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeRename:
+				// Inline, whatever the number of panes: this loop is the only reader of the
+				// keyboard while it runs, so the prompt can take the keystrokes itself. Panes do
+				// not repaint while it is up, and catch up as soon as it is answered.
+				name, instead, msg := renameFromKey(socket, panes[focus].service, input, func(s string) {
+					note(s)
+					paint()
+				})
+				if instead != nil {
+					// Another command pressed mid-prompt: act on it, here, as though it had been
+					// pressed a moment later. Sent from a goroutine because this loop is the one
+					// that reads the channel.
+					go func(w attachOutcome) { input.cmds <- w }(*instead)
+					continue
+				}
+				// Set here as well as by the event that follows, so nothing done before that
+				// event arrives uses the old name.
+				panes[focus].service = name
+				note(msg)
+				paint()
+
 			case outcomeCreate:
 				// In the focused pane, the way n and p change what it shows. With one pane the
 				// loop outside does it, the same as it does for n and p.

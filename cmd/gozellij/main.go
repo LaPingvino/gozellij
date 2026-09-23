@@ -80,6 +80,7 @@ While attached, %[2]s is gozellij's own key. Put a line like prefix=%[3]s in
   %[2]s n / p     next / previous service, in this same terminal
   %[2]s l         list the services and pick one by number
   %[2]s c         a new shell, in the directory you are in
+  %[2]s ,         rename the service you are looking at
   %[2]s k         remove the service you are looking at
   %[2]s u         revive a pane that has frozen: reconnect it, starting its service if needed
   %[2]s ?         show these keys

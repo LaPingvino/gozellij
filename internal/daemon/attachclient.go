@@ -83,6 +83,8 @@ const (
 	// outcomeRedraw paints everything again from the grid. The recovery for a screen that looks
 	// wrong, which is the first thing anybody reaches for.
 	outcomeRedraw
+	// outcomeRename asks for a new name for the service you are looking at and gives it that.
+	outcomeRename
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
@@ -91,7 +93,7 @@ const (
 // service was showing. Built from the configured key rather than spelling Ctrl-] out, because a
 // help text that names a key the user has changed is worse than none.
 func prefixHelp(label string) string {
-	return label + " d detach · c new shell · n/p next/previous · l list and pick · k remove · u revive · " +
+	return label + " d detach · c new shell · n/p next/previous · l list and pick · , rename · k remove · u revive · " +
 		"| split beside · - split below · < > resize · o switch pane · x close pane · " +
 		"b/f scroll back/forward · g live · r redraw · ? this · " + label + " sends a literal " + label
 }
@@ -334,6 +336,19 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			case outcomeFinished:
 				restore()
 				return nil
+
+			case outcomeRename:
+				// The session's connection is closed while the name is typed, like the list, so
+				// nothing typed here can reach the service by mistake.
+				name, instead, msg := renameFromKey(socket, service, input, say)
+				if instead != nil {
+					outcome = *instead
+					continue dispatch
+				}
+				service = name
+				say(msg)
+				first, replay = true, true
+				break dispatch
 
 			case outcomeRevive:
 				// A fresh connection is the revival - the one the session used is closed by now -
@@ -1045,6 +1060,11 @@ func (t *terminalInput) run(in *os.File) {
 					// is not a split-screen feature - it is the thing a multiplexer is least
 					// allowed to make you leave for.
 					if !command(outcomeRemove) {
+						return
+					}
+				case ',':
+					// Rename: tmux's key for renaming a window. Both modes, like k.
+					if !command(outcomeRename) {
 						return
 					}
 				case 'u', 'U':
