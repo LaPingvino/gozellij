@@ -519,14 +519,45 @@ else
     bad "after a restart the state is: $("$gz" status bouncer 2>/dev/null | grep '^state:')"
 fi
 
-# The transcript survives. This is what replaceSupervisor carries the output buffer across for,
-# and nothing checked it: a restart that silently emptied the log would look like a working
-# restart right up to the moment somebody needed the log.
+# The transcript survives a restart. Worth checking on its own - a restart that quietly emptied
+# the log would look like a working restart right up to the moment somebody needed the log.
+#
+# It does NOT check what the comment here first claimed. This passes because the log *file* is on
+# disk and `logs` reads it; replaceSupervisor carrying the output buffer across has nothing to do
+# with it. Dropping that carry entirely left all 151 promises standing, which is how the wrong
+# reason was found - the check was right and the sentence next to it was not. The carry gets its
+# own check below, where there is no file to hide behind.
 if "$gz" logs bouncer 2>/dev/null | grep -q 'SAID-BEFORE-RESTART'; then
     ok "and what it said before the restart is still in its log"
 else
     bad "the log lost everything from before: $("$gz" logs bouncer 2>/dev/null | tail -2 | tr '\n' '|')"
 fi
+
+# And now the carry itself, with `-log off` so there is no file at all. This is the promise in
+# replaceSupervisor - "the output buffer is reused, so logs still shows what the service said
+# before it was stopped" - and until now nothing anywhere exercised it: every other service in
+# this suite writes to disk, which answers the question before the buffer is ever consulted.
+#
+# Counting rather than matching, because a restart re-runs the same command and prints the same
+# line again. Two occurrences means one was kept from before; one means the buffer went with the
+# supervisor that was replaced.
+"$gz" add nofile -log off -start -restart no -- sh -c 'echo CARRIED-ACROSS; sleep 300' >/dev/null 2>&1
+sleep 2
+if [ -f "$state/logs/nofile.log" ]; then
+    bad "-log off wrote a log file anyway"
+else
+    ok "-log off keeps a service's output off the disk entirely"
+fi
+"$gz" restart nofile >/dev/null 2>&1
+sleep 2
+carried=$("$gz" logs nofile 2>/dev/null | grep -c 'CARRIED-ACROSS')
+if [ "${carried:-0}" -ge 2 ]; then
+    ok "and a restart keeps what it said before, with no file to read it from"
+else
+    bad "after restarting a service with no log file, its output appeared $carried time(s), want 2"
+fi
+"$gz" stop nofile >/dev/null 2>&1
+"$gz" rm nofile >/dev/null 2>&1
 
 # Several names at once, like its neighbours - and a bad name among good ones reported without
 # abandoning the rest, which is the rule the whole family follows.

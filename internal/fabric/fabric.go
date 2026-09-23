@@ -402,9 +402,16 @@ func (f *Fabric) startLocked(name string) error {
 //
 // Two things are deliberately carried across and one is deliberately not:
 //
-//   - the output buffer is reused, so `logs` still shows what the service said before it was
-//     stopped. Scrollback surviving a restart is the same promise as scrollback surviving a
-//     crash-and-restart, and an operator does not care which of the two happened;
+//   - the output buffer is reused, so what the service said before it was stopped is still there
+//     for an attaching client to replay and for `logs` to fall back on. Scrollback surviving a
+//     restart is the same promise as scrollback surviving a crash-and-restart, and an operator
+//     does not care which of the two happened.
+//
+//     Note what this is *not* doing: `logs` reads the file on disk when there is one, so for an
+//     ordinary service the transcript would survive a restart with or without this line. Dropping
+//     it left every acceptance check standing. What it actually carries is the case with no file
+//     - `-log off` - and an attached client's replay, and the acceptance suite now checks the
+//     first of those with a service that writes nothing to disk;
 //   - the definition is re-read from disk, because design rule 5 says a service file is meant to
 //     be repairable with a text editor. Building from the in-memory copy meant an edit was
 //     honoured by `gozellij upgrade` (which reloads) but ignored by `restart` (which did not) -
