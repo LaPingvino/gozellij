@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -10,12 +11,12 @@ import (
 
 func TestAttachingAServiceToItselfIsRefused(t *testing.T) {
 	t.Setenv("GOZELLIJ", "shell")
-	err := refuseNesting("shell", false)
+	err := refuseNesting("shell", 0, false)
 	if err == nil {
 		t.Fatal("attaching shell from inside shell was allowed")
 	}
 	// Refused even with -nest: there is no version of this that is not a feedback loop.
-	if refuseNesting("shell", true) == nil {
+	if refuseNesting("shell", 0, true) == nil {
 		t.Fatal("-nest allowed a service to be attached to itself")
 	}
 	// And it says what was probably wanted, since reviving a frozen pane is how this was found.
@@ -26,21 +27,42 @@ func TestAttachingAServiceToItselfIsRefused(t *testing.T) {
 
 func TestNestingIsRefusedByDefaultAndAllowedWithTheFlag(t *testing.T) {
 	t.Setenv("GOZELLIJ", "shell")
-	err := refuseNesting("work", false)
+	err := refuseNesting("work", 0, false)
 	if err == nil {
 		t.Fatal("attaching another service from inside one was allowed without -nest")
 	}
 	if !strings.Contains(err.Error(), "-nest") || !strings.Contains(err.Error(), " l ") {
 		t.Errorf("the refusal should offer switching in place and the way to nest anyway: %v", err)
 	}
-	if refuseNesting("work", true) != nil {
+	if refuseNesting("work", 0, true) != nil {
 		t.Error("-nest did not allow it")
 	}
 }
 
 func TestOutsideGozellijNothingIsRefused(t *testing.T) {
 	t.Setenv("GOZELLIJ", "")
-	if err := refuseNesting("shell", false); err != nil {
+	if err := refuseNesting("shell", 0, false); err != nil {
 		t.Errorf("an attach from outside gozellij was refused: %v", err)
+	}
+}
+
+// The name is not the only evidence, and after a rename it is wrong: GOZELLIJ was frozen into the
+// shell when it started. Being underneath the service's process is the same feedback loop whatever
+// the variable says - including when it says nothing, or names another service.
+func TestAttachingTheServiceYouAreRunningUnderIsRefusedWhateverItIsCalled(t *testing.T) {
+	under := os.Getppid() // something this test genuinely runs beneath
+	for _, inside := range []string{"", "old-name", "work"} {
+		t.Setenv("GOZELLIJ", inside)
+		if refuseNesting("new-name", under, false) == nil {
+			t.Errorf("GOZELLIJ=%q: attaching the service this runs under was allowed", inside)
+		}
+		if err := refuseNesting("new-name", under, true); err == nil || !strings.Contains(err.Error(), "itself") {
+			t.Errorf("GOZELLIJ=%q: -nest let a service be attached to itself: %v", inside, err)
+		}
+	}
+	// And a service this does not run under is not caught by the tree check.
+	t.Setenv("GOZELLIJ", "")
+	if err := refuseNesting("elsewhere", 999999999, false); err != nil {
+		t.Errorf("an unrelated pid was treated as an ancestor: %v", err)
 	}
 }
