@@ -2117,6 +2117,69 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ---------------------------------------- a broken environment is reported, not suffered
+    #
+    # A log directory that cannot be written is not exotic: a full disk, a mode somebody tightened,
+    # a state directory on a filesystem that went read-only. What a multiplexer must not do then is
+    # take your shells down with it, and what it must not do instead is carry on quietly while the
+    # transcript everybody assumes exists is not being written.
+    #
+    # gozellij already gets this right, and that is exactly why it needs checking: good behaviour
+    # nothing defends is good behaviour until somebody refactors. Every one of these was measured
+    # by hand first - the service keeps running, and four different places say what is wrong.
+    only
+    "$gz" add quiet1 -start -restart no -- sh -c 'echo BEFORE-BREAK; sleep 120' >/dev/null 2>&1
+    sleep 1
+    chmod 500 "$state/logs"
+    "$gz" add broke -start -restart no -- sh -c 'echo AFTER-BREAK; sleep 120' >/dev/null 2>&1
+    sleep 2
+    brokepid=$("$gz" status broke 2>/dev/null | awk '/^pid:/{print $2}')
+
+    # The service runs. This is the promise that matters: a disk problem is not a reason to lose
+    # the shell you are working in.
+    if [ -n "$brokepid" ] && "$gz" status broke 2>/dev/null | grep -q '^state: *running'; then
+        ok "a service still starts when its log cannot be written"
+    else
+        bad "the service did not run: $("$gz" status broke 2>/dev/null | tr '\n' '|' | head -c 150)"
+    fi
+
+    # And says so, in status, with the reason. Rule 1: not writing the log is a thing that did not
+    # happen, and something that did not happen has to be said.
+    if "$gz" status broke 2>/dev/null | grep -q 'log error:.*permission denied'; then
+        ok "and status says why the log is not being written"
+    else
+        bad "status says nothing about the log: $("$gz" status broke 2>/dev/null | grep -i log | tr '\n' '|')"
+    fi
+
+    # `logs` is the other place somebody looks, and it has the harder job: it still has the output
+    # in memory, so it can show it - but it must not let you think you are reading a file that is
+    # being kept up to date.
+    logsaid=$("$gz" logs broke 2>&1)
+    if printf '%s' "$logsaid" | grep -q 'not being written' && printf '%s' "$logsaid" | grep -q 'AFTER-BREAK'; then
+        ok "and logs still shows the output while saying the file is not keeping up"
+    else
+        bad "logs said: $(printf '%s' "$logsaid" | tr '\n' '|' | head -c 200)"
+    fi
+
+    # doctor is where somebody goes when they already suspect something, so it has to name the
+    # service rather than say the state directory looks odd.
+    if "$gz" doctor 2>/dev/null | grep -q 'logs: broke'; then
+        ok "and doctor names the service whose log is failing"
+    else
+        bad "doctor says: $("$gz" doctor 2>/dev/null | grep -i log | tr '\n' '|' | head -c 200)"
+    fi
+
+    # The service that was already writing before the break is not dragged down with it.
+    if "$gz" status quiet1 2>/dev/null | grep -q '^state: *running'; then
+        ok "and a service that was already logging is unaffected"
+    else
+        bad "the earlier service stopped: $("$gz" status quiet1 2>/dev/null | tr '\n' '|' | head -c 120)"
+    fi
+
+    chmod 700 "$state/logs"
+    "$gz" stop broke quiet1 >/dev/null 2>&1
+    "$gz" rm broke quiet1 >/dev/null 2>&1
+
     # ------------------------------------- a connection that drops leaves nothing behind
     #
     # The way a login multiplexer's client usually ends is not Ctrl-] d. It is the ssh dying, the
