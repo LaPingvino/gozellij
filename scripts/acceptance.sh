@@ -2117,6 +2117,66 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ------------------------------------------ you can always get out, however loud it is
+    #
+    # The accident everybody has had: cat a binary, or start something that never stops talking.
+    # What matters then is not that the screen is a mess - it is whether the detach key still
+    # works. A multiplexer you cannot leave while a service is shouting is worse than no
+    # multiplexer, because the shouting is exactly when you need to leave.
+    #
+    # Nothing checked this. The flood further up exists to fill a log and watch it rotate; it
+    # never had anybody attached to it. The parts are all there - the keystroke reader is its own
+    # goroutine, and a client that falls behind is told so and cut loose rather than blocking the
+    # daemon - but "the parts are there" is a claim about the code, not about what happens.
+    only
+    "$gz" add torrent -start -restart no -- sh -c 'yes "TORRENT-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"' >/dev/null 2>&1
+    sleep 1
+    torrentpid=$("$gz" status torrent 2>/dev/null | awk '/^pid:/{print $2}')
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; $gz attach torrent; printf \"BACK-AT-THE-PROMPT\\n\"; sleep 60'"
+    sleep 4
+
+    # It is actually shouting, or the rest of this proves nothing about a flood.
+    if pane | grep -q 'TORRENT-'; then
+        ok "a service that never stops talking fills the screen"
+    else
+        bad "the flood never reached the screen: $(pane | head -2 | tr '\n' '|')"
+    fi
+
+    tmux -L "$tmuxSock" send-keys C-] 'd'
+    # Longer than the other detaches wait. The point is that it gets out at all, and a client
+    # working through a backlog is allowed to take a moment doing it.
+    for _ in $(seq 20); do
+        pane | grep -q 'BACK-AT-THE-PROMPT' && break
+        sleep 0.5
+    done
+    if pane | grep -q 'BACK-AT-THE-PROMPT'; then
+        ok "Ctrl-] d gets you out of it"
+    else
+        bad "the detach never completed under a flood: $(pane | tail -2 | tr '\n' '|')"
+    fi
+
+    # And the daemon is still a daemon afterwards: still answering, with the service still running
+    # and still the same process. A flood that takes the daemon with it would take every other
+    # service too, which is the failure that matters more than the one on screen.
+    if "$gz" ls >/dev/null 2>&1; then
+        ok "and the daemon still answers after all that"
+    else
+        bad "the daemon stopped answering"
+    fi
+    if [ -n "$torrentpid" ] && [ "$("$gz" status torrent 2>/dev/null | awk '/^pid:/{print $2}')" = "$torrentpid" ]; then
+        ok "and the service is still running, still the same process"
+    else
+        bad "the service was $torrentpid and is now $("$gz" status torrent 2>/dev/null | awk '/^pid:/{print $2}')"
+    fi
+
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop torrent >/dev/null 2>&1
+    "$gz" rm torrent >/dev/null 2>&1
+
     # --------------------------------- changing a service in place, and renaming a running one
     #
     # Story A5 and its neighbour. Both were reviewed adversarially at the fabric level and five

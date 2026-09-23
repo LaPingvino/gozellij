@@ -1019,6 +1019,54 @@ func waitForDaemon(path string, within time.Duration) (*daemon.Client, error) {
 		within, lastErr)
 }
 
+// askTheSuccessor gets the version and the service list from the daemon that came back, retrying
+// the whole exchange rather than any one request in it.
+//
+// Answering a ping is not proof of being the successor. The predecessor is still listening while
+// it winds down - it has to be, or the reply to the upgrade request could not reach us - so it can
+// accept a connection, answer a ping, and then exec itself out from under the next request on that
+// same connection. What that looks like is a successful upgrade reporting
+//
+//	listing services after the upgrade: ... write: broken pipe
+//
+// about a connection that had just answered, while the daemon really is the new binary. It showed
+// up about one run in fifteen of the acceptance suite and was diagnosed only because the check was
+// changed to say which half had failed.
+//
+// Waiting longer would have made it rarer, which is the wrong fix for a window: a connection that
+// dies part-way through is not an error to report, it is a reason to dial again, because the
+// successor is there and the next connection reaches it.
+func askTheSuccessor(path string, within time.Duration) (string, ipc.ListReply, error) {
+	deadline := time.Now().Add(within)
+	var lastErr error
+	for {
+		version, list, err := func() (string, ipc.ListReply, error) {
+			back, err := waitForDaemon(path, time.Until(deadline))
+			if err != nil {
+				return "", ipc.ListReply{}, err
+			}
+			defer back.Close()
+			version, err := back.PingVersion()
+			if err != nil {
+				return "", ipc.ListReply{}, err
+			}
+			list, err := back.List()
+			if err != nil {
+				return "", ipc.ListReply{}, err
+			}
+			return version, list, nil
+		}()
+		if err == nil {
+			return version, list, nil
+		}
+		lastErr = err
+		if !time.Now().Before(deadline) {
+			return "", ipc.ListReply{}, lastErr
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func cmdUpgrade(args []string) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	sock := socketFlag(fs)
@@ -1074,14 +1122,8 @@ func cmdUpgrade(args []string) error {
 	// answers, retrying the transient failures in between instead of taking the first of them
 	// as final.
 	time.Sleep(3 * upgradeReplyGrace)
-	back, err := waitForDaemon(path, upgradeWait)
-	if err != nil {
-		return err
-	}
-	defer back.Close()
 
-	newVersion, _ := back.PingVersion()
-	after, err := back.List()
+	newVersion, after, err := askTheSuccessor(path, upgradeWait)
 	if err != nil {
 		return fmt.Errorf("listing services after the upgrade: %w", err)
 	}
