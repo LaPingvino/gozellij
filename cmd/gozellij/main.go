@@ -1205,8 +1205,14 @@ func cmdRename(args []string) error {
 	}
 	defer c.Close()
 	from, to := fs.Arg(0), fs.Arg(1)
-	if err := c.Rename(from, to); err != nil {
+	warning, err := c.Rename(from, to)
+	if err != nil {
 		return err
+	}
+	if warning != "" {
+		// Renamed: exit zero, because it was, and say what did not follow.
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+		return nil
 	}
 	fmt.Printf("renamed %s to %s\n", from, to)
 	return nil

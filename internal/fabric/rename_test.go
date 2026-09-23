@@ -245,3 +245,32 @@ func TestRenameARunningService(t *testing.T) {
 		t.Errorf("stopping told the store %q", lastEvent)
 	}
 }
+
+// A Handle names the service as it was last seen. After a rename and then a remove it used to fall
+// back to the name it was followed under - one that had stopped existing two steps earlier - and
+// that is the name an attached client's last message then used.
+func TestAHandleRemembersTheLastNameAfterARemove(t *testing.T) {
+	f, _, _ := newLoggingFabric(t)
+	if err := f.Add(Service{Name: "before", Command: "true"}, false); err != nil {
+		t.Fatal(err)
+	}
+	h, err := f.Follow("before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename("before", "after"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Name(); got != "after" {
+		t.Fatalf("Name after the rename = %q", got)
+	}
+	if err := f.Remove("after", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Name(); got != "after" {
+		t.Errorf("Name after rename then remove = %q, want after", got)
+	}
+	if _, err := h.Status(); !errors.Is(err, ErrNoSuchService) || !strings.Contains(err.Error(), "after") {
+		t.Errorf("Status of a removed service: %v", err)
+	}
+}

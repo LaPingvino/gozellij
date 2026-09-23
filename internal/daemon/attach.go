@@ -28,6 +28,8 @@ type attachSession struct {
 	r    *ipc.Reader
 	// svc is the service, followed rather than named: it can be renamed while this is open.
 	svc *fabric.Handle
+	// asked is the name the client attached with, which is the name it knows the service by.
+	asked string
 	// readOnly drops this connection's keystrokes and resizes. See ipc.AttachRequest.
 	readOnly bool
 }
@@ -88,7 +90,7 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	if err != nil {
 		return err
 	}
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, readOnly: ar.ReadOnly}
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, asked: req.Service, readOnly: ar.ReadOnly}
 
 	// The attach itself succeeded: say so before the stream starts, so the client can tell
 	// "attached, nothing has happened yet" from "still waiting to be let in".
@@ -167,7 +169,9 @@ func (a *attachSession) watchForExit(sub *fabric.Subscriber, done chan struct{})
 		// A rename is a status change too, and this is where the client hears about it: every
 		// later request it makes about this service - remove, revive, reconnect - has to use the
 		// name it has now.
-		name := a.svc.Name()
+		// The name the client asked for, not the one the service has by the time this runs: a
+		// rename in between would otherwise already be the starting point, and never be told.
+		name := a.asked
 		renamed := func() {
 			if now := a.svc.Name(); now != name {
 				a.notify(ipc.EventRenamed, fmt.Sprintf("%s is now called %s", name, now))
@@ -182,6 +186,9 @@ func (a *attachSession) watchForExit(sub *fabric.Subscriber, done chan struct{})
 			}
 			renamed()
 		}
+		// A rename and then the end can arrive as one wake-up - the watcher channel holds one -
+		// and the loop above then exits without having looked. The client still needs the name.
+		renamed()
 		st, _ := a.svc.Status()
 		a.notify(ipc.EventFinished, exitWords(a.svc.Name(), st))
 		sub.Detach()

@@ -339,10 +339,20 @@ func (c *Client) Set(name string, req ipc.SetRequest) (ipc.SetReply, error) {
 	return out, nil
 }
 
-// Rename gives a service a new name.
-func (c *Client) Rename(from, to string) error {
-	_, err := c.Call(ipc.OpServiceRename, from, ipc.RenameRequest{To: to})
-	return err
+// Rename gives a service a new name. A non-empty warning means it was renamed and something that
+// should have followed it did not; err means it was not renamed.
+func (c *Client) Rename(from, to string) (warning string, err error) {
+	resp, err := c.Call(ipc.OpServiceRename, from, ipc.RenameRequest{To: to})
+	if err != nil {
+		return "", err
+	}
+	var out ipc.RenameReply
+	if len(resp.Payload) > 0 {
+		if derr := resp.Decode(&out); derr != nil {
+			return fmt.Sprintf("renamed, but the reply could not be read: %v", derr), nil
+		}
+	}
+	return out.Warning, nil
 }
 
 // Remove deletes a service and, unless keepLogs, its log. It returns the log files it deleted.

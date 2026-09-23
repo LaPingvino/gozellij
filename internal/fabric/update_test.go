@@ -2,6 +2,7 @@ package fabric
 
 import (
 	"errors"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -62,5 +63,49 @@ func TestUpdateRefusesWhatItCannotSave(t *testing.T) {
 	}
 	if d, _ := reg.Get("v"); d.Command != "true" {
 		t.Errorf("a refused update changed the file: %+v", d)
+	}
+}
+
+// The supervisor restarts a crashed process by itself, and that respawn is a "next start" too. It
+// used the definition the supervisor was built with, so a changed command came back as the old one.
+func TestUpdateReachesTheRespawnAfterACrash(t *testing.T) {
+	f, _ := newTestFabric(t)
+	if err := f.Add(Service{Name: "w", Command: "sleep", Args: []string{"300"}, Restart: RestartAlways}, true); err != nil {
+		t.Fatal(err)
+	}
+	st := waitFabric(t, f, "w", 10*time.Second, "running", func(st Status) bool { return st.State == StateRunning })
+	if _, err := f.Update("w", func(d *Service) { d.Args = []string{"200"} }); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(st.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitFabric(t, f, "w", 20*time.Second, "respawned", func(s Status) bool {
+		return s.State == StateRunning && s.Pid != st.Pid && s.Pid != 0
+	})
+	p, _ := f.Process("w")
+	if p == nil || len(p.Service.Args) != 1 || p.Service.Args[0] != "200" {
+		t.Errorf("the respawned process runs %+v, want sleep 200", p)
+	}
+}
+
+// And the case a restart policy exists for: set to always on a running service, then it crashes.
+func TestARestartPolicySetWhileRunningAppliesToTheCrash(t *testing.T) {
+	f, _ := newTestFabric(t)
+	if err := f.Add(Service{Name: "x", Command: "sleep", Args: []string{"300"}}, true); err != nil {
+		t.Fatal(err)
+	}
+	st := waitFabric(t, f, "x", 10*time.Second, "running", func(st Status) bool { return st.State == StateRunning })
+	if _, err := f.Update("x", func(d *Service) { d.Restart = RestartAlways }); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(st.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	got := waitFabric(t, f, "x", 20*time.Second, "back or gone", func(s Status) bool {
+		return (s.State == StateRunning && s.Pid != st.Pid && s.Pid != 0) || s.Ended
+	})
+	if got.Ended {
+		t.Errorf("restart=always was set and the crash ended it for good: %+v", got)
 	}
 }

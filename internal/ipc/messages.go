@@ -201,6 +201,12 @@ type StatusReply struct {
 	LogBytes int64  `json:"log_bytes,omitempty"`
 }
 
+// RenameReply is the answer to a rename that happened. Warning is set when something that should
+// have followed the name - the log - did not; the rename itself stands.
+type RenameReply struct {
+	Warning string `json:"warning,omitempty"`
+}
+
 // SetRequest is the payload of OpServiceSet. Only what is present changes: a nil field leaves that
 // part of the definition as it is, which is the difference between fixing one flag and having to
 // restate the whole service.

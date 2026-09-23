@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestAnAttachSurvivesItsServiceBeingRenamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := dial(t, sock).Rename("before", "after"); err != nil {
+	if _, err := dial(t, sock).Rename("before", "after"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
 	// And the client is told, because every later request it makes about this service - remove,
@@ -92,5 +93,36 @@ func eventOfKind(t *testing.T, c *Client, kind string, within time.Duration) ipc
 		if json.Unmarshal(payload, &ev) == nil && ev.Kind == kind {
 			return ev
 		}
+	}
+}
+
+// A rename whose log could not follow still happened. It used to come back as an error, and every
+// caller took that to mean it had not: the viewers stayed filed under the dead name, the command
+// exited non-zero, and Ctrl-] , reattached to a name that no longer existed.
+func TestARenameWhoseLogStaysBehindIsStillARename(t *testing.T) {
+	_, _, sock, logDir := newLoggedTestDaemon(t)
+	c := dial(t, sock)
+	if _, err := c.Add("before", ipc.AddRequest{Command: "sh", Args: []string{"-i"}, Start: true}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := attachRaw(t, sock, "before", ipc.AttachRequest{Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	// The log cannot be moved: nothing may be created in its directory.
+	if err := os.Chmod(logDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(logDir, 0o700) })
+
+	warning, err := dial(t, sock).Rename("before", "after")
+	if err != nil {
+		t.Fatalf("the rename happened, and was reported as a failure: %v", err)
+	}
+	if !strings.Contains(warning, "did not follow") {
+		t.Errorf("nothing said the log stayed behind; warning = %q", warning)
+	}
+	if n := viewersOf(t, sock, "after"); n != 1 {
+		t.Errorf("ls counts %d viewers under the new name, want 1", n)
 	}
 }

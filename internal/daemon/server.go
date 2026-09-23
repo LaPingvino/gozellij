@@ -568,8 +568,14 @@ func (s *Server) rename(req ipc.Request) ipc.Response {
 	if err := json.Unmarshal(req.Payload, &rr); err != nil {
 		return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
 	}
+	var warning string
 	if err := s.fab.Rename(req.Service, rr.To); err != nil {
-		return ipc.Err(req.ID, err)
+		var partial *fabric.RenameLogError
+		if !errors.As(err, &partial) {
+			return ipc.Err(req.ID, err)
+		}
+		// Renamed, with a log left behind. Still renamed, so everything below still applies.
+		warning = partial.Error()
 	}
 	// Whoever is attached is still attached - the stream is the same buffer - and is now looking
 	// at the new name.
@@ -580,7 +586,10 @@ func (s *Server) rename(req ipc.Request) ipc.Response {
 		}
 	}
 	s.mu.Unlock()
-	return ipc.OKResponse(req.ID, nil)
+	if warning == "" {
+		return ipc.OKResponse(req.ID, nil)
+	}
+	return ipc.OKResponse(req.ID, ipc.RenameReply{Warning: warning})
 }
 
 // remove deletes a service and, unless asked otherwise, its log.
@@ -654,7 +663,7 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 	if err != nil {
 		return err
 	}
-	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc}
+	sess := &attachSession{srv: s, conn: conn, w: w, r: r, svc: svc, asked: req.Service}
 
 	// A terminal tailing a service is watching it. The column is called VIEWERS and the question
 	// it answers is "is anyone looking at this?" - and someone running `logs -f` in another

@@ -76,8 +76,12 @@ func renameFromKey(socket, service string, input *terminalInput, say func(string
 		return service, nil, fmt.Sprintf("could not rename %s: %v", service, err)
 	}
 	defer c.Close()
-	if err := c.Rename(service, name); err != nil {
+	warning, err := c.Rename(service, name)
+	if err != nil {
 		return service, nil, fmt.Sprintf("could not rename %s: %v", service, err)
+	}
+	if warning != "" {
+		return name, nil, warning
 	}
 	return name, nil, fmt.Sprintf("renamed %s to %s", service, name)
 }

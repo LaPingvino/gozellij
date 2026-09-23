@@ -204,6 +204,18 @@ func (s *Supervisor) Service() Service {
 	return s.svc
 }
 
+// redefine replaces the definition this supervisor spawns from, keeping its name.
+//
+// For `gozellij set`. The supervisor restarts a crashed process by itself, from this copy, and
+// that is the "next start" a restart policy exists for - so a definition changed only on disk was
+// ignored exactly there: a new restart policy did not apply to the crash it was set for.
+func (s *Supervisor) redefine(def Service) {
+	s.mu.Lock()
+	def.Name = s.svc.Name
+	s.svc = def
+	s.mu.Unlock()
+}
+
 // rename changes the name this supervisor answers to, and returns the process it is looking after
 // at that moment, if any, so the caller can move whatever else is filed under the old name.
 //
@@ -422,13 +434,17 @@ func (s *Supervisor) run(ctx context.Context, done chan struct{}) {
 		endedPid := p.Pid()
 		p.Close()
 
+		// The name is read in the same breath as the process is let go. Read later, a rename in
+		// between saw no process to re-file and moved nothing - while this dropped the descriptor
+		// under the new name, leaving the one filed under the old name in systemd's store for good.
 		s.mu.Lock()
 		s.cur = nil
+		endedName := s.svc.Name
 		s.mu.Unlock()
 		// Told before anything else, because this is what stops a descriptor for a process that
 		// no longer exists being kept for the next daemon to adopt.
 		if s.opts.OnEnded != nil {
-			s.opts.OnEnded(s.Service().Name, endedPid)
+			s.opts.OnEnded(endedName, endedPid)
 		}
 
 		// Work out where we are going *before* publishing, so the snapshot a watcher sees is

@@ -319,6 +319,11 @@ func (f *Fabric) Update(name string, change func(*Service)) (Service, error) {
 	if err := f.reg.Put(next); err != nil {
 		return Service{}, fmt.Errorf("updating %s: %w", name, err)
 	}
+	// And the supervisor's copy, which is what it respawns from after a crash. Replacing it is
+	// safe now that its copy is only ever read under its lock.
+	if sup, err := f.supervisor(name); err == nil {
+		sup.redefine(next)
+	}
 	return next, nil
 }
 
@@ -496,10 +501,9 @@ func (f *Fabric) setEnabled(name string, enabled bool) error {
 	if err := f.reg.Put(svc); err != nil {
 		return fmt.Errorf("recording desired state for %s: %w", name, err)
 	}
-	// Deliberately not mirrored onto the supervisor. Its copy of the definition is written once
-	// at construction and read by its loop goroutine forever after; poking a field in it from
-	// here would be a data race, and the registry is the single source of truth for desired
-	// state anyway.
+	// Not mirrored onto the supervisor: nothing it does reads Enabled, which is desired state for
+	// the next load. (Its copy is read under its lock now, so mirroring would be safe - see
+	// Update, which has to.)
 	return nil
 }
 
@@ -640,10 +644,27 @@ func (f *Fabric) Rename(oldName, newName string) error {
 		}
 	}
 	if logErr != nil {
-		return fmt.Errorf("renamed %s to %s, but its log did not follow: %w", oldName, newName, logErr)
+		return &RenameLogError{From: oldName, To: newName, Err: logErr}
 	}
 	return nil
 }
+
+// RenameLogError is a rename that happened, with a log that did not follow it.
+//
+// Its own type because the two outcomes need opposite handling and an error alone could not tell
+// them apart: every caller took any error to mean "not renamed" - the daemon left its viewers under
+// the dead name, the command exited non-zero, and Ctrl-] , reattached to a name that no longer
+// existed and lost the terminal, while the service ran on under its new one.
+type RenameLogError struct {
+	From, To string
+	Err      error
+}
+
+func (e *RenameLogError) Error() string {
+	return fmt.Sprintf("renamed %s to %s, but its log did not follow: %v", e.From, e.To, e.Err)
+}
+
+func (e *RenameLogError) Unwrap() error { return e.Err }
 
 // moveLogs renames a service's log and its rotated generation. Rename has already refused a name
 // with a log of its own; the check here is for a file that appeared since, which is still not
@@ -842,8 +863,12 @@ func (f *Fabric) Watch(name string) (<-chan struct{}, func(), error) {
 // Not the supervisor, which a restart replaces. The watcher set is what a restart carries across
 // and a rename keeps, so that is what identifies the service.
 type Handle struct {
-	f    *Fabric
-	w    *StatusWatchers
+	f *Fabric
+	w *StatusWatchers
+
+	// mu guards name, which is the last name the service was seen under: read from an attach's
+	// pump and its watcher at once, and updated whenever it is looked up.
+	mu   sync.Mutex
 	name string
 }
 
@@ -856,40 +881,48 @@ func (f *Fabric) Follow(name string) (*Handle, error) {
 	return &Handle{f: f, w: sup.Watchers(), name: name}, nil
 }
 
-func (h *Handle) current() (*Supervisor, error) {
+func (h *Handle) current() (*Supervisor, bool) {
 	h.f.mu.Lock()
 	defer h.f.mu.Unlock()
 	for _, s := range h.f.sups {
 		if s.Watchers() == h.w {
-			return s, nil
+			return s, true
 		}
 	}
-	return nil, fmt.Errorf("%w: %s", ErrNoSuchService, h.name)
+	return nil, false
 }
 
-// Name is what the service is called now, or what it was called when it was followed if it has
-// since been removed.
+// gone is the error for a service that is no longer there, named as it was last seen.
+func (h *Handle) gone() error {
+	return fmt.Errorf("%w: %s", ErrNoSuchService, h.Name())
+}
+
+// Name is what the service is called now, or the last name it was seen under if it has since been
+// removed - not the name it was followed under, which after a rename and a remove names a service
+// that stopped existing two steps ago.
 func (h *Handle) Name() string {
-	if s, err := h.current(); err == nil {
-		return s.Service().Name
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s, ok := h.current(); ok {
+		h.name = s.Service().Name
 	}
 	return h.name
 }
 
 // Status is the service's status under whatever it is called now.
 func (h *Handle) Status() (Status, error) {
-	s, err := h.current()
-	if err != nil {
-		return Status{}, err
+	s, ok := h.current()
+	if !ok {
+		return Status{}, h.gone()
 	}
 	return s.Status(), nil
 }
 
 // Process is the service's live process, or nil when there is none.
 func (h *Handle) Process() (*Process, error) {
-	s, err := h.current()
-	if err != nil {
-		return nil, err
+	s, ok := h.current()
+	if !ok {
+		return nil, h.gone()
 	}
 	return s.Current(), nil
 }
