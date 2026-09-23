@@ -28,9 +28,24 @@ import (
 //
 //	GOZELLIJ_PROBE=1 go test ./internal/vt/grid -run Probe -v
 //
-// What is left when this is written: OSC 8 hyperlinks (man), OSC 10 and 11 colour queries (vim),
-// and DCS bodies, which are read to their end and thrown away on purpose. Everything else reports
-// that all of it is implemented.
+// What was left when this was written: OSC 8 hyperlinks (man), OSC 10 and 11 colour queries
+// (vim), and DCS bodies, which are read to their end and thrown away on purpose. All three were
+// then dealt with, and the eleven went quiet - at which point the survey had stopped telling
+// anybody anything, so a second round of programs was added to make it ask something new.
+//
+// It did, and from one program. Of the twelve added, eleven were silent and fish sent four things
+// nothing else here sends:
+//
+//	OSC 133      semantic prompt marks: where a prompt begins, where the command starts, where
+//	             its output ends. Positional, so it belongs to the screen it was sent for - in a
+//	             pane it would tell the outer terminal about rows that are not where it thinks.
+//	OSC 7        the working directory. State, latest wins, and the one a terminal actually uses
+//	             for something a person notices: a new tab opens where the old one was.
+//	CSI ?2031    ask to be told when the colour scheme changes. A request for notifications this
+//	             terminal cannot promise to send.
+//
+// nvim sends DCS +q (XTGETTCAP), which vim does not - so that question is asked in the wild, and
+// goes unanswered here as it does under tmux.
 func TestProbeRealPrograms(t *testing.T) {
 	if os.Getenv("GOZELLIJ_PROBE") == "" {
 		t.Skip("set GOZELLIJ_PROBE=1 to run the survey; it needs real programs and a real pty")
@@ -51,6 +66,24 @@ func TestProbeRealPrograms(t *testing.T) {
 		{"python3", []string{"python3"}, "1+1\nexit()\n"},
 		{"nano", []string{"nano", "/etc/hostname"}, "\x18n"},
 		{"mc", []string{"mc"}, "\x1b0"},
+
+		// A second round, added once the first eleven had all gone quiet. A survey that reports
+		// nothing has stopped surveying, and the way to make it useful again is to ask programs
+		// that are not like the ones already asked - a different editor lineage, a shell that is
+		// not bash, a full-screen program that is not curses, and a multiplexer, which is the
+		// one kind of program whose whole job is to speak this language back at you.
+		{"emacs", []string{"emacs", "-nw", "-Q", "/etc/hostname"}, "\x18\x03"},
+		{"helix", []string{"hx", "/etc/hostname"}, "jji\x1b:q!\n"},
+		{"w3m", []string{"w3m", "/etc/services"}, " q y"},
+		{"weechat", []string{"weechat"}, "/quit\n"},
+		{"whiptail", []string{"whiptail", "--msgbox", "probing", "10", "40"}, "\n"},
+		{"screen", []string{"screen", "-D", "-m", "bash", "-i"}, "ls --color=always\nexit\n"},
+		{"fish", []string{"fish", "-i"}, "ls --color=always\nexit\n"},
+		{"zsh", []string{"zsh", "-i"}, "ls --color=always\nexit\n"},
+		{"gdb", []string{"gdb", "-q"}, "quit\n"},
+		{"sqlite3", []string{"sqlite3"}, "select 1;\n.quit\n"},
+		{"node", []string{"node", "-i"}, "1+1\n.exit\n"},
+		{"nethack", []string{"nethack"}, "\x1b\x1bqy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
