@@ -307,6 +307,14 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			c = back
 		}
 
+		// Whether it was running when we arrived, which decides what its finishing means.
+		//
+		// A service that ends while you are watching it is you typing `exit`, and the attach has
+		// to end so you get your prompt back. A service that was already stopped before you
+		// switched to it is a tab you have landed on, and ending the attach there is how pressing
+		// n used to drop somebody out of gozellij altogether.
+		wasRunningOnArrival := serviceIsRunning(socket, service)
+
 		var outcome attachOutcome
 		if rendered != nil {
 			// A session that owns the screen can show more than one service at a time, which a
@@ -339,8 +347,34 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				return nil
 
 			case outcomeFinished:
-				restore()
-				return nil
+				if wasRunningOnArrival {
+					// It ended under you: `exit` in the shell you were working in. Give the
+					// terminal back, which is the whole of what somebody typing exit is asking
+					// for.
+					restore()
+					return nil
+				}
+				// Stay on it, the way a pane in a rendered split does.
+				//
+				// renderedsession.go says a pane whose service has ended stays on screen with its
+				// last output on purpose, and says what can be done about it. The byte pipe used
+				// to do the opposite: the attach ended, so pressing n onto a tab that happened to
+				// be stopped dropped you back to your shell - and `u`, which this help offers,
+				// could never be reached in the one case it exists for, because by the time you
+				// would press it there was nothing left to press it in.
+				//
+				// So: say what happened, keep the keyboard, and wait. d still leaves, u starts it
+				// again, n and p move on, k removes it. The last output stays on the screen, which
+				// is usually where the reason is.
+				say(service + " is not running: " + input.label + " u starts it, " +
+					input.label + " n/p move on, " + input.label + " d detaches")
+				next, alive := waitForCommandOnADeadService(input)
+				if !alive {
+					restore()
+					return nil
+				}
+				outcome = next
+				continue dispatch
 
 			case outcomeRename:
 				// The session's connection is closed while the name is typed, like the list, so
@@ -664,6 +698,48 @@ func shortAge(d time.Duration) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// serviceIsRunning says whether a service has a process right now, on a fresh connection.
+//
+// Anything that goes wrong answers "yes": the question only decides whether a service finishing
+// should end the attach, and the old behaviour - end it - is the one that does not leave somebody
+// stuck in a screen they did not ask for.
+func serviceIsRunning(socket, name string) bool {
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return true
+	}
+	for _, svc := range list {
+		if svc.Service == name {
+			return svc.Pid != 0
+		}
+	}
+	return true
+}
+
+// waitForCommandOnADeadService holds the keyboard while nothing is attached, and returns the next
+// thing gozellij was asked for.
+//
+// Typing is read and dropped on purpose: there is no process to send it to, and the reader would
+// block on a channel nobody is draining if it were not read at all - which would take the prefix
+// key down with it, leaving a screen that cannot even be detached from.
+//
+// alive is false when the terminal has gone, which is the one way out that is not a command.
+func waitForCommandOnADeadService(input *terminalInput) (outcome attachOutcome, alive bool) {
+	for {
+		select {
+		case want, ok := <-input.cmds:
+			if !ok {
+				return 0, false
+			}
+			return want, true
+		case _, ok := <-input.data:
+			if !ok {
+				return 0, false
+			}
+		}
 	}
 }
 

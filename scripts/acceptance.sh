@@ -2525,9 +2525,17 @@ PROFILE
     # presses. The first version of these checks assumed positions, and when the rename below
     # changed the order every later check failed for a reason that had nothing to do with the key
     # it was testing.
+    #
+    # It waits for the status row to settle before pressing again, and that is not a nicety: a
+    # message takes the whole row for messageLinger seconds, so a version that checked once and
+    # pressed n again could not see [$1] while gozellij was saying something - and cycled straight
+    # past the service it was looking for, every time, whenever a key had produced a message.
     goto() {
         for _ in 1 2 3 4 5 6; do
-            pane | tail -1 | grep -q "\[$1\]" && return 0
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+                pane | tail -1 | grep -q "\[$1\]" && return 0
+                sleep 0.6
+            done
             tmux -L "$tmuxSock" send-keys C-] 'n'
             sleep 1.5
         done
@@ -2595,18 +2603,32 @@ PROFILE
         bad "could not get to doomed to remove it: $(pane | tail -2 | tr '\n' '|')"
     fi
 
-    # u, revive, is NOT checked here, and that is a finding rather than an omission.
+    # u, revive - which needed a fix before it could be checked at all.
     #
-    # Arriving at a stopped service ends the attach - the daemon sends EventFinished the moment a
-    # client attaches to something already stopped, and the client's outcomeFinished returns from
-    # the whole loop. So pressing n onto a stopped tab drops you back to your shell, and u, which
-    # the help offers in both modes, cannot be reached in the case it exists for: by the time you
-    # would press it the attach is over. Measured in both modes; the rendered one ends too when
-    # the service it is showing is the only one.
+    # Arriving at a stopped service used to end the attach: the daemon sends EventFinished the
+    # moment a client attaches to something already stopped, and outcomeFinished returned from the
+    # whole loop. Pressing n onto a stopped tab dropped you back to your shell, and u - offered in
+    # the help of both modes - could not be reached in the one case it exists for, because by then
+    # the attach was over.
     #
-    # Left as it is rather than changed from inside a coverage pass: staying on a stopped service,
-    # skipping stopped ones while cycling, and moving to a running neighbour are three different
-    # answers with different costs, and picking one quietly here would be the wrong way to decide.
+    # Now it stays, which is what renderedsession.go already did on purpose for a pane in a split.
+    # The two cases are told apart by whether the service was running when the client arrived: one
+    # that ends *under* you is `exit` in the shell you were working in and still gives the terminal
+    # back, and one that was already stopped is a tab you landed on.
+    "$gz" stop second >/dev/null 2>&1
+    sleep 1
+    if goto second; then
+        ok "Ctrl-] n onto a stopped service keeps you in gozellij"
+        tmux -L "$tmuxSock" send-keys C-] 'u'
+        sleep 4
+        if "$gz" status second 2>/dev/null | grep -q '^state: *running'; then
+            ok "and Ctrl-] u starts it again without leaving the attach"
+        else
+            bad "after reviving, second is: $("$gz" status second 2>/dev/null | grep '^state:')"
+        fi
+    else
+        bad "landing on a stopped service lost the attach: $(pane | tail -2 | tr '\n' '|')"
+    fi
 
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" stop renamed-inside second >/dev/null 2>&1
