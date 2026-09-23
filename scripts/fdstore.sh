@@ -12,6 +12,13 @@
 # touches nothing you are using and leaves no unit file behind.
 set -u
 
+# These scripts test gozellij from the outside, and may be run from inside it - from a gozellij
+# shell, which is where anybody using it day to day will run them. Every pane they start would
+# inherit GOZELLIJ from that shell, and `gozellij attach` now refuses to nest, so every attach in
+# the suite would be refused as nesting. The same goes for the multiplexers the login checks
+# already clear by hand.
+unset GOZELLIJ ZELLIJ ZELLIJ_SESSION_NAME TMUX STY
+
 repo=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 unit="gozellij-fdstore-$$"

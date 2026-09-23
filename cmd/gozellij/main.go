@@ -192,6 +192,36 @@ func captureShellEnv() []string {
 // that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
 // you end up with a vim that draws garbage. Keep a shell you have customised under another name and
 // attach to it by name.
+// refuseNesting stops an attach from inside a gozellij service, which is almost never what
+// somebody meant and is never what they meant when the target is the service they are in.
+//
+// Attaching a service to itself draws its own output back into itself: the client shows the pane
+// it is running in, which includes the client, which includes... Found in use as a pane that
+// "started double rendering, shaking" after `gozellij attach shell`, typed inside shell to revive
+// it. That is refused outright, because nothing good comes of it.
+//
+// Attaching to a *different* service from inside one is nesting, and refused by default the way
+// tmux refuses it, for the same reason tmux does: both layers use the same prefix key, the outer
+// one takes it, and the inner one can never be told anything. The thing that was wanted is nearly
+// always switching in place, so that is what the message offers. -nest does it anyway.
+func refuseNesting(target string, nest bool) error {
+	inside := os.Getenv("GOZELLIJ")
+	if inside == "" {
+		return nil
+	}
+	label := status.PrefixLabel(status.Load().Prefix)
+	if inside == target {
+		return fmt.Errorf("you are already inside %s - attaching it to itself would draw its own "+
+			"output back into itself.\nIf this pane has frozen, %s u reconnects it", target, label)
+	}
+	if nest {
+		return nil
+	}
+	return fmt.Errorf("you are inside %s already, and a gozellij inside gozellij cannot be reached: "+
+		"the outer one takes %s.\n%s l picks %s from here, in place. To nest anyway: gozellij attach -nest %s",
+		inside, label, label, target, target)
+}
+
 // looksLikeAServiceName reports whether an unknown first argument is plausibly one, so that the
 // error can guess. Not a flag, not a path, not empty: those are somebody mistyping a command.
 func looksLikeAServiceName(s string) bool {
@@ -205,8 +235,14 @@ func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sock := socketFlag(fs)
 	name := fs.String("name", DefaultShellService, "the service to land in")
+	nest := fs.Bool("nest", false, "land even from inside another gozellij service")
 	render := renderFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Bare `gozellij`, typed inside a gozellij shell, is the same nesting as `attach` - and the
+	// same feedback loop when the shell it would land in is this one.
+	if err := refuseNesting(*name, *nest); err != nil {
 		return err
 	}
 
@@ -593,12 +629,16 @@ func cmdAttach(args []string) error {
 	sock := socketFlag(fs)
 	noReplay := fs.Bool("no-replay", false, "do not replay the recent output before the live stream")
 	readOnly := fs.Bool("r", false, "watch without touching: your keystrokes and your window size do not reach the service")
+	nest := fs.Bool("nest", false, "attach even from inside another gozellij service (the outer one keeps the prefix key)")
 	render := renderFlags(fs)
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return errors.New("attach needs exactly one service name")
+	}
+	if err := refuseNesting(fs.Arg(0), *nest); err != nil {
+		return err
 	}
 	path := *sock
 	if path == "" {
