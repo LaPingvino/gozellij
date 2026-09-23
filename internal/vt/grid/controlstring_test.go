@@ -25,7 +25,7 @@ func TestControlStringsReportOnlyWhatWentUnanswered(t *testing.T) {
 		{"a long body that is not sixel", "\x1bP1234567890123456789zz\x1b\\", ""},
 		{"a start of string", "\x1bXwhatever\x1b\\", ""},
 		{"DECRQSS, which is answered rather than reported", "\x1bP$qm\x1b\\", ""},
-		{"XTGETTCAP, likewise", "\x1bP+q544e\x1b\\", ""},
+		{"XTGETTCAP, which nothing here answers", "\x1bP+q544e\x1b\\", "DCS +q request"},
 		{"a DCS that states rather than asks", "\x1bP$rm\x1b\\", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -69,28 +69,29 @@ func TestControlStringSplitAcrossWrites(t *testing.T) {
 	}
 }
 
-// A query gets an answer, not silence. vim asks on startup and waits out a timeout for a reply
-// that never comes, which is a pause on every attach and nothing to show for it. "0" is the
-// standard "I do not have that", and it is true: none of these are implemented.
-func TestQueriesAreAnswered(t *testing.T) {
+// A DECRQSS query gets an answer, not silence, and the answer is the one tmux gives.
+//
+// Measured rather than remembered, which is the whole point of having an oracle: a probe under
+// tmux on a private socket sent each of these and recorded what came back. tmux answers
+// "\x1bP0$r\x1b\\" to every setting it is asked about, valid ones included, and answers
+// XTGETTCAP ("+q") with nothing at all - so that one is reported instead of being answered in a
+// shape nothing was observed to use. The first version of this test pinned formats written from
+// memory, which is how a guess becomes a specification.
+func TestDECRQSSIsAnsweredTheWayTmuxAnswersIt(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		in   string
-		want string
 	}{
-		// DECRQSS names no capability, so the answer does not have to either.
-		{"the current SGR", "\x1bP$qm\x1b\\", "\x1bP0$r\x1b\\"},
-		{"the scrolling region", "\x1bP$qr\x1b\\", "\x1bP0$r\x1b\\"},
-		// XTGETTCAP's answer has to say which capability it is about, or it answers nothing.
-		// 544e is "TN", the terminal name, which is what a program asks for most often.
-		{"the terminal name", "\x1bP+q544e\x1b\\", "\x1bP0+r544e\x1b\\"},
-		{"several at once", "\x1bP+q544e;526742\x1b\\", "\x1bP0+r544e;526742\x1b\\"},
+		{"the current SGR", "\x1bP$qm\x1b\\"},
+		{"the scrolling region", "\x1bP$qr\x1b\\"},
+		{"a setting that is not one", "\x1bP$qzz\x1b\\"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			term := New(20, 4)
 			term.Write([]byte(c.in))
-			if got := string(term.TakeReplies()); got != c.want {
-				t.Fatalf("answered %q, want %q", got, c.want)
+			const want = "\x1bP0$r\x1b\\"
+			if got := string(term.TakeReplies()); got != want {
+				t.Fatalf("answered %q, want %q", got, want)
 			}
 		})
 	}
@@ -99,7 +100,7 @@ func TestQueriesAreAnswered(t *testing.T) {
 // And nothing else provokes one. A terminal that replies to a control string it was meant to
 // swallow writes bytes into the program's input that the program never asked for, which is worse
 // than not answering: vim's probe would read them as typing.
-func TestOnlyQueriesAreAnswered(t *testing.T) {
+func TestOnlyDECRQSSIsAnswered(t *testing.T) {
 	for _, in := range []string{
 		"\x1bPzz\x1b\\",
 		"\x1bP\x1b\\",
@@ -107,6 +108,9 @@ func TestOnlyQueriesAreAnswered(t *testing.T) {
 		"\x1b_Ga=T,f=100;AAAA\x1b\\",
 		"\x1b^anything\x1b\\",
 		"\x1bXwhatever\x1b\\",
+		// XTGETTCAP: reported, never answered.
+		"\x1bP+q544e\x1b\\",
+		"\x1bP+q544e;7a7a\x1b\\",
 		// $ and + without the q: neither is a query.
 		"\x1bP$rm\x1b\\",
 		"\x1bP+pm\x1b\\",

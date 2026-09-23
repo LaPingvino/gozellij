@@ -21,9 +21,9 @@ type parser struct {
 	// string rather than being part of it.
 	strEsc bool
 	// strIntro is the character that opened the current control string - P, X, ^ or _ - and
-	// strHead the start of its body. Kept because the decision can only be made once the string
-	// is over. Two bytes would classify it; more are kept because XTGETTCAP's answer has to name
-	// the capabilities that were asked about, and they are the body.
+	// strHead the start of its body, which is all it takes to tell one kind from another. Kept
+	// because the decision can only be made once the string is over. Sixel needs more than two
+	// bytes: its introducer is a run of numeric parameters and only then the letter q.
 	strIntro byte
 	strHead  []byte
 	params   []byte
@@ -787,20 +787,20 @@ func (p *parser) str(t *Term, c byte) {
 	}
 }
 
-// strHeadMax is how much of a control string's body is kept. Enough to name the capabilities in
-// an XTGETTCAP query, which is the longest body anything here has to read; a sixel body is an
-// image and is classified from its first few bytes and then thrown away.
-const strHeadMax = 256
+// strHeadMax is how much of a control string's body is kept. Enough for sixel's parameters, which
+// are the longest introducer here; nothing needs the body itself, and a sixel body is an image.
+const strHeadMax = 16
 
 // finishStr answers a control string that asked something, and reports one that would have drawn.
 //
 // Three outcomes, and which one a body gets is decided by what the program loses:
 //
-//   - it asked something this terminal does not have. DECRQSS ("$q", what is the current setting
-//     of ...) and XTGETTCAP ("+q", what does your terminfo say about ...), both DCS. Answered,
-//     with the standard "I do not have that" reply rather than a note, because that is what a
-//     terminal without the capability sends and it is the truth. Silence is worse than a no: vim
-//     asks on startup and waits out a timeout for an answer that never comes.
+//   - it asked what this terminal's current settings are: DECRQSS ("$q"). Answered with "not
+//     reported", because that is what tmux answers - measured, to every setting it was asked
+//     about, valid ones included - and silence is worse than a no: a program waits out a timeout
+//     for a reply that never comes.
+//   - it asked what this terminal can do: XTGETTCAP ("+q"). Not answered, because nothing
+//     measured here answers it and the shape of a refusal was guesswork. Reported instead.
 //   - it was going to draw. Sixel (DCS, optional numeric parameters then "q") and kitty graphics
 //     (APC "G") put an image on the screen, and dropping one leaves a hole with nothing to
 //     explain it - which is the case the report exists for.
@@ -829,10 +829,12 @@ func (p *parser) finishStr(t *Term) {
 			t.reply("\x1bP0$r\x1b\\")
 			return
 		case '+':
-			// XTGETTCAP. The answer names what was asked about, so it is echoed back: a reply
-			// that does not say which capability it is about answers nothing. "0" is "I do not
-			// have it", which is true for all of them.
-			t.reply("\x1bP0+r%s\x1b\\", string(head[2:]))
+			// XTGETTCAP, which is not answered, because nothing measured here answers it and
+			// the format of a refusal was guesswork - whether it echoes the capability names
+			// back or is bare differs between implementations, and an answer in the wrong shape
+			// is worse than none. Reported instead: the program asked what this terminal can do
+			// and will do without whatever it was after.
+			t.noteUnknown("DCS +q request")
 			return
 		}
 	}
