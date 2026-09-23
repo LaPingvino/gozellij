@@ -1127,6 +1127,57 @@ else
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm pair >/dev/null 2>&1
 
+    # ------------------------------------------------ logs are rotated, and only one is kept
+    #
+    # "appended as the service runs and rotated at 16 MiB with one generation kept" has been in the
+    # document for a long time with nothing checking it. A log that never rotates fills a VPS disk
+    # quietly; one that rotates without limit does the same thing more slowly. Both failures look
+    # like nothing at all until the disk is full, which is the argument for checking it rather than
+    # believing it.
+    #
+    # Sixteen mebibytes through a pty takes about eight seconds, measured, so this is affordable.
+    only
+    # `yes` rather than a shell loop: a printf per line spends its time in the shell rather than in
+    # the pipe, and on a busy machine it did not reach the limit inside the wait - which reads as
+    # "rotation is broken" when what is broken is the test's idea of how fast a shell is.
+    "$gz" add noisy -start -- sh -c 'yes "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" | head -n 250000; sleep 300' >/dev/null 2>&1
+    for _ in $(seq 240); do
+        [ -f "$state/logs/noisy.log.1" ] && break
+        sleep 0.5
+    done
+
+    if [ -f "$state/logs/noisy.log.1" ]; then
+        ok "a log that grows past its limit is rotated"
+    else
+        bad "no rotated log after $(stat -c%s "$state/logs/noisy.log" 2>/dev/null) bytes"
+    fi
+
+    # The rotated one is the full-sized one and the live one is fresh, which is what says the
+    # rotation happened at the limit rather than at some arbitrary moment.
+    rotated=$(stat -c%s "$state/logs/noisy.log.1" 2>/dev/null || echo 0)
+    if [ "$rotated" -gt 16000000 ] && [ "$rotated" -lt 17500000 ]; then
+        ok "it rotated at about the size it promises (${rotated} bytes)"
+    else
+        bad "the rotated log is $rotated bytes, nowhere near the 16 MiB limit"
+    fi
+
+    # One generation. A .log.2 would mean it keeps everything, which fills the disk slowly instead
+    # of quickly and is the failure nobody notices until it matters.
+    if [ ! -f "$state/logs/noisy.log.2" ]; then
+        ok "and only one generation is kept"
+    else
+        bad "a second generation exists, so nothing is ever thrown away"
+    fi
+
+    if "$gz" logs noisy 2>/dev/null | tail -1 | grep -q 'x'; then
+        ok "and the log can still be read after rotating"
+    else
+        bad "logs returned nothing after the rotation"
+    fi
+
+    "$gz" stop noisy >/dev/null 2>&1
+    "$gz" rm noisy >/dev/null 2>&1
+
     # ------------------------------------------- the status line in the title bar
     #
     # `where=title` is what this document recommends to anybody bothered by a full-screen program
