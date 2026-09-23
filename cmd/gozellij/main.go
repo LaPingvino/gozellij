@@ -427,6 +427,14 @@ func cmdList(args []string) error {
 		w.Flush()
 	}
 
+	// The one moment somebody reliably looks, after a package upgrade put a new client on disk
+	// and left the old daemon running. doctor says it too, but nobody runs doctor after pacman.
+	if running, verr := c.PingVersion(); verr == nil {
+		if note := versionSkew(Version, running); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+	}
+
 	// Problems travel with the list rather than replacing it.
 	for _, p := range list.Problems {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", p)
@@ -1075,6 +1083,40 @@ func displayVersion(v string) string {
 		return "(unknown)"
 	}
 	return v
+}
+
+// versionSkew says, in one line, that the daemon is not the version of this client - or nothing,
+// when they match or when either is a development build, whose version string says nothing about
+// its contents. Package builds are pacman's 0.r<commits>.<hash>, so which one is older can be told
+// from the commit count rather than guessed.
+func versionSkew(client, daemon string) string {
+	if client == daemon || client == "" || daemon == "" || client == "dev" || daemon == "dev" {
+		return ""
+	}
+	how := "is " + daemon + ", not " + client
+	if c, cok := commitCount(client); cok {
+		if d, dok := commitCount(daemon); dok {
+			switch {
+			case d < c:
+				how = "is older (" + daemon + ") than this client (" + client + ")"
+			case d > c:
+				how = "is newer (" + daemon + ") than this client (" + client + ")"
+			}
+		}
+	}
+	return "note: the running daemon " + how + ". gozellij upgrade replaces it in place; every service keeps its pid."
+}
+
+// commitCount reads the r<N> out of a pacman VCS version such as 0.r175.14ae127.
+func commitCount(v string) (int, bool) {
+	for _, part := range strings.Split(v, ".") {
+		if n, ok := strings.CutPrefix(part, "r"); ok {
+			if i, err := strconv.Atoi(n); err == nil {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // cmdSet changes part of a service's definition in place: the flags given, and the command if one

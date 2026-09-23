@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/LaPingvino/gozellij/internal/status"
@@ -20,6 +21,32 @@ func TestOtherPrefixIsADifferentKeyThatParses(t *testing.T) {
 		if got == current {
 			t.Errorf("with %s in force the usage suggests prefix=%s - the same key",
 				status.PrefixLabel(current), s)
+		}
+	}
+}
+
+// After pacman puts a new client on disk the old daemon keeps running, and ls is where that is
+// noticed. Development builds all say "dev" and prove nothing either way, so they say nothing.
+func TestVersionSkewIsSaidAndOnlyWhenItIsReal(t *testing.T) {
+	cases := []struct{ client, daemon, want string }{
+		{"0.r180.aaaaaaa", "0.r175.14ae127", "is older (0.r175.14ae127)"},
+		{"0.r175.14ae127", "0.r180.aaaaaaa", "is newer"},
+		{"1.2", "1.3", "is 1.3, not 1.2"},
+		{"0.r175.14ae127", "0.r175.14ae127", ""},
+		{"dev", "0.r175.14ae127", ""},
+		{"0.r175.14ae127", "dev", ""},
+		{"0.r175.14ae127", "", ""},
+	}
+	for _, c := range cases {
+		got := versionSkew(c.client, c.daemon)
+		if c.want == "" {
+			if got != "" {
+				t.Errorf("client %s, daemon %s: said %q, want nothing", c.client, c.daemon, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, c.want) || !strings.Contains(got, "gozellij upgrade") {
+			t.Errorf("client %s, daemon %s: said %q, want %q and the way out", c.client, c.daemon, got, c.want)
 		}
 	}
 }

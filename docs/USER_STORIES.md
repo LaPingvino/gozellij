@@ -349,6 +349,11 @@ Gaps:
   `packaging/README.md` says "Do **not** use restart" in bold, which is a footgun with a label
   on it, not a fixed footgun.
 
+**Now (2026-09-23).** The first gap is closed: `gozellij ls` says when the running daemon is not
+this client's version, older or newer (read from pacman's `r<commits>`), with the command that
+fixes it, and says nothing when they match or either is a `dev` build. The second stands; the
+package's post_upgrade message says `reload`, not `restart`.
+
 **Acceptance.**
 ```sh
 # build a second binary with a different -X main.Version into the install path, then:
