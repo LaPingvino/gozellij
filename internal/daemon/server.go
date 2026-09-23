@@ -678,8 +678,11 @@ func (s *Server) followLogs(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc
 		return err
 	}
 
+	// Cut by -n or by the ring wrapping, either way at an arbitrary byte; start at a line.
 	if lr.MaxBytes > 0 && len(snapshot) > lr.MaxBytes {
-		snapshot = snapshot[len(snapshot)-lr.MaxBytes:]
+		snapshot = fabric.ReplayStart(snapshot[len(snapshot)-lr.MaxBytes:])
+	} else if sub.From() > int64(len(snapshot)) {
+		snapshot = fabric.ReplayStart(snapshot)
 	}
 	if len(snapshot) > 0 {
 		if err := sess.writeData(snapshot); err != nil {

@@ -1,6 +1,7 @@
 package fabric
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 )
@@ -415,4 +416,26 @@ func (s *Subscriber) Detach() {
 	}
 	delete(o.subs, s.id)
 	s.closeCh()
+}
+
+// ReplayStart trims a replay that begins at an arbitrary byte to begin at a line instead.
+//
+// Once the ring has wrapped, the oldest byte kept is wherever the dropping happened to stop: the
+// middle of an escape sequence, so that "[38;5;196m" arrives as text, or the middle of a UTF-8
+// character. Replayed into a terminal, that is garbage at the top of its scrollback on every attach.
+// Starting after the first newline costs at most the partial line and is never inside a sequence a
+// terminal cares about.
+//
+// Only for bytes on their way to a terminal. The snapshot itself must keep every byte, because the
+// log writer's resume depends on its offsets.
+func ReplayStart(b []byte) []byte {
+	const look = 64 << 10 // a line longer than this is not a line, and nothing is gained by looking on
+	window := b
+	if len(window) > look {
+		window = window[:look]
+	}
+	if i := bytes.IndexByte(window, '\n'); i >= 0 {
+		return b[i+1:]
+	}
+	return b
 }

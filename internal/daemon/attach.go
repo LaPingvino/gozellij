@@ -98,6 +98,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 		return err
 	}
 
+	// A ring that has wrapped starts wherever the dropping stopped, which can be the middle of an
+	// escape sequence. The subscription's offset says whether it has: more written than is kept.
+	if sub.From() > int64(len(snapshot)) {
+		snapshot = fabric.ReplayStart(snapshot)
+	}
 	if ar.Replay && len(snapshot) > 0 {
 		if err := sess.writeData(snapshot); err != nil {
 			return err
