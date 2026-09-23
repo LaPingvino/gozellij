@@ -437,6 +437,31 @@ the one you get without asking.
   to your own prompt in 0.3s with status 0, and `GOZELLIJ=shell` is set in the environment.
 - **Survives a reboot**, for services marked enabled — `Enabled` is the desired state on disk and
   `Load` starts them. **Verified** across a simulated restart, not yet across a real reboot.
+- **You can always get out, however loud it is.** A service that never stops talking fills the
+  screen and the detach key still works — which is the point, because the shouting is exactly when
+  you want to leave. **Verified:** `yes` into an attached terminal, `Ctrl-] d` out of it, the
+  daemon still answering afterwards and the service still the same process.
+- **A connection that drops leaves nothing behind.** The usual way a client ends is the ssh dying
+  or the laptop closing, not `Ctrl-] d`. **Verified** with `kill -9` on the client: the viewer
+  stops being counted, the service it was watching is untouched, and attaching again shows it
+  still running. That the count comes back down is what makes "no viewers" mean "nothing is
+  attached", which is the only signal anything else has.
+- **A broken environment is reported, not suffered.** A log directory that cannot be written — a
+  full disk, a tightened mode, a filesystem gone read-only — does not take your shells with it.
+  **Verified:** the service still starts, `status` says why the log is failing, `logs` still shows
+  the output while saying plainly that the file is not keeping up, `doctor` names the service, and
+  a service that was already logging is unaffected.
+- **The prefix you configured is the prefix you get.** `prefix=C-b` in the status config means
+  `C-b` answers, `Ctrl-]` stops being special and reaches the service, and the help names the key
+  you actually press. **Verified** end to end against `cat`, which has no keymap of its own —
+  checked at a shell first, where readline's own `Ctrl-]` binding made it look like gozellij was
+  eating the key.
+- **The package replaces the other multiplexer.** **Verified** from the recipe with
+  `makepkg --printsrcinfo`: it declares `replaces` and `conflicts` against `gezellij-git`, every
+  file its `package()` step installs is in the repository, and the systemd user unit it generates
+  starts `/usr/bin/gozellijd` rather than whatever build directory the packager had. Getting
+  `replaces` wrong does not fail loudly — it leaves both installed and two login blocks fighting
+  over the terminal.
 
 One accidental advantage over gezellij: because the attach is a byte pipe rather than a grid, your
 *own terminal's* scrollback, search and copy/paste all work normally. A multiplexer with its own
