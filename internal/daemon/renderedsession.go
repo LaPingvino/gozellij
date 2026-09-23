@@ -72,7 +72,12 @@ func (p *livePane) Title() string {
 
 // paneEvent is something a pane's connection had to say.
 type paneEvent struct {
-	pane     *livePane
+	pane *livePane
+	// from is the connection that produced this. A pane outlives its connections - a swap or a
+	// reconnect gives it a new one - and a message from a connection it has moved on from is
+	// stale by definition. Compared rather than trusted, because acting on a stale `gone` is what
+	// started a second reader on a live connection and desynchronised the frame stream.
+	from     *Client
 	data     []byte
 	finished bool
 	// gone means this pane's connection ended. Distinct from finished, which is the service
@@ -140,7 +145,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 		resizePanes(panes)
 	}
 	for _, p := range panes {
-		go readFrames(p, events)
+		go readFrames(p, p.client, events)
 	}
 
 	defer func() {
@@ -267,7 +272,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				how = want == outcomeSplitRows
 				layoutPanes(panes, screen, how)
 				resizePanes(panes)
-				go readFrames(p, events)
+				go readFrames(p, p.client, events)
 				paint()
 
 			case outcomeScrollBack, outcomeScrollForward, outcomeScrollLive:
@@ -307,7 +312,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				} else {
 					// The old connection's reader ended with the connection; the new one needs
 					// its own. Without this the pane drew its replay and then never moved again.
-					go readFrames(panes[focus], events)
+					go readFrames(panes[focus], panes[focus].client, events)
 				}
 				paint()
 
@@ -502,6 +507,11 @@ func openPane(socket, service string, screen *renderedScreen, count int, readOnl
 //
 // Drawing is the caller's, once, after a whole batch: see the comment where these are gathered.
 func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string), colour func(int) (string, bool)) {
+	if ev.from != nil && ev.from != ev.pane.client {
+		// From a connection this pane no longer has. Its reader is on its way out and has
+		// nothing left to say that is true of this pane.
+		return
+	}
 	if ev.message != "" {
 		note(ev.message)
 	}
@@ -575,7 +585,7 @@ func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(
 			// silently is the same loss with nothing to explain it.
 			note(fmt.Sprintf("reconnected to %s after the daemon restarted; anything printed "+
 				"meanwhile is in `gozellij logs %s`", ev.pane.service, ev.pane.service))
-			go readFrames(ev.pane, events)
+			go readFrames(ev.pane, ev.pane.client, events)
 		}
 	}
 }
@@ -659,13 +669,33 @@ func nextUnshown(socket, from string, panes []*livePane) (string, error) {
 }
 
 // readFrames turns one connection into events.
-func readFrames(p *livePane, events chan<- paneEvent) {
+// readFrames owns one connection for its whole life.
+//
+// The client is a parameter and p.client is never read here, which is the whole point. This used
+// to call p.client.Reader() on every pass, while the session goroutine reassigned p.client in
+// swapPane and reopenPane - a data race on the pointer, and worse than that, the mechanism of a
+// crash seen in production:
+//
+//   - Ctrl-] n swaps a pane to another service: the old connection is closed and a new reader is
+//     started on the new one.
+//   - The old reader wakes from its blocked read with an error and reports `gone`.
+//   - The session sees a pane whose connection ended, reconnects it, and starts *another* reader.
+//   - Two goroutines are now calling ReadFrame on one Reader, which the ipc package says in as
+//     many words is not safe. Their header and body reads interleave, so one of them reads four
+//     bytes of somebody's terminal output as a length: "frame exceeds the maximum size: peer
+//     announced 218959215 bytes", which is 0x0D0D0D6F - three carriage returns and an 'o'.
+//
+// A mutex would not have helped: nothing here was unsynchronised access to one thing, it was two
+// owners of one thing. So the connection travels with the goroutine that reads it, and with every
+// message it sends, and the session ignores anything from a connection that pane has moved on
+// from. Nothing is shared, so there is nothing to lock.
+func readFrames(p *livePane, c *Client, events chan<- paneEvent) {
 	for {
-		kind, payload, err := p.client.Reader().ReadFrame()
+		kind, payload, err := c.Reader().ReadFrame()
 		if err != nil {
 			// The connection ended. Whether that is the daemon being replaced or something worse
 			// is not knowable from here, so it is reported as what it is and the session decides.
-			events <- paneEvent{pane: p, gone: true, err: err}
+			events <- paneEvent{pane: p, from: c, gone: true, err: err}
 			return
 		}
 		switch kind {
@@ -674,16 +704,16 @@ func readFrames(p *livePane, events chan<- paneEvent) {
 			// written from a slice that is about to hold somebody else's output.
 			b := make([]byte, len(payload))
 			copy(b, payload)
-			events <- paneEvent{pane: p, data: b}
+			events <- paneEvent{pane: p, from: c, data: b}
 		case ipc.KindEvent:
 			var ev ipc.Event
 			if jsonUnmarshal(payload, &ev) == nil {
-				events <- paneEvent{pane: p, finished: ev.Kind == ipc.EventFinished, message: ev.Message}
+				events <- paneEvent{pane: p, from: c, finished: ev.Kind == ipc.EventFinished, message: ev.Message}
 			}
 		case ipc.KindResponse:
 			var r ipc.Response
 			if jsonUnmarshal(payload, &r) == nil && !r.OK {
-				events <- paneEvent{pane: p, message: r.Error}
+				events <- paneEvent{pane: p, from: c, message: r.Error}
 			}
 		}
 	}
