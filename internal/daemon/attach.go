@@ -183,8 +183,11 @@ func (a *attachSession) watchForExit(sub *fabric.Subscriber, done chan struct{})
 				name = now
 			}
 		}
-		// Check before waiting: attaching to a service that has already finished must not wait
-		// for a change that has already happened.
+		// Check before waiting, for both: the client was told it is attached before this watch
+		// existed, so a rename or an end in that gap sent its notification to nobody. Waiting for
+		// the next change then waited for ever - the test for renaming while attached lost its
+		// event about one run in fifteen under -race.
+		renamed()
 		for !finished() {
 			if _, open := <-changed; !open {
 				return
