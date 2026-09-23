@@ -489,6 +489,60 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ------------------------------------------- the restart policy you asked for is the one you get
+#
+# The policies themselves are well covered by unit tests - no, on-failure and always, the backoff,
+# the flapping history, nine tests between them. What none of those can see is the wiring: the
+# flag parsed by the CLI, written to the registry, read back and honoured by a supervisor in
+# another process. A value that is parsed correctly and then dropped on the way would pass every
+# one of them, which is exactly how the configured prefix was broken for everybody who set one.
+only
+"$gz" add comesback -restart always -start -- sh -c 'sleep 1; exit 0' >/dev/null 2>&1
+"$gz" add staysdead -restart no -start -- sh -c 'sleep 1; exit 0' >/dev/null 2>&1
+"$gz" add onlyfails -restart on-failure -start -- sh -c 'sleep 1; exit 0' >/dev/null 2>&1
+
+# Long enough for a couple of one-second runs and the backoff between them.
+for _ in $(seq 24); do
+    [ "$("$gz" status comesback 2>/dev/null | awk '/^starts:/{print $2}')" -gt 1 ] 2>/dev/null && break
+    sleep 0.5
+done
+
+starts=$("$gz" status comesback 2>/dev/null | awk '/^starts:/{print $2}')
+if [ "${starts:-0}" -gt 1 ]; then
+    ok "-restart always brings a service back after it exits (started $starts times)"
+else
+    bad "a service set to always restart started $starts time(s)"
+fi
+
+if [ "$("$gz" status staysdead 2>/dev/null | awk '/^starts:/{print $2}')" = "1" ]; then
+    ok "and -restart no leaves it where it fell"
+else
+    bad "a service set not to restart started $("$gz" status staysdead 2>/dev/null | awk '/^starts:/{print $2}') times"
+fi
+
+# on-failure and a clean exit: nothing failed, so nothing is restarted. The distinction is the
+# whole point of the policy having three values rather than two.
+if [ "$("$gz" status onlyfails 2>/dev/null | awk '/^starts:/{print $2}')" = "1" ]; then
+    ok "and -restart on-failure lets a clean exit be the end of it"
+else
+    bad "on-failure restarted a service that exited 0: started $("$gz" status onlyfails 2>/dev/null | awk '/^starts:/{print $2}') times"
+fi
+
+# And the same policy, with a failure this time, does come back.
+"$gz" add failsalot -restart on-failure -start -- sh -c 'sleep 1; exit 3' >/dev/null 2>&1
+for _ in $(seq 24); do
+    [ "$("$gz" status failsalot 2>/dev/null | awk '/^starts:/{print $2}')" -gt 1 ] 2>/dev/null && break
+    sleep 0.5
+done
+if [ "$("$gz" status failsalot 2>/dev/null | awk '/^starts:/{print $2}')" -gt 1 ] 2>/dev/null; then
+    ok "and on-failure does bring one back when it actually fails"
+else
+    bad "on-failure did not restart a service that exited 3: started $("$gz" status failsalot 2>/dev/null | awk '/^starts:/{print $2}') time(s)"
+fi
+
+"$gz" stop comesback staysdead onlyfails failsalot >/dev/null 2>&1
+"$gz" rm comesback staysdead onlyfails failsalot >/dev/null 2>&1
+
 # ------------------------------------------------- restart, and what it must not throw away
 #
 # A core lifecycle command with nothing driving it. `restart` is listed in the document among the
