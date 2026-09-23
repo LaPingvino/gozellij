@@ -2495,6 +2495,73 @@ PROFILE
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" rm quiet edity >/dev/null 2>&1
 
+    # ------------------------------------- a split pane moved onto a stopped service stays open
+    #
+    # The half of the stopped-tab fix that the shared loop could not reach, done in
+    # renderedsession.go by the other session working this tree (33bd43f), checked here because
+    # this file is mine. A pane moved onto an already-stopped service used to close itself through
+    # natural death, and the service it had been showing went with it - so `n` in a split could
+    # cost you a pane as well as dropping you out.
+    #
+    # Three checks, and the third is the one that matters most: a pane whose service dies *while
+    # it is shown* still closes. Fixing one case by swallowing the case it was carved out of is
+    # the shape this pair of fixes was most at risk of, on both sides.
+    only
+    # Named so the order is deliberate rather than lucky. A split shows the next service that is
+    # not on screen, and services are listed by name - so with stayer/mate/gone the split landed
+    # on `gone` itself, the stopped one, and the `n` this is meant to exercise never happened.
+    # a-, b- and z- put the running one next and the stopped one after it.
+    "$gz" add astayer -start -restart no -- sh -c 'printf "STAYER-UP\r\n"; sleep 300' >/dev/null 2>&1
+    "$gz" add bmate   -start -restart no -- sh -c 'printf "MATE-UP\r\n"; sleep 300' >/dev/null 2>&1
+    "$gz" add zgone   -start -restart no -- sh -c 'printf "GONE-UP\r\n"; sleep 300' >/dev/null 2>&1
+    sleep 1
+    "$gz" stop zgone >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 70 -y 12 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render astayer'"
+    sleep 3
+    tmux -L "$tmuxSock" send-keys C-] '|'
+    sleep 3
+    if pane | grep -q 'STAYER-UP' && pane | grep -q 'MATE-UP'; then
+        # The focused pane is the new one; move it onto the stopped service.
+        tmux -L "$tmuxSock" send-keys C-] 'n'
+        sleep 3
+        if pane | grep -q 'STAYER-UP' && pane | grep -q 'not running'; then
+            ok "a split pane moved onto a stopped service stays open and says so"
+        else
+            bad "the screen after moving onto a stopped service: $(pane | grep -v '^$' | tail -4 | tr '\n' '|')"
+        fi
+
+        # u starts it in that pane, which is where it has to appear: a revive that started the
+        # service somewhere else would read as working and leave the pane dead.
+        tmux -L "$tmuxSock" send-keys C-] 'u'
+        sleep 4
+        if "$gz" status zgone 2>/dev/null | grep -q '^state: *running' &&
+           [ "$("$gz" ls 2>/dev/null | awk '$1 == "zgone" {print $6}')" = "1" ]; then
+            ok "and Ctrl-] u starts it in that pane, with the pane watching it"
+        else
+            bad "zgone is $("$gz" status zgone 2>/dev/null | grep '^state:' | tr -d '\n') with viewers [$("$gz" ls 2>/dev/null | awk '$1 == "zgone" {print $6}')]"
+        fi
+
+        # And the half that must not regress: a service that dies while its pane is showing it
+        # still takes the pane with it.
+        "$gz" stop zgone >/dev/null 2>&1
+        sleep 4
+        if ! pane | grep -q 'GONE-UP' && pane | grep -q 'STAYER-UP'; then
+            ok "but a service that dies while its pane is showing it still closes the pane"
+        else
+            bad "the pane outlived its service: $(pane | grep -v '^$' | tail -4 | tr '\n' '|')"
+        fi
+    else
+        bad "the split this needs did not happen: $(pane | grep -v '^$' | head -3 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop astayer bmate zgone >/dev/null 2>&1
+    "$gz" rm astayer bmate zgone >/dev/null 2>&1
+
     # ------------------------------------------ the last two keys, and what they say without panes
     #
     # x closes a pane and f scrolls forward, and neither had ever been pressed. Both need panes,
