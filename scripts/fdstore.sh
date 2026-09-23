@@ -345,6 +345,48 @@ else
 fi
 "$gz" rm upgrader >/dev/null 2>&1
 
+# ----------------------------------------------- renamed while running, then the daemon crashes
+#
+# The descriptor systemd holds is filed under the service's name. A rename that left it there would
+# pass every other check, and then the first crash would bring the service back under the name it
+# no longer has - or fail to adopt it at all. Nothing in the Go tests can see this: they run without
+# a systemd to hand descriptors to.
+say
+"$gz" add beforename -start -- sh -c 'while :; do sleep 1; done' >/dev/null 2>&1
+sleep 1
+rn_pid=$("$gz" status beforename 2>/dev/null | awk '/^pid:/{print $2}')
+if "$gz" rename beforename aftername >/dev/null 2>&1; then
+    ok "a running service can be renamed (pid ${rn_pid:-none})"
+else
+    bad "renaming a running service failed: $("$gz" rename beforename aftername 2>&1)"
+fi
+held=$(systemctl --user show "$unit" -p NFileDescriptorStore --value)
+if [ "$held" = "2" ]; then
+    ok "and systemd is holding exactly its one terminal besides the socket, not two"
+else
+    bad "after the rename systemd holds $held descriptors; want the socket and one terminal"
+fi
+
+main=$(systemctl --user show "$unit" -p MainPID --value)
+kill -9 "$main" 2>/dev/null
+for _ in $(seq 40); do
+    now=$(systemctl --user show "$unit" -p MainPID --value)
+    [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$main" ] && "$gz" ping >/dev/null 2>&1 && break
+    sleep 0.25
+done
+after_rn=$("$gz" status aftername 2>/dev/null | awk '/^pid:/{print $2}')
+if [ -n "$rn_pid" ] && [ "$after_rn" = "$rn_pid" ]; then
+    ok "after a crash it is recovered under its new name, same pid"
+else
+    bad "after a crash aftername has pid [$after_rn], want $rn_pid; ls says: $("$gz" ls 2>&1 | tr '\n' '|')"
+fi
+if "$gz" status beforename >/dev/null 2>&1; then
+    bad "and the old name came back from the crash"
+else
+    ok "and the old name did not come back"
+fi
+"$gz" rm aftername >/dev/null 2>&1
+
 # ------------------------------------------- the store must not fill up with terminals of the dead
 #
 # FileDescriptorStoreMax is 64 in the packaged unit. A daemon that hands a terminal over on every
