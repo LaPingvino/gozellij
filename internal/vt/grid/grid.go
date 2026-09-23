@@ -81,6 +81,12 @@ type Term struct {
 	// means owning this too, and not doing it is how pasting into vim breaks in a mode that
 	// otherwise looks right.
 	modes map[int]bool
+	// dir is the working directory the program reported with OSC 7, as it sent it - a file URL.
+	// Kept for the same reason as the title: it belongs to the terminal showing the screen, and
+	// a client that interprets the stream instead of passing it through has to carry it or the
+	// terminal stops learning where the shell is. That is what a terminal uses to open its next
+	// tab in the directory you were already in.
+	dir string
 	// title is what the program asked the window to be called, for the same reason as modes: a
 	// byte pipe hands OSC 2 to the real terminal and a client that interprets it has to carry it.
 	title string
@@ -700,6 +706,10 @@ func (t *Term) TakeReplies() []byte {
 func (t *Term) reply(format string, args ...any) {
 	t.replies = append(t.replies, fmt.Sprintf(format, args...)...)
 }
+
+// Dir is the working directory the program running here last reported, empty if it has not said.
+// A file URL, in the form OSC 7 carries it, because that is the form it is passed on in.
+func (t *Term) Dir() string { return t.dir }
 
 // Title is what the program running here asked the window to be called, empty if it has not said.
 func (t *Term) Title() string { return t.title }

@@ -896,6 +896,23 @@ func (p *parser) finishOSC(t *Term) {
 			return
 		}
 		t.style.Link = uri
+	case "7":
+		// The working directory, as a file URL. Recorded rather than dropped because a renderer
+		// passes it on: a byte pipe hands OSC 7 to the terminal untouched, and an attach that
+		// interprets the stream would otherwise be the one that stops your terminal learning
+		// where you are - a capability quietly lost by the very path that adds panes.
+		//
+		// Control bytes are refused rather than stripped. The value is emitted again later, and
+		// a directory name is not the place to be lenient about what can appear in one: a byte
+		// pipe would have passed the same bytes, but it passes them as part of a sequence the
+		// terminal is parsing, not as the body of one this code constructs.
+		for i := 0; i < len(arg); i++ {
+			if arg[i] < 0x20 || arg[i] == 0x7f {
+				t.noteUnknown("OSC 7 with a control byte in it")
+				return
+			}
+		}
+		t.dir = arg
 	case "0", "2":
 		// 0 sets the icon name and the title, 2 sets the title. Nothing here distinguishes them,
 		// because nothing downstream of it does either.

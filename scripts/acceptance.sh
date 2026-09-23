@@ -975,6 +975,33 @@ else
 
     "$gz" rm shaper >/dev/null 2>&1
 
+    # -------------------------------------- the working directory has to reach the terminal too
+    #
+    # OSC 7 is how a shell says where it is, and it is why your terminal's next tab opens in the
+    # directory the last one was in. A byte pipe hands it over untouched. A rendered attach reads
+    # the stream, so it stops there unless it is passed on - which would make the path that adds
+    # panes the path that quietly takes this away, and a capability the byte pipe has and the
+    # rendered attach does not is a reason not to use the rendered attach.
+    #
+    # tmux records it as #{pane_path}; that it does was measured, not assumed.
+    only
+    "$gz" add pwder -start -- sh -c 'printf "\033]7;file://box/tmp/where-i-am\033\\\\here\r\n"; sleep 60' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 40 -y 5 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz attach -render pwder'"
+    sleep 3
+
+    if [ "$(ask '#{pane_path}')" = "file://box/tmp/where-i-am" ]; then
+        ok "a rendered attach passes the working directory to the terminal"
+    else
+        bad "the terminal was told the directory is [$(ask '#{pane_path}')]"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" rm pwder >/dev/null 2>&1
+
     # ---------------------------------------------- the window title has to reach the terminal
     #
     # Same shape as the modes below: a byte pipe hands OSC 2 to the real terminal, so a shell's

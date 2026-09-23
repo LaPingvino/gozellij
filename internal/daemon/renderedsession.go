@@ -70,6 +70,11 @@ func (p *livePane) Keypad() bool { return p.term.Keypad() }
 
 // Title is what this pane's program asked the window to be called, or the service's name when it
 // has not asked. A window with no title at all is worse than one named after what is in it.
+// Dir is the working directory this pane's program last reported. Unlike the title there is no
+// fallback: a terminal told nothing keeps what it had, which is right, and inventing a directory
+// for a program that never said one would be worse than saying nothing.
+func (p *livePane) Dir() string { return p.term.Dir() }
+
 func (p *livePane) Title() string {
 	if t := p.term.Title(); t != "" {
 		return t

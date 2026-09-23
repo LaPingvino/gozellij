@@ -47,6 +47,9 @@ type renderedScreen struct {
 	// code 1" was being written to a screen that erased it before anybody could read it.
 	message string
 	said    time.Time
+	// dir is the working directory last passed on to the terminal, so an unchanged one is not
+	// sent again on every frame.
+	dir string
 
 	// applied is what the real terminal has been put into: mouse reporting, bracketed paste and
 	// focus events, as asked for by whichever pane has the keyboard. A byte pipe passes those
@@ -306,6 +309,7 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	if focus < len(panes) {
 		s.applyModes(panes[focus].Modes())
 		s.applyTitle(panes[focus].Title())
+		s.applyDir(panes[focus].Dir())
 		s.applyShape(panes[focus].CursorShape())
 		s.applyKeypad(panes[focus].Keypad())
 	}
@@ -341,6 +345,8 @@ type layoutPane interface {
 	Modes() map[int]bool
 	// Title is what this pane's program asked the window to be called.
 	Title() string
+	// Dir is the working directory this pane's program last reported, as a file URL.
+	Dir() string
 	// CursorShape is the shape that program asked for, zero for the terminal's default.
 	CursorShape() int
 	// Keypad is whether that program asked for application keypad mode.
@@ -387,6 +393,24 @@ func (s *renderedScreen) applyTitle(title string) {
 	}
 	s.title = title
 	fmt.Fprintf(s.out, "\x1b]2;%s\x07", title)
+}
+
+// applyDir passes on the working directory the focused pane reported, when that has changed.
+//
+// A byte pipe hands OSC 7 to the terminal untouched, and terminals use it for something a person
+// notices: the next tab opens in the directory the last one was in. An attach that interprets the
+// stream stops it there unless it passes it on, so the path that adds panes would be the path
+// that quietly loses this - and a capability the byte pipe has and the rendered attach does not
+// is a reason not to use the rendered attach.
+//
+// The focused pane's, like the title: a window has one working directory as far as the terminal
+// is concerned, and the keyboard is in one pane.
+func (s *renderedScreen) applyDir(dir string) {
+	if dir == "" || dir == s.dir {
+		return
+	}
+	s.dir = dir
+	fmt.Fprintf(s.out, "\x1b]7;%s\x1b\\", dir)
 }
 
 // applyShape tells the terminal what shape to draw the cursor, when that has changed.
