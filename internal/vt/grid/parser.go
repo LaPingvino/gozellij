@@ -21,13 +21,14 @@ type parser struct {
 	// string rather than being part of it.
 	strEsc bool
 	// strIntro is the character that opened the current control string - P, X, ^ or _ - and
-	// strHead the first two bytes of its body, which is all it takes to tell a request apart
-	// from a statement. Kept because the decision can only be made once the string is over.
+	// strHead the start of its body, which is all it takes to tell one kind from another. Kept
+	// because the decision can only be made once the string is over. Sixel needs more than two
+	// bytes: its introducer is a run of numeric parameters and only then the letter q.
 	strIntro byte
 	strHead  []byte
-	params []byte
-	inter  []byte
-	utf8   []byte
+	params   []byte
+	inter    []byte
+	utf8     []byte
 	// oscBuf collects an operating-system command until its terminator.
 	oscBuf []byte
 	// charsetSlot is which of G0 and G1 the sequence being parsed is about.
@@ -781,25 +782,52 @@ func (p *parser) str(t *Term, c byte) {
 		p.strEsc = true
 		return
 	}
-	if len(p.strHead) < 2 {
+	if len(p.strHead) < strHeadMax {
 		p.strHead = append(p.strHead, c)
 	}
 }
 
-// finishStr reports a control string that asked something this emulator never answers.
+// strHeadMax is how much of a control string's body is kept. Enough for sixel's parameters,
+// which are the longest introducer here; the body itself is not wanted and can be megabytes.
+const strHeadMax = 16
+
+// finishStr reports a control string that went nowhere and will be missed.
 //
-// Only a DCS can ask: DECRQSS ("$q", what is the current setting of ...) and XTGETTCAP ("+q",
-// what does your terminfo say about ...). A program that gets no reply falls back to a default,
-// which is survivable and occasionally wrong, and that is worth one line on the status line.
-// Everything else - a string that states something, and every SOS, PM and APC, none of which
-// carry a question - is consumed and that is the end of it.
+// Two kinds qualify, and the distinction is what the program loses by not being answered:
+//
+//   - it asked something. DECRQSS ("$q", what is the current setting of ...) and XTGETTCAP
+//     ("+q", what does your terminfo say about ...), both DCS. A program that gets no reply
+//     falls back to a default, which is survivable and occasionally wrong.
+//   - it was going to draw. Sixel (DCS, optional numeric parameters then "q") and kitty
+//     graphics (APC "G") put an image on the screen, and dropping one leaves a hole with
+//     nothing to explain it - which is the case this whole mechanism was built for.
+//
+// Everything else is consumed and that is the end of it: vim's "\x1bPzz\x1b\\" probe asks
+// whether the terminal swallows a control string, and swallowing it is the right answer.
 func (p *parser) finishStr(t *Term) {
-	if p.strIntro != 'P' || len(p.strHead) < 2 || p.strHead[1] != 'q' {
+	head := p.strHead
+	if p.strIntro == '_' {
+		// Kitty graphics. Reported as an image that did not arrive rather than as a syntax,
+		// because that is what the person is looking at: a gap.
+		if len(head) > 0 && head[0] == 'G' {
+			t.noteUnknown("APC G image")
+		}
 		return
 	}
-	switch p.strHead[0] {
-	case '$', '+':
-		t.noteUnknown(fmt.Sprintf("DCS %sq request", string(p.strHead[0])))
+	if p.strIntro != 'P' || len(head) == 0 {
+		return
+	}
+	if len(head) >= 2 && head[1] == 'q' && (head[0] == '$' || head[0] == '+') {
+		t.noteUnknown(fmt.Sprintf("DCS %sq request", string(head[0])))
+		return
+	}
+	// Sixel: zero or more numeric parameters, then q. "\x1bPq" and "\x1bP0;0;0q" are both it.
+	i := 0
+	for i < len(head) && (head[i] >= '0' && head[i] <= '9' || head[i] == ';') {
+		i++
+	}
+	if i < len(head) && head[i] == 'q' {
+		t.noteUnknown("DCS sixel image")
 	}
 }
 

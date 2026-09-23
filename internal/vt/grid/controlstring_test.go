@@ -18,7 +18,11 @@ func TestControlStringsReportOnlyWhatWentUnanswered(t *testing.T) {
 		{"vim's probe", "\x1bPzz\x1b\\", ""},
 		{"an empty DCS", "\x1bP\x1b\\", ""},
 		{"a privacy message", "\x1b^anything\x1b\\", ""},
-		{"an application command", "\x1b_G a=T\x1b\\", ""},
+		{"a kitty image", "\x1b_Ga=T,f=100;AAAA\x1b\\", "APC G image"},
+		{"an application command that is not one", "\x1b_Xwhatever\x1b\\", ""},
+		{"sixel with parameters", "\x1bP0;0;0q#0;2;0;0;0#0~~\x1b\\", "DCS sixel image"},
+		{"sixel with none", "\x1bPq#0~~\x1b\\", "DCS sixel image"},
+		{"a long body that is not sixel", "\x1bP1234567890123456789zz\x1b\\", ""},
 		{"a start of string", "\x1bXwhatever\x1b\\", ""},
 		{"DECRQSS, unanswered", "\x1bP$qm\x1b\\", "DCS $q request"},
 		{"XTGETTCAP, unanswered", "\x1bP+q544e\x1b\\", "DCS +q request"},
@@ -45,7 +49,12 @@ func TestControlStringsReportOnlyWhatWentUnanswered(t *testing.T) {
 // decision is made from the first two body bytes - which is exactly the part that can arrive
 // alone. The probe and the query have to survive being cut anywhere.
 func TestControlStringSplitAcrossWrites(t *testing.T) {
-	for _, in := range []string{"\x1bPzz\x1b\\", "\x1bP$qm\x1b\\"} {
+	for _, in := range []string{
+		"\x1bPzz\x1b\\",
+		"\x1bP$qm\x1b\\",
+		"\x1bP0;0;0q#0~~\x1b\\",
+		"\x1b_Ga=T,f=100;AAAA\x1b\\",
+	} {
 		for cut := 1; cut < len(in); cut++ {
 			whole := New(20, 4)
 			whole.Write([]byte(in))
