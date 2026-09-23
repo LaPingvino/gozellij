@@ -493,22 +493,27 @@ func showService(out io.Writer, service string) {
 // pickService shows the services and returns the one chosen, or the current one if the user
 // changes their mind.
 func pickService(socket, current string, input *terminalInput, out io.Writer) (string, *attachOutcome, error) {
-	names, err := serviceNames(socket)
+	list, err := serviceStatuses(socket)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(names) == 0 {
+	if len(list) == 0 {
 		return "", nil, errors.New("there are no services")
+	}
+	names := make([]string, len(list))
+	for i, s := range list {
+		names[i] = s.Service
 	}
 
 	fmt.Fprint(out, "\x1b[H\x1b[2J")
 	fmt.Fprint(os.Stderr, "[gozellij] pick a service:\r\n")
-	for i, n := range names {
+	now := time.Now()
+	for i, s := range list {
 		marker := "  "
-		if n == current {
+		if s.Service == current {
 			marker = "* "
 		}
-		fmt.Fprintf(os.Stderr, "  %s%s %s\r\n", marker, string(pickKey(i)), n)
+		fmt.Fprintf(os.Stderr, "  %s%s %s\r\n", marker, string(pickKey(i)), pickLine(s, now))
 	}
 	fmt.Fprint(os.Stderr, "  (any other key to stay where you are)\r\n")
 
@@ -563,6 +568,19 @@ func pickIndex(b byte) int {
 
 // serviceNames lists the services, sorted, on a fresh connection.
 func serviceNames(socket string) ([]string, error) {
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list))
+	for _, svc := range list {
+		names = append(names, svc.Service)
+	}
+	return names, nil
+}
+
+// serviceStatuses lists the services with their state, sorted by name, on a fresh connection.
+func serviceStatuses(socket string) ([]ipc.StatusReply, error) {
 	c, err := Dial(socket)
 	if err != nil {
 		return nil, fmt.Errorf("cannot list services: %w", err)
@@ -576,12 +594,41 @@ func serviceNames(socket string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot list services: %w", err)
 	}
-	names := make([]string, 0, len(list.Services))
-	for _, svc := range list.Services {
-		names = append(names, svc.Service)
+	out := append([]ipc.StatusReply(nil), list.Services...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out, nil
+}
+
+// pickLine is one entry in the Ctrl-] l list: enough to choose by. A list of names alone could
+// not tell the shell you were working in from one that exited an hour ago, or say that another
+// terminal is sitting in it - which is worth knowing before you type into it.
+func pickLine(s ipc.StatusReply, now time.Time) string {
+	line := fmt.Sprintf("%-16s %s", s.Service, s.State)
+	if s.State == "running" && !s.StartedAt.IsZero() {
+		line += " " + shortAge(now.Sub(s.StartedAt))
 	}
-	sort.Strings(names)
-	return names, nil
+	// This terminal's own session is closed while the list is up, so any viewer is somebody else.
+	if s.Viewers > 0 {
+		line += fmt.Sprintf(" · open in %d other terminal", s.Viewers)
+		if s.Viewers > 1 {
+			line += "s"
+		}
+	}
+	return line
+}
+
+// shortAge is a duration in the one unit that matters: 40s, 12m, 3h, 2d.
+func shortAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // neighbourService is the service before or after this one, wrapping around.
