@@ -82,6 +82,9 @@ No test does `Stop` then `Start` through the fabric; `server_test.go:
 TestAddListStartStopRemove` stops and then removes. This is design rule 1 ("never silently
 succeed at doing nothing") in the command a Docker user types first.
 
+**Now (2026-09-23).** Fixed: a stopped service starts again (a finished supervisor is replaced,
+`fabric.go: startLocked`), covered in `internal/fabric/lifecycle_test.go`.
+
 **Acceptance.**
 ```sh
 gozellij add a2 -restart always -start -- sleep 300
@@ -116,6 +119,10 @@ author has already met the orphan.
 The systemd unit already requests `Delegate=yes` "so the daemon can freeze and thaw individual
 services later" (`packaging/systemd/gozellijd.service`). The same delegation is what makes
 kill-the-tree possible; tree-kill is the part a user needs.
+
+**Now (2026-09-23).** Fixed: `stop` signals the whole process group, and where the daemon runs
+under the systemd unit (`Delegate=yes`) it sweeps the service's cgroup, which a `setsid` child cannot
+leave (`internal/fabric/cgroup_test.go`). `gozellij doctor` says which of the two is in force.
 
 **Acceptance.**
 ```sh
@@ -252,6 +259,11 @@ Consequences, all from reading:
   (`ipc.LogsReply` doc). `grep` works; `--since` does not exist.
 
 `journalctl -u synapse --since -1h -f` is the bar. `docker logs -f --since 1h` is the same bar.
+
+**Now (2026-09-23).** Every gap above is closed. Output goes to disk (`<state>/logs/<name>.log`, one
+rotated generation) and survives the daemon; `logs -f` follows without a keyboard attached;
+`logs -since 10m` (or `14:05`, or RFC 3339) reads a per-log time index, accurate to the minute.
+Still raw terminal bytes, by design. `-since` together with `-f` is refused for now.
 
 **Acceptance.**
 ```sh
@@ -459,6 +471,13 @@ What they will notice in the first hour:
   replay starts at an arbitrary byte, possibly inside an escape sequence *(speculation: the
   existence of `-no-replay` suggests someone has seen the result; not verified)*.
 
+**Now (2026-09-23).** Bare `gozellij` lands you in a shell, and it is Joop's login multiplexer. Of
+the first-hour list below: there is a status line with tabs, the prefix key is configurable
+(`prefix=C-b`), `ls` counts the terminals attached and which of them are read-only, `Ctrl-] c`
+opens another shell and `Ctrl-] ,` renames one. Still true: two terminals of different sizes
+resize the service last-wins, and whether a wrapped replay can start inside an escape sequence is
+still unverified.
+
 **Acceptance.**
 ```sh
 gozellij add d1 -start -- sh; sleep 1
@@ -487,6 +506,11 @@ the report that accompanied this file. If panes are built, the acceptance test i
 Phase 2, and that is the correct order.
 
 ---
+**Now (2026-09-23).** Built, in the rendered attach (`gozellij attach -render`, or
+`login-setup -render`): `Ctrl-] |` and `-` split, `o` moves focus, `x` closes, `< >` resize, and
+`b f g` scroll back, forward and live. The byte pipe, which is the default, has tabs but not
+splits, because splitting needs the emulator.
+
 
 ## What is good and should not be touched
 
