@@ -10,7 +10,7 @@ PREFIX  ?= $(HOME)/.local
 BIN     ?= $(PREFIX)/bin
 LDFLAGS  = -X main.Version=$(VERSION)
 
-.PHONY: all build test race vet fmt conform record fuzz acceptance fdstore install clean check
+.PHONY: all build test race vet fmt conform record fuzz acceptance quick fdstore install clean check
 
 all: build
 
@@ -35,6 +35,16 @@ fmt:
 # could see, because they were about what the terminal ends up showing.
 acceptance:
 	bash scripts/acceptance.sh
+
+# quick runs the promises that do not need a terminal: twenty-two of them, in about forty seconds,
+# against a hundred and thirteen in six minutes. For the loop you are in while changing the daemon
+# or the fabric, where waiting six minutes to learn you mistyped something is its own kind of bug.
+#
+# Not part of `check`, and it says on the way out that it skipped the rest. A fast mode that
+# reports the same line as the real one is how a suite starts lying: somebody says "all green"
+# meaning a fifth of it.
+quick:
+	bash scripts/acceptance.sh -noscreen
 
 # fdstore checks what survives a daemon crash, against a real systemd user manager: the listening
 # socket, the services and their pids, the terminals they are talking through, and the person who

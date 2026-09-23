@@ -26,7 +26,21 @@ set -u
 unset GOZELLIJ ZELLIJ ZELLIJ_SESSION_NAME TMUX STY
 
 keep=0
-[ "${1:-}" = "-k" ] && keep=1
+noscreen=0
+for arg in "$@"; do
+    case "$arg" in
+        -k) keep=1 ;;
+        # Skip the section that drives a real terminal. Twenty-two of the promises live outside
+        # it and ninety-one inside, so this is most of a six-minute run - useful when the change
+        # you are testing cannot reach a screen, and dishonest as a default, which is why it is
+        # not one and why the summary says what was left out.
+        -noscreen) noscreen=1 ;;
+        -h|--help)
+            printf 'usage: %s [-k] [-noscreen]\n  -k         keep the work directory (daemon.log survives)\n  -noscreen  skip the checks that need tmux and a real terminal\n' "$0"
+            exit 0 ;;
+        *) printf 'unknown argument: %s (try -h)\n' "$arg" >&2; exit 2 ;;
+    esac
+done
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 real_home="$HOME"
@@ -477,7 +491,9 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 #
 # So this section drives a real terminal of a known size and reads the screen back. tmux is the
 # tool to hand; a private server, so it cannot touch a session you are using.
-if ! command -v tmux >/dev/null 2>&1; then
+if [ "$noscreen" = 1 ]; then
+    say "  SKIP  the screen checks, because -noscreen was given"
+elif ! command -v tmux >/dev/null 2>&1; then
     say "  SKIP  the screen checks need tmux, which is not installed"
 else
     pane() { tmux -L "$tmuxSock" capture-pane -p "$@"; }
@@ -2143,9 +2159,11 @@ PROFILE
 fi
 
 say
+skipped=""
+[ "$noscreen" = 1 ] && skipped=" (the screen checks were skipped, so this is not the whole suite)"
 if [ "$fail" -eq 0 ]; then
-    say "all $pass promises held."
+    say "all $pass promises held.$skipped"
 else
-    say "$pass held, $fail did not."
+    say "$pass held, $fail did not.$skipped"
 fi
 exit $(( fail > 0 ? 1 : 0 ))
