@@ -777,6 +777,9 @@ func cmdLogs(args []string) error {
 	}
 	// Before the output, not after: a warning printed under a screen of scrollback is a warning
 	// nobody reads.
+	if out.Note != "" {
+		fmt.Fprintf(os.Stderr, "[gozellij: %s]\n", out.Note)
+	}
 	if out.LogError != "" {
 		fmt.Fprintf(os.Stderr, "[gozellij: this log is not being written and may be behind: %s]\n", out.LogError)
 	}
@@ -1126,6 +1129,11 @@ func parseSince(s string, now time.Time) (time.Time, error) {
 		}
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		// Zero on the wire means no -since at all, so a time at or before the epoch would come
+		// back unfiltered. Nothing was logged then anyway.
+		if t.Unix() <= 0 {
+			return time.Time{}, fmt.Errorf("-since %q is before anything could have been logged", s)
+		}
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("-since %q: give a duration (10m, 1h30m), a clock time (14:05) or an RFC 3339 time", s)

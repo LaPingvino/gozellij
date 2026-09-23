@@ -283,6 +283,8 @@ type LogsReply struct {
 	// older than what the service has printed. An incomplete answer that does not say it is
 	// incomplete is the one failure this project keeps refusing to ship.
 	LogError string `json:"log_error,omitempty"`
+	// Note is how the answer was cut, when that is not what was asked for - see Fabric.LogsSince.
+	Note string `json:"note,omitempty"`
 }
 
 // UpgradeReply describes what an in-place upgrade did.

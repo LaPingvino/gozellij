@@ -769,6 +769,9 @@ func (f *Fabric) List() []Status {
 
 // LogTail is one answer to "what did this service print".
 type LogTail struct {
+	// Note is something the reader should know about how this answer was cut, said rather
+	// than left for them to discover. See LogsSince.
+	Note string
 	Data []byte
 	// Truncated says whether older output was left out, so "this is everything" and "this is
 	// the tail" are distinguishable rather than both being some bytes.
@@ -861,15 +864,23 @@ func (f *Fabric) LogsSince(name string, since time.Time, maxBytes int) (LogTail,
 	if e := sup.Output().LogError(); e != "" {
 		return LogTail{}, fmt.Errorf("%s: its log stops where writing broke (%s), so -since cannot be trusted", name, e)
 	}
-	data, truncated, err := ReadLogSince(f.opts.LogDir, name, since, maxBytes)
+	got, err := ReadLogSince(f.opts.LogDir, name, since, maxBytes)
 	switch {
 	case errors.Is(err, ErrNoIndex):
 		return LogTail{}, fmt.Errorf("%s: %w - it was written before gozellij recorded times; "+
 			"gozellij logs %s shows all of it", name, err, name)
+	case errors.Is(err, os.ErrNotExist):
+		// Not a failure to explain with a file path: the service has not written anything yet.
+		return LogTail{Path: LogPath(f.opts.LogDir, name)}, nil
 	case err != nil:
 		return LogTail{}, err
 	}
-	return LogTail{Data: data, Truncated: truncated, Path: LogPath(f.opts.LogDir, name)}, nil
+	tail := LogTail{Data: got.Data, Truncated: got.Truncated, Path: LogPath(f.opts.LogDir, name)}
+	if got.Unknown > 0 {
+		tail.Note = fmt.Sprintf("the first %d bytes shown are from before gozellij recorded times, "+
+			"so it cannot say whether they are since then", got.Unknown)
+	}
+	return tail, nil
 }
 
 // Cgroups reports how completely this fabric can stop a service.

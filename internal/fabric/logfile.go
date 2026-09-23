@@ -45,8 +45,11 @@ type LogSink struct {
 	f *os.File
 	n int64
 	// marked is when the time index was last written; see mark.
-	marked  time.Time
-	flushed int64 // stream offset up to which output has been handed to the file
+	marked time.Time
+	// noRotateBefore holds off the next attempt after a rotation failed, until another max
+	// bytes have been written - rather than retrying the rename on every write.
+	noRotateBefore int64
+	flushed        int64 // stream offset up to which output has been handed to the file
 
 	mu      sync.Mutex
 	sub     *Subscriber
@@ -376,7 +379,7 @@ func (l *LogSink) emit(p []byte) {
 		l.f, l.n = f, size
 	}
 
-	if l.max > 0 && l.n+int64(len(p)) > l.max {
+	if l.max > 0 && l.n+int64(len(p)) > l.max && l.n >= l.noRotateBefore {
 		l.rotate()
 		if l.f == nil {
 			l.fail(fmt.Errorf("rotating %s left no file open", l.path), len(p))
@@ -401,23 +404,36 @@ func (l *LogSink) rotate() {
 		l.f.Close()
 		l.f = nil
 	}
-	// The index goes with the file it indexes, and the next write starts a fresh one.
-	_ = os.Rename(IndexPath(l.path), IndexPath(l.path+".1"))
-	l.marked = time.Time{}
+	rotated := true
 	if err := os.Rename(l.path, l.path+".1"); err != nil && !os.IsNotExist(err) {
 		// Say so, but carry on: a log that cannot be rotated should keep being written, not
 		// stop. The size limit is then not honoured, which is the lesser problem - and is
 		// recorded where the next successful write cannot erase it.
 		l.setRotateErr(err.Error())
+		rotated = false
 	} else {
 		l.setRotateErr("")
+		// The index goes with the file it indexes - only once that file has actually moved.
+		// Moved first, a failed rotation left an index for a .1 that never existed.
+		_ = os.Rename(IndexPath(l.path), IndexPath(l.path+".1"))
+		l.marked = time.Time{}
 	}
 	f, err := openLog(l.path)
 	if err != nil {
 		l.fail(err, 0)
 		return
 	}
-	l.f, l.n = f, 0
+	// Where the file really ends, not 0: after a failed rotation this is the same file, still
+	// full, and a zero here put every later index mark short by its whole size.
+	size, serr := f.Seek(0, io.SeekEnd)
+	if serr != nil || rotated {
+		size = 0
+	}
+	l.f, l.n = f, size
+	l.noRotateBefore = 0
+	if !rotated {
+		l.noRotateBefore = size + l.max
+	}
 }
 
 func (l *LogSink) fail(err error, lost int) {
@@ -538,56 +554,118 @@ func readIndex(path string) []indexMark {
 	return out
 }
 
-// lastAtOrBefore is the offset of the last mark no later than since, and whether there was one.
-func lastAtOrBefore(marks []indexMark, since int64) (int64, bool) {
-	off, found := int64(0), false
-	for _, m := range marks {
+// sinceStart is where, in one file, the output from since onwards begins, going by its marks.
+//
+// A mark is written at a write, and only once MarkEvery has passed since the last one - so every
+// byte after mark i and before mark i+1 was written within MarkEvery of mark i. When since is past
+// that window, nothing in the segment is "since", and the answer starts at the next mark, or at the
+// end of the file. Starting at mark i regardless handed back a service's whole last burst, hours
+// old, as output from the last ten minutes.
+//
+// found is false when since is older than every mark, and then the file is wanted from its start.
+func sinceStart(marks []indexMark, since int64, size int64) (off int64, found bool) {
+	last := -1
+	for i, m := range marks {
 		if m.at > since {
 			break
 		}
-		off, found = m.offset, true
+		last = i
 	}
-	return off, found
+	if last < 0 {
+		return 0, false
+	}
+	if since < marks[last].at+int64(MarkEvery/time.Second) || MarkEvery < time.Second {
+		off = marks[last].offset
+	} else if last+1 < len(marks) {
+		off = marks[last+1].offset
+	} else {
+		off = size
+	}
+	if off > size {
+		off = size
+	}
+	return off, true
+}
+
+// LogSince is what ReadLogSince found.
+type LogSince struct {
+	Data      []byte
+	Truncated bool
+	// Unknown is how many of the bytes in Data come from before the time index begins, so
+	// nothing says when they were written. They are included when since reaches back past the
+	// oldest mark, because leaving them out would hide output that may well be recent - and
+	// counted, so the answer can say so rather than present them as filtered.
+	Unknown int64
 }
 
 // ReadLogSince is what a service wrote from since onwards, at most maxBytes of the newest of it.
 //
-// It starts at the last index mark at or before since, so it can include up to MarkEvery of
-// output from just before - more than asked for rather than less. When since is older than the
-// oldest mark, everything kept is the answer; when there is no index at all, ErrNoIndex.
-func ReadLogSince(dir, name string, since time.Time, maxBytes int) ([]byte, bool, error) {
+// Accurate to MarkEvery, erring towards a little more. When since is older than the oldest mark,
+// everything kept is the answer, with Unknown saying how much of it has no time; when there is no
+// index at all, ErrNoIndex.
+func ReadLogSince(dir, name string, since time.Time, maxBytes int) (LogSince, error) {
 	if dir == "" {
-		return nil, false, os.ErrNotExist
+		return LogSince{}, os.ErrNotExist
 	}
 	path := LogPath(dir, name)
+	// A rotation between reading the file and reading its index would pair one with the other's
+	// successor, and the old file could come back twice. Read, then check the file is still the
+	// one that was read; if it is not, read again.
+	for attempt := 0; ; attempt++ {
+		before, err := os.Stat(path)
+		if err != nil {
+			return LogSince{}, err
+		}
+		got, err := readLogSinceOnce(path, since, maxBytes)
+		after, serr := os.Stat(path)
+		if err != nil || (serr == nil && os.SameFile(before, after)) || attempt == 3 {
+			return got, err
+		}
+	}
+}
+
+func readLogSinceOnce(path string, since time.Time, maxBytes int) (LogSince, error) {
 	cur, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, err
+		return LogSince{}, err
 	}
 	prevMarks, curMarks := readIndex(IndexPath(path+".1")), readIndex(IndexPath(path))
 	if len(prevMarks) == 0 && len(curMarks) == 0 {
-		return nil, false, ErrNoIndex
+		return LogSince{}, ErrNoIndex
 	}
 
-	var out []byte
-	if off, ok := lastAtOrBefore(curMarks, since.Unix()); ok && off <= int64(len(cur)) {
+	var out LogSince
+	if off, ok := sinceStart(curMarks, since.Unix(), int64(len(cur))); ok {
 		// Everything asked for is in the current file.
-		out = cur[off:]
+		out.Data = cur[off:]
 	} else {
 		// It begins in the rotated generation, or before anything that was kept.
 		prev, perr := os.ReadFile(path + ".1")
 		if perr != nil && !os.IsNotExist(perr) {
-			return nil, false, perr
+			return LogSince{}, perr
 		}
-		if off, ok := lastAtOrBefore(prevMarks, since.Unix()); ok && off <= int64(len(prev)) {
+		if off, ok := sinceStart(prevMarks, since.Unix(), int64(len(prev))); ok {
 			prev = prev[off:]
+		} else {
+			// From the start of what was kept. Whatever precedes the oldest mark has no time.
+			switch {
+			case len(prevMarks) > 0:
+				out.Unknown = prevMarks[0].offset
+			case len(prev) > 0:
+				out.Unknown = int64(len(prev))
+			default:
+				out.Unknown = curMarks[0].offset
+			}
 		}
-		out = append(prev, cur...)
+		out.Data = append(prev, cur...)
 	}
 
-	truncated := false
-	if maxBytes > 0 && len(out) > maxBytes {
-		out, truncated = out[len(out)-maxBytes:], true
+	if maxBytes > 0 && len(out.Data) > maxBytes {
+		cut := int64(len(out.Data) - maxBytes)
+		out.Data, out.Truncated = out.Data[cut:], true
+		if out.Unknown -= cut; out.Unknown < 0 {
+			out.Unknown = 0
+		}
 	}
-	return out, truncated, nil
+	return out, nil
 }
