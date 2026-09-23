@@ -619,7 +619,12 @@ func (s *Server) logs(req ipc.Request) ipc.Response {
 		max = MaxLogsBytes
 	}
 
-	tail, err := s.fab.Logs(req.Service, max)
+	var tail fabric.LogTail
+	if lr.Since != 0 {
+		tail, err = s.fab.LogsSince(req.Service, time.Unix(lr.Since, 0), max)
+	} else {
+		tail, err = s.fab.Logs(req.Service, max)
+	}
 	if err != nil {
 		return ipc.Err(req.ID, err)
 	}

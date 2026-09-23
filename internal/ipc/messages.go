@@ -256,6 +256,10 @@ type LogsRequest struct {
 	// The one-shot form reads the file, which outlives the daemon; the follow form reads the
 	// live buffer, which does not. They answer different questions and both are wanted.
 	Follow bool `json:"follow,omitempty"`
+	// Since, in unix seconds, asks for what was written from then on, to within a minute and
+	// erring towards more. Only the file knows when things were written, so a service whose
+	// answer would come from the in-memory buffer refuses rather than ignoring it.
+	Since int64 `json:"since,omitempty"`
 }
 
 // LogsReply carries retained output.

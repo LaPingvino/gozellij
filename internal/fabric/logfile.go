@@ -42,8 +42,10 @@ type LogSink struct {
 	max  int64
 
 	// Written only by run.
-	f       *os.File
-	n       int64
+	f *os.File
+	n int64
+	// marked is when the time index was last written; see mark.
+	marked  time.Time
 	flushed int64 // stream offset up to which output has been handed to the file
 
 	mu      sync.Mutex
@@ -155,7 +157,7 @@ func (l *LogSink) moveTo(to string) (*LogSink, error) {
 		return nil, fmt.Errorf("the log writer for %s did not stop in time; the log was left where it is", l.path)
 	}
 	var errs []error
-	for _, suffix := range []string{"", ".1"} {
+	for _, suffix := range []string{"", ".1", IndexSuffix, ".1" + IndexSuffix} {
 		from := l.path + suffix
 		if _, err := os.Stat(from); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -174,6 +176,40 @@ func (l *LogSink) moveTo(to string) (*LogSink, error) {
 		errs = append(errs, err)
 	}
 	return next, errors.Join(errs...)
+}
+
+// The time index.
+//
+// A log is the raw bytes a service wrote to its terminal, escape sequences and all, and a timestamp
+// written into it would land in the middle of whatever a full-screen program was drawing. So the
+// times go beside it instead: <name>.log.idx holds lines of "unix-seconds byte-offset", one at most
+// every MarkEvery, each saying where in the log the output from that moment on begins. That is what
+// `gozellij logs -since` reads - accurate to the interval, and erring towards showing a little more,
+// never less.
+
+// IndexSuffix is appended to a log's path to name its index.
+const IndexSuffix = ".idx"
+
+// IndexPath is the index of the log at path.
+func IndexPath(path string) string { return path + IndexSuffix }
+
+// MarkEvery is how often, at most, the index gets a line. A variable so tests need not wait.
+var MarkEvery = time.Minute
+
+// mark records where output from now on begins, if the last mark is old enough. Failing to write
+// it is not worth failing the log over: the log is the record, the index a way into it.
+func (l *LogSink) mark() {
+	now := time.Now()
+	if !l.marked.IsZero() && now.Sub(l.marked) < MarkEvery {
+		return
+	}
+	f, err := os.OpenFile(IndexPath(l.path), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(f, "%d %d\n", now.Unix(), l.n)
+	_ = f.Close()
+	l.marked = now
 }
 
 func openLog(path string) (*os.File, error) {
@@ -347,6 +383,7 @@ func (l *LogSink) emit(p []byte) {
 			return
 		}
 	}
+	l.mark()
 
 	n, err := l.f.Write(p)
 	l.n += int64(n)
@@ -364,6 +401,9 @@ func (l *LogSink) rotate() {
 		l.f.Close()
 		l.f = nil
 	}
+	// The index goes with the file it indexes, and the next write starts a fresh one.
+	_ = os.Rename(IndexPath(l.path), IndexPath(l.path+".1"))
+	l.marked = time.Time{}
 	if err := os.Rename(l.path, l.path+".1"); err != nil && !os.IsNotExist(err) {
 		// Say so, but carry on: a log that cannot be rotated should keep being written, not
 		// stop. The size limit is then not honoured, which is the lesser problem - and is
@@ -471,4 +511,83 @@ func tailFile(path string, maxBytes int) ([]byte, int64, error) {
 		return nil, size, fmt.Errorf("reading %s: %w", path, err)
 	}
 	return buf[:n], size, nil
+}
+
+// ErrNoIndex means a log has no time index to answer -since from: it was written before gozellij
+// kept one, or the index could not be written. Not the same as "nothing since then", and never to
+// be answered as though it were.
+var ErrNoIndex = errors.New("this log has no time index")
+
+type indexMark struct {
+	at     int64 // unix seconds
+	offset int64
+}
+
+func readIndex(path string) []indexMark {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []indexMark
+	for _, line := range strings.Split(string(b), "\n") {
+		var m indexMark
+		if _, err := fmt.Sscanf(line, "%d %d", &m.at, &m.offset); err == nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// lastAtOrBefore is the offset of the last mark no later than since, and whether there was one.
+func lastAtOrBefore(marks []indexMark, since int64) (int64, bool) {
+	off, found := int64(0), false
+	for _, m := range marks {
+		if m.at > since {
+			break
+		}
+		off, found = m.offset, true
+	}
+	return off, found
+}
+
+// ReadLogSince is what a service wrote from since onwards, at most maxBytes of the newest of it.
+//
+// It starts at the last index mark at or before since, so it can include up to MarkEvery of
+// output from just before - more than asked for rather than less. When since is older than the
+// oldest mark, everything kept is the answer; when there is no index at all, ErrNoIndex.
+func ReadLogSince(dir, name string, since time.Time, maxBytes int) ([]byte, bool, error) {
+	if dir == "" {
+		return nil, false, os.ErrNotExist
+	}
+	path := LogPath(dir, name)
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	prevMarks, curMarks := readIndex(IndexPath(path+".1")), readIndex(IndexPath(path))
+	if len(prevMarks) == 0 && len(curMarks) == 0 {
+		return nil, false, ErrNoIndex
+	}
+
+	var out []byte
+	if off, ok := lastAtOrBefore(curMarks, since.Unix()); ok && off <= int64(len(cur)) {
+		// Everything asked for is in the current file.
+		out = cur[off:]
+	} else {
+		// It begins in the rotated generation, or before anything that was kept.
+		prev, perr := os.ReadFile(path + ".1")
+		if perr != nil && !os.IsNotExist(perr) {
+			return nil, false, perr
+		}
+		if off, ok := lastAtOrBefore(prevMarks, since.Unix()); ok && off <= int64(len(prev)) {
+			prev = prev[off:]
+		}
+		out = append(prev, cur...)
+	}
+
+	truncated := false
+	if maxBytes > 0 && len(out) > maxBytes {
+		out, truncated = out[len(out)-maxBytes:], true
+	}
+	return out, truncated, nil
 }

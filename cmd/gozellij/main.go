@@ -67,6 +67,7 @@ Flags for add:
 Flags for logs:
   -n <bytes>   show at most this many bytes from the end
   -f           follow the live output instead of printing the file
+  -since <t>   only what was written since: 10m, 1h30m, 14:05 (to within a minute)
 
 logs reads the file on disk, which outlives the daemon; logs -f follows the daemon's live buffer,
 which does not. A service added with -log off has no file, and logs then falls back to that
@@ -716,6 +717,7 @@ func cmdLogs(args []string) error {
 	sock := socketFlag(fs)
 	maxBytes := fs.Int("n", 0, "show at most this many bytes from the end (0 = as much as fits)")
 	follow := fs.Bool("f", false, "follow the live output until interrupted")
+	sinceArg := fs.String("since", "", "only what was written since: 10m, 1h30m, 14:05, or an RFC 3339 time")
 	if err := fs.Parse(hoistName(args)); err != nil {
 		return err
 	}
@@ -729,6 +731,21 @@ func cmdLogs(args []string) error {
 		return errors.New("logs takes one service name, or several with -f")
 	}
 
+	var since time.Time
+	if *sinceArg != "" {
+		t, err := parseSince(*sinceArg, time.Now())
+		if err != nil {
+			return err
+		}
+		since = t
+		if *follow {
+			// Refused rather than half done: following reads the live buffer, which does not
+			// know when anything was written, and stitching the file onto it without printing
+			// the seam twice is its own piece of work.
+			return errors.New("-since and -f together are not supported yet; run logs -since, then logs -f")
+		}
+	}
+
 	if *follow {
 		return followLogs(*sock, fs.Args(), *maxBytes)
 	}
@@ -739,7 +756,12 @@ func cmdLogs(args []string) error {
 	}
 	defer c.Close()
 
-	out, err := c.Logs(fs.Arg(0), *maxBytes)
+	var out ipc.LogsReply
+	if since.IsZero() {
+		out, err = c.Logs(fs.Arg(0), *maxBytes)
+	} else {
+		out, err = c.LogsSince(fs.Arg(0), since, *maxBytes)
+	}
 	if err != nil {
 		return err
 	}
@@ -1083,6 +1105,30 @@ func displayVersion(v string) string {
 		return "(unknown)"
 	}
 	return v
+}
+
+// parseSince reads -since: a duration back from now ("10m", "1h30m"), a clock time meaning the most
+// recent one ("14:05" at 09:00 is yesterday's), or an RFC 3339 timestamp.
+func parseSince(s string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			d = -d
+		}
+		return now.Add(-d), nil
+	}
+	for _, layout := range []string{"15:04", "15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, now.Location()); err == nil {
+			at := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, now.Location())
+			if at.After(now) {
+				at = at.AddDate(0, 0, -1)
+			}
+			return at, nil
+		}
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("-since %q: give a duration (10m, 1h30m), a clock time (14:05) or an RFC 3339 time", s)
 }
 
 // versionSkew says, in one line, that the daemon is not the version of this client - or nothing,

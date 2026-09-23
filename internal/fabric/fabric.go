@@ -680,7 +680,7 @@ func (f *Fabric) moveLogs(oldName, newName string) error {
 	}
 	from, to := LogPath(f.opts.LogDir, oldName), LogPath(f.opts.LogDir, newName)
 	var errs []error
-	for _, suffix := range []string{"", ".1"} {
+	for _, suffix := range []string{"", ".1", IndexSuffix, ".1" + IndexSuffix} {
 		if _, err := os.Stat(from + suffix); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -705,7 +705,7 @@ func (f *Fabric) removeLogs(name string) error {
 	}
 	path := LogPath(f.opts.LogDir, name)
 	var errs []error
-	for _, p := range []string{path, path + ".1"} {
+	for _, p := range []string{path, path + ".1", IndexPath(path), IndexPath(path + ".1")} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
@@ -840,6 +840,36 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 	// Path stays empty: this came from memory, and saying otherwise would misreport where it
 	// came from in exactly the situation where that matters most.
 	return LogTail{Data: data, Truncated: truncated, Err: logErr}, nil
+}
+
+// LogsSince is what a service wrote from since onwards, from its log file and time index.
+//
+// Refused rather than approximated whenever the file cannot answer: logging off, a broken writer
+// (the file then stops early), or a log with no index. Each of those would otherwise print output
+// that is not "since" anything, under a flag that said it was.
+func (f *Fabric) LogsSince(name string, since time.Time, maxBytes int) (LogTail, error) {
+	sup, err := f.supervisor(name)
+	if err != nil {
+		return LogTail{}, err
+	}
+	if f.opts.LogDir == "" {
+		return LogTail{}, fmt.Errorf("%s: -since needs a log on disk, and this daemon keeps none", name)
+	}
+	if def, derr := f.reg.Get(name); derr == nil && def.NoLog {
+		return LogTail{}, fmt.Errorf("%s has logging off, so nothing recorded when its output was written", name)
+	}
+	if e := sup.Output().LogError(); e != "" {
+		return LogTail{}, fmt.Errorf("%s: its log stops where writing broke (%s), so -since cannot be trusted", name, e)
+	}
+	data, truncated, err := ReadLogSince(f.opts.LogDir, name, since, maxBytes)
+	switch {
+	case errors.Is(err, ErrNoIndex):
+		return LogTail{}, fmt.Errorf("%s: %w - it was written before gozellij recorded times; "+
+			"gozellij logs %s shows all of it", name, err, name)
+	case err != nil:
+		return LogTail{}, err
+	}
+	return LogTail{Data: data, Truncated: truncated, Path: LogPath(f.opts.LogDir, name)}, nil
 }
 
 // Cgroups reports how completely this fabric can stop a service.

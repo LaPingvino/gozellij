@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/status"
 )
@@ -48,5 +49,29 @@ func TestVersionSkewIsSaidAndOnlyWhenItIsReal(t *testing.T) {
 		if !strings.Contains(got, c.want) || !strings.Contains(got, "gozellij upgrade") {
 			t.Errorf("client %s, daemon %s: said %q, want %q and the way out", c.client, c.daemon, got, c.want)
 		}
+	}
+}
+
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want time.Time
+	}{
+		{"10m", now.Add(-10 * time.Minute)},
+		{"1h30m", now.Add(-90 * time.Minute)},
+		{"08:15", time.Date(2026, 9, 23, 8, 15, 0, 0, time.UTC)},
+		// A clock time still to come today means the last one: yesterday's.
+		{"14:05", time.Date(2026, 9, 22, 14, 5, 0, 0, time.UTC)},
+		{"2026-09-20T12:00:00Z", time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)},
+	}
+	for _, c := range cases {
+		got, err := parseSince(c.in, now)
+		if err != nil || !got.Equal(c.want) {
+			t.Errorf("parseSince(%q) = %v, %v; want %v", c.in, got, err, c.want)
+		}
+	}
+	if _, err := parseSince("yesterday-ish", now); err == nil {
+		t.Error("nonsense was accepted")
 	}
 }

@@ -222,6 +222,19 @@ func (c *Client) Logs(name string, maxBytes int) (ipc.LogsReply, error) {
 	return out, nil
 }
 
+// LogsSince is what a service wrote from since onwards. See fabric.LogsSince.
+func (c *Client) LogsSince(name string, since time.Time, maxBytes int) (ipc.LogsReply, error) {
+	resp, err := c.Call(ipc.OpServiceLogs, name, ipc.LogsRequest{MaxBytes: maxBytes, Since: since.Unix()})
+	if err != nil {
+		return ipc.LogsReply{}, err
+	}
+	var out ipc.LogsReply
+	if err := resp.Decode(&out); err != nil {
+		return ipc.LogsReply{}, fmt.Errorf("decoding the logs of %s: %w", name, err)
+	}
+	return out, nil
+}
+
 // FollowLogs streams a service's output to out until the connection ends or the caller's process
 // is interrupted. Notices from the daemon - such as "you fell behind" - go to notices.
 //
