@@ -463,6 +463,15 @@ the one you get without asking.
   detaches. **Verified** in both modes, and in a pane of a split. A service that ends *under* you
   is still the end of the attach, because that is `exit` in the shell you were working in and the
   terminal has to come back - the two were one case and are now two.
+- **Exiting a shell moves you on, and closes the tab behind you.** `Ctrl-] c` then `Ctrl-D` used
+  to drop you out of gozellij altogether, and before that it left a `shell-2` in `ls` for ever.
+  Now you land on what is still running, and the tab closes the way a tmux window does.
+  **Verified**, including the three cases that are about *not* closing: a tab renamed away from
+  `shell` still closes, so it is the service's own flag and not its name; a service added without
+  the flag stays defined when it ends, because somebody's long-running thing that happens to be a
+  shell must not vanish; and a tab whose shell was *killed* stays, because it failed rather than
+  exited and the tab is where you find out what happened. The log outlives the entry: `gozellij
+  logs <name>` still prints it afterwards, saying the name is gone.
 - **The package replaces the other multiplexer.** **Verified** from the recipe with
   `makepkg --printsrcinfo`: it declares `replaces` and `conflicts` against `gezellij-git`, every
   file its `package()` step installs is in the repository, and the systemd user unit it generates
