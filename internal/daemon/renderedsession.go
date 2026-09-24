@@ -31,6 +31,11 @@ import (
 type livePane struct {
 	service string
 	client  *Client
+	// closed marks a pane taken off the screen. Its reader outlives it - it ends when the closed
+	// connection does, and says so - and a "gone" from a pane nobody can see must not be acted
+	// on: taken for a daemon restart, it reconnected the pane, and a viewer nobody could see or
+	// close stayed attached to its service for good. See applyEvent.
+	closed bool
 	term    *grid.Term
 	rect    layout.Rect
 	// finished marks a pane whose process has exited. It closes - natural death - unless it is
@@ -446,6 +451,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 					paint()
 					continue
 				}
+				panes[focus].closed = true
 				panes[focus].client.Close()
 				panes = append(panes[:focus], panes[focus+1:]...)
 				focus = focus % len(panes)
@@ -506,6 +512,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 					// doing nothing or leaving an empty screen.
 					return outcomeDetached, nil
 				}
+				panes[focus].closed = true
 				panes[focus].client.Close()
 				panes = append(panes[:focus], panes[focus+1:]...)
 				focus = focus % len(panes)
@@ -542,6 +549,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 					if p != ev.pane {
 						continue
 					}
+					p.closed = true
 					p.client.Close()
 					panes = append(panes[:i], panes[i+1:]...)
 					if focus >= len(panes) {
@@ -696,6 +704,10 @@ func openPane(socket, service string, screen *renderedScreen, count int, readOnl
 //
 // Drawing is the caller's, once, after a whole batch: see the comment where these are gathered.
 func applyEvent(socket string, ev paneEvent, events chan<- paneEvent, note func(string), colour func(int) (string, bool), label string) {
+	if ev.pane.closed {
+		// Off the screen: nothing it says is about anything shown.
+		return
+	}
 	if ev.from != nil && ev.from != ev.pane.client {
 		// From a connection this pane no longer has. Its reader is on its way out and has
 		// nothing left to say that is true of this pane.

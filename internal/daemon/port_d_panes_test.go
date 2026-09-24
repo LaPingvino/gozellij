@@ -111,7 +111,6 @@ func TestPortDTheLastTwoKeysFAndX(t *testing.T) {
 // restart and reconnects the pane nobody can see. pane1 keeps a viewer for good, and the status
 // line says "reconnected to pane1 after the daemon restarted" when no daemon restarted.
 func TestPortDClosingAPaneLetsGoOfItsService(t *testing.T) {
-	t.Skip("BUG: Ctrl-] x leaves a phantom viewer - the closed pane's reader reports gone and applyEvent reconnects it as if the daemon restarted")
 	screenEnv(t)
 	_, _, sock := newTestDaemon(t)
 	dAdd(t, sock, "pane1", "", `printf "ONE-IS-HERE\r\n"; exec cat`)
