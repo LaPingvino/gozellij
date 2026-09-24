@@ -2802,6 +2802,54 @@ PROFILE
     "$gz" stop pane1 pane2 >/dev/null 2>&1
     "$gz" rm pane1 pane2 >/dev/null 2>&1
 
+    # --------------------------------------- exiting one shell of several moves you on, not out
+    #
+    # Joop's report, fixed by the other session working this tree (4cc0cf0, recorded in 6f06851),
+    # checked here because this file is mine. Ctrl-] c then Ctrl-D dropped him out of gozellij
+    # altogether: the shell he had just made was gone, so the attach ended, even with everything
+    # else still running.
+    #
+    # The distinction that makes it safe is the same one 7e8a7de drew for stopped tabs: with
+    # nothing else running, exit still gives the terminal back - that is the whole of what
+    # somebody typing exit is asking for, and the very first check in this file covers it.
+    only
+    "$gz" add stayput -start -restart no -- sh -c 'printf "STAYPUT-UP\r\n"; sleep 300' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color -e SHELL=/bin/sh \
+        "sh -c 'stty -echo; $gz attach stayput; printf \"OUT-OF-GOZELLIJ\\n\"; sleep 60'"
+    sleep 3
+
+    # A second service, made the way he made it: from inside, with Ctrl-] c.
+    tmux -L "$tmuxSock" send-keys C-] 'c'
+    sleep 3
+    made=$("$gz" ls 2>/dev/null | awk 'NR>1' | wc -l)
+    if [ "${made:-0}" -ge 2 ]; then
+        ok "Ctrl-] c makes a second shell to exit out of"
+
+        # Ctrl-D in it. The assertion is on where you end up, not on the exact words: the message
+        # gains a clause in work that is held back, and a check pinned to the whole sentence would
+        # break on somebody else's unrelated commit.
+        tmux -L "$tmuxSock" send-keys C-d
+        sleep 4
+        if pane | grep -q 'now on stayput'; then
+            ok "and Ctrl-D in it moves you to what is still running, naming where you landed"
+        else
+            bad "after Ctrl-D the screen says: $(pane | grep -v '^$' | tail -3 | tr '\n' '|')"
+        fi
+        if ! pane | grep -q 'OUT-OF-GOZELLIJ'; then
+            ok "and does not drop you out of gozellij"
+        else
+            bad "exiting one shell of two ended the whole attach"
+        fi
+    else
+        bad "Ctrl-] c did not make a second service: $("$gz" ls 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+    "$gz" stop stayput >/dev/null 2>&1
+
     # ------------------------------------------- the prefix keys nobody had pressed
     #
     # Found by counting: the suite presses | o n g d b > < z r l c ? and -, and never k, u, x, f,
