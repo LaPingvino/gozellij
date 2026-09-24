@@ -489,6 +489,47 @@ say "the promises in docs/REPLACING_GEZELLIJ.md:"
 # that gap: an attach that appeared to hang, a detach that homed the cursor, and a status line that
 # drew over vim's command line every two seconds.
 #
+# ------------------------------------------- takeover tells you the truth either way
+#
+# The last command with nothing driving it, and the reason it was left is real: takeover reads
+# /proc for other multiplexers, so what it finds depends on the machine. That is an argument
+# against asserting *what* it says, not against asserting that it is honest.
+#
+# Two shapes are allowed and nothing else. Either there is nothing to take over and it says so, or
+# it found something and says both what it found and that it cannot adopt it - because the
+# terminal lives inside that process and the kernel will not hand it over. What it must never do
+# is claim to have taken something over, or print a list and leave somebody believing their
+# session moved.
+only
+tookout=$("$gz" takeover 2>&1)
+tookrc=$?
+
+if [ "$tookrc" = "0" ]; then
+    ok "takeover exits cleanly whatever it finds"
+else
+    bad "takeover exited $tookrc saying: $(printf '%s' "$tookout" | head -2 | tr '\n' '|')"
+fi
+
+if printf '%s' "$tookout" | grep -qiE "nothing to take over|no other multiplexer"; then
+    ok "and with nothing to take over it says so"
+elif printf '%s' "$tookout" | grep -q "cannot take these over" &&
+     printf '%s' "$tookout" | grep -q "gozellij add"; then
+    # The branch this machine takes, since gezellij is what gozellij replaced: it names what it
+    # found, says plainly that it cannot adopt those terminals, and gives the command that
+    # recreates them under gozellij.
+    ok "and having found something it says it cannot adopt it, and what to type instead"
+else
+    bad "takeover printed neither shape: $(printf '%s' "$tookout" | head -4 | tr '\n' '|')"
+fi
+
+# Whatever it printed, it did not claim to have done anything. The word is the test: a takeover
+# that said "took over" would be lying on this machine, because it cannot.
+if ! printf '%s' "$tookout" | grep -qiE "took over|taken over|moved [0-9]+ "; then
+    ok "and it never claims to have taken anything over"
+else
+    bad "takeover claimed to have done something: $(printf '%s' "$tookout" | grep -iE 'took over|taken over|moved' | head -2 | tr '\n' '|')"
+fi
+
 # ------------------------------------ a service file you can read, repair, and break
 #
 # Design rule 5: state the fabric must not lose goes on disk, in a format a human can read and
