@@ -623,6 +623,10 @@ func (s *showingName) get(fallback string) string {
 	return fallback
 }
 
+// nudgePause is how long the redraw nudge holds the smaller size - long enough that a program
+// sees it as a separate resize, short enough not to be noticed. See runSession.
+const nudgePause = 150 * time.Millisecond
+
 // terminalModes is what the services shown in this terminal have switched it into, so that leaving
 // one can switch it back. One per process, because a process has one terminal. See
 // fabric.TermModes.
@@ -1546,9 +1550,21 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 	// is two SIGWINCHs and a full repaint at the right size. Sent after the attach, so the daemon
 	// writes the replay first and the repaint lands on top of it. Not for a watcher, which does
 	// not get to resize what somebody else is using.
+	//
+	// And a pause between the two. Sent back to back, the two SIGWINCHs arrive as one - signals
+	// do not queue - and a program that compares sizes before redrawing, as Claude Code does,
+	// reads the size it already had and does nothing: Joop's sidenote tab came back black.
+	// The pause lets it see the smaller size first.
 	if replay && !c.readOnly && cols > 0 && rows > 1 {
 		_ = c.sendResize(cols, rows-1)
-		_ = c.sendResize(cols, rows)
+		go func() {
+			time.Sleep(nudgePause)
+			// The size now, not the one from before the pause: the window may have changed.
+			if w, h, err := term.GetSize(int(in.Fd())); err == nil && w > 0 && h-reserved > 0 {
+				cols, rows = w, h-reserved
+			}
+			_ = c.sendResize(cols, rows)
+		}()
 	}
 
 	// Local copies, so that a terminal which reaches EOF can be dropped out of the select
