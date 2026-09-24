@@ -162,12 +162,19 @@ type AttachOptions struct {
 // AttachLoopWith attaches with the options given.
 func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts AttachOptions) error {
 	replay, mode := opts.Replay, opts.Mode
+	// The terminal's descriptor, taken once before the keyboard reader starts. File.Fd touches
+	// the file's state, and called while the reader is in Read it is a data race (-race, found by
+	// the Go port of acceptance.sh).
+	inFd := int(in.Fd())
+	// What the status line names before the loop has said where it is: a copy, because the loop
+	// reassigns service while the painter reads it (-race).
+	firstService := service
 	// Raw mode and the terminal reader belong to the loop, not to one session: keystrokes go to
 	// the far end untouched (including Ctrl-C, which belongs to the program you are attached to
 	// and not to us), and switching services must not hand the terminal back and forth.
 	restore := func() {}
-	if term.IsTerminal(int(in.Fd())) {
-		state, err := term.MakeRaw(int(in.Fd()))
+	if term.IsTerminal(inFd) {
+		state, err := term.MakeRaw(inFd)
 		if err != nil {
 			return fmt.Errorf("putting the terminal in raw mode: %w", err)
 		}
@@ -175,7 +182,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 			// The modes the last service left on go with it: the prompt this terminal returns
 			// to should not be sent mouse reports, or be left on the alternate screen.
 			_, _ = out.Write(terminalModes.Reset())
-			_ = term.Restore(int(in.Fd()), state)
+			_ = term.Restore(inFd, state)
 		}
 	}
 	defer restore()
@@ -214,8 +221,8 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	)
 	if renderEnabled(mode) {
 		cols, rows := 0, 0
-		if term.IsTerminal(int(in.Fd())) {
-			cols, rows, _ = term.GetSize(int(in.Fd()))
+		if term.IsTerminal(inFd) {
+			cols, rows, _ = term.GetSize(inFd)
 		}
 		reserved := 0
 		if cfg.Where == status.Bottom {
@@ -223,7 +230,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		}
 		if cols > 0 && rows > 0 {
 			rendered = newRenderedScreen(screen, cols, rows, reserved, statusLine(cfg, func() status.Context {
-				return StatusContext(socket, showing.get(service))
+				return StatusContext(socket, showing.get(firstService))
 			}))
 			defer rendered.Close()
 			// Anything the keyboard reader has to say now goes on the status line, where a paint
@@ -238,7 +245,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	}
 	if rendered == nil {
 		painter = newStatusPainter(screen, in, cfg, func() status.Context {
-			return StatusContext(socket, showing.get(service))
+			return StatusContext(socket, showing.get(firstService))
 		})
 		defer painter.Close()
 		out = screen
@@ -716,21 +723,34 @@ func pickService(socket, current string, input *terminalInput, out io.Writer) (s
 
 	// The reader is still running, so the choice arrives as ordinary input - which is exactly
 	// why there is one reader for the whole session rather than one per attach.
-	select {
-	case chunk := <-input.data:
-		if len(chunk) == 0 {
+	timeout := time.After(pickTimeout)
+	for {
+		select {
+		case chunk := <-input.data:
+			if chunk == nil {
+				// A command's fence (see drainToFence): its command is waiting, so take it and
+				// hand it back like the case below. With none waiting it is a stray, ignored.
+				select {
+				case want := <-input.cmds:
+					return current, &want, nil
+				default:
+					continue
+				}
+			}
+			if len(chunk) == 0 {
+				return current, nil, nil
+			}
+			i := pickIndex(chunk[0])
+			if i < 0 || i >= len(names) {
+				return current, nil, nil
+			}
+			return names[i], nil, nil
+		case want := <-input.cmds:
+			// Ctrl-] something, mid-list. Hand it back rather than swallowing it.
+			return current, &want, nil
+		case <-timeout:
 			return current, nil, nil
 		}
-		i := pickIndex(chunk[0])
-		if i < 0 || i >= len(names) {
-			return current, nil, nil
-		}
-		return names[i], nil, nil
-	case want := <-input.cmds:
-		// Ctrl-] something, mid-list. Hand it back rather than swallowing it.
-		return current, &want, nil
-	case <-time.After(pickTimeout):
-		return current, nil, nil
 	}
 }
 
@@ -1139,6 +1159,9 @@ type terminalInput struct {
 	sayMu sync.Mutex
 	say   func(string)
 
+	// fd is the terminal's descriptor, taken before reading starts: see AttachLoopWith.
+	fd int
+
 	// data carries bytes meant for whatever service is attached.
 	data chan []byte
 	// cmds carries the things the user asked gozellij itself for.
@@ -1161,6 +1184,7 @@ type terminalInput struct {
 // attach knows whether it is drawing the screen itself.
 func startTerminalInput(in *os.File, prefix byte) *terminalInput {
 	t := &terminalInput{
+		fd:     int(in.Fd()),
 		prefix: prefix,
 		label:  status.PrefixLabel(prefix),
 		say:    sayToStderr,
@@ -1603,8 +1627,8 @@ func (t *terminalInput) run(in *os.File) {
 func (c *Client) runSession(service string, input *terminalInput, in *os.File, out io.Writer, replay bool, reserved int) (attachOutcome, error) {
 	c.attachedAs = service
 	cols, rows := 0, 0
-	if term.IsTerminal(int(in.Fd())) {
-		if w, h, err := term.GetSize(int(in.Fd())); err == nil {
+	if term.IsTerminal(input.fd) {
+		if w, h, err := term.GetSize(input.fd); err == nil {
 			cols, rows = w, h-reserved
 		}
 	}
@@ -1650,7 +1674,7 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 		go func() {
 			time.Sleep(nudgePause)
 			// The size now, not the one from before the pause: the window may have changed.
-			if w, h, err := term.GetSize(int(in.Fd())); err == nil && w > 0 && h-reserved > 0 {
+			if w, h, err := term.GetSize(input.fd); err == nil && w > 0 && h-reserved > 0 {
 				cols, rows = w, h-reserved
 			}
 			_ = c.sendResize(cols, rows)
@@ -1727,7 +1751,7 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 			return outcomeDisconnected, got.err
 
 		case <-winch:
-			w, h, err := term.GetSize(int(in.Fd()))
+			w, h, err := term.GetSize(input.fd)
 			if err != nil || w <= 0 || h-reserved <= 0 {
 				continue
 			}

@@ -36,8 +36,8 @@ type livePane struct {
 	// on: taken for a daemon restart, it reconnected the pane, and a viewer nobody could see or
 	// close stayed attached to its service for good. See applyEvent.
 	closed bool
-	term    *grid.Term
-	rect    layout.Rect
+	term   *grid.Term
+	rect   layout.Rect
 	// finished marks a pane whose process has exited. It closes - natural death - unless it is
 	// the last one, which ends the session.
 	finished bool
@@ -195,7 +195,10 @@ func renderedSession(socket string, first *Client, service string, input *termin
 
 	// Messages go to the status line, where they will be seen. note() writes to standard error,
 	// which in a rendered session the next repaint covers within milliseconds.
-	note := screen.Say
+	// The session holds the panes from here on, letting go only while it waits: see paneMu.
+	screen.paneMu.Lock()
+	defer screen.paneMu.Unlock()
+	note := screen.sayHeld
 	lastPaint := time.Time{}
 	paint := func() {
 		ps := make([]layoutPane, len(panes))
@@ -250,8 +253,10 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	data, cmds, ended := input.data, input.cmds, input.ended
 	fenced := false
 	for {
+		screen.paneMu.Unlock()
 		select {
 		case chunk := <-data:
+			screen.paneMu.Lock()
 			if chunk == nil {
 				// The fence came before its command: take the command next. See drainToFence.
 				// Only if that command is still waiting - see runSession.
@@ -296,6 +301,7 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			}
 
 		case want := <-cmds:
+			screen.paneMu.Lock()
 			// Everything typed before the command goes first - and nothing typed after it, which
 			// belongs to wherever the command takes you. See drainToFence.
 			if fenced {
@@ -526,9 +532,11 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			remember()
 
 		case <-ended:
+			screen.paneMu.Lock()
 			data, cmds, ended = nil, nil, nil
 
 		case ev := <-events:
+			screen.paneMu.Lock()
 			// One event, then draw. Batching several before drawing was written here and then
 			// removed: it changed neither the time nor the bytes written (see the measurement in
 			// internal/vt/render), and an optimisation that cannot be shown to optimise anything
@@ -579,11 +587,13 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			}
 
 		case <-due.C:
+			screen.paneMu.Lock()
 			owed = false
 			paint()
 
 		case <-winch:
-			w, h, err := term.GetSize(int(in.Fd()))
+			screen.paneMu.Lock()
+			w, h, err := term.GetSize(input.fd)
 			if err != nil || w <= 0 || h <= 0 {
 				continue
 			}

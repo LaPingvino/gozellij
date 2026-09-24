@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Ported from acceptance.sh "the status line in the title bar" and "a new shell, from inside, where
@@ -31,11 +32,14 @@ func TestPortCStatusLineInTheTitleBarReservesNoRow(t *testing.T) {
 	s.Shows("TITLED-UP") // the service's output is still shown
 	s.Until("the service's name in the terminal's title", func() bool { return strings.Contains(cTitle(s), "titled") })
 
-	s.Type("\r")
-	s.Shows("SIZE=")
-	if !strings.Contains(s.Text(), "SIZE=12 60") {
-		t.Errorf("the service was not given the whole screen; it says %q", cSizeLine(s))
-	}
+	// Asked until the answer settles: arriving nudges the size one row down and back (so that a
+	// full-screen program redraws), and an answer taken inside that moment is 11 for a reason
+	// that has nothing to do with a reserved row.
+	s.Until("the service to be given the whole screen, 12 rows", func() bool {
+		s.Type("\r")
+		time.Sleep(50 * time.Millisecond)
+		return strings.HasSuffix(cSizeLine(s), "SIZE=12 60")
+	})
 
 	// And the bottom row is the service's: with enough lines to scroll, the last answer sits on
 	// the row above the bottom and the bottom is the empty line the cursor went to. With a status

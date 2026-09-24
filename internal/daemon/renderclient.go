@@ -33,8 +33,11 @@ import (
 // Ctrl-L - whereas the byte pipe's failures are the terminal's own. The corpus says what is
 // understood; until a pane needs it, the conservative default is the honest one.
 type renderedScreen struct {
-	mu  sync.Mutex
-	out io.Writer
+	// paneMu is held by the session while it owns its panes - all the time except while it
+	// waits for something to happen - so nothing else paints them mid-change. See Repaint.
+	paneMu sync.Mutex
+	mu     sync.Mutex
+	out    io.Writer
 
 	// lastPanes is what was drawn last, so that a repaint for the clock draws the same screen
 	// rather than a different one.
@@ -137,6 +140,21 @@ func (s *renderedScreen) ServiceSize() (cols, rows int) {
 // with an empty one a second after every keystroke. Two things that both paint the terminal is one
 // too many; there is now a single path and it cannot disagree with itself.
 func (s *renderedScreen) Repaint() error {
+	// From outside the session - the clock's ticker, the keyboard reader saying something. The
+	// session owns its panes and holds paneMu while it changes them; painting them from here at
+	// the same time read grids mid-write (-race, found by the Go port of acceptance.sh). Tried,
+	// not waited for: the session holds it while a prompt waits on the keyboard reader, which is
+	// one of the callers here, so waiting could be waiting for ever. A paint skipped is not lost -
+	// the session paints after everything it does.
+	if !s.paneMu.TryLock() {
+		return nil
+	}
+	defer s.paneMu.Unlock()
+	return s.repaintHeld()
+}
+
+// repaintHeld is Repaint for the session itself, which already holds paneMu.
+func (s *renderedScreen) repaintHeld() error {
 	s.mu.Lock()
 	panes, focus := s.lastPanes, s.lastFocus
 	s.mu.Unlock()
@@ -304,6 +322,17 @@ func (s *renderedScreen) Say(msg string) {
 	s.message, s.said = msg, time.Now()
 	s.mu.Unlock()
 	_ = s.Repaint()
+}
+
+// sayHeld is Say for the session itself, which already holds paneMu.
+func (s *renderedScreen) sayHeld(msg string) {
+	if msg == "" {
+		return
+	}
+	s.mu.Lock()
+	s.message, s.said = msg, time.Now()
+	s.mu.Unlock()
+	_ = s.repaintHeld()
 }
 
 // PaintPanes draws several panes and the status line as one screen.

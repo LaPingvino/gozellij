@@ -58,8 +58,11 @@ type statusPainter struct {
 	// held, so the sequence built from it cannot describe a screen that has since been resized.
 	sizeOf func() (cols, rows int)
 	in     *os.File
-	cfg    status.Config
-	info   func() status.Context
+	// fd is in's descriptor, taken once: the painter runs beside the keyboard reader, and
+	// File.Fd during its Read is a data race.
+	fd   int
+	cfg  status.Config
+	info func() status.Context
 
 	stop chan struct{}
 	done chan struct{}
@@ -113,6 +116,7 @@ func newStatusPainter(out *lockedWriter, in *os.File, cfg status.Config, info fu
 	p := &statusPainter{
 		out:  out,
 		in:   in,
+		fd:   int(in.Fd()),
 		cfg:  cfg,
 		info: info,
 		stop: make(chan struct{}),
@@ -216,7 +220,7 @@ func (p *statusPainter) size() (cols, rows int) {
 	if p.sizeOf != nil {
 		return p.sizeOf()
 	}
-	c, r, err := term.GetSize(int(p.in.Fd()))
+	c, r, err := term.GetSize(p.fd)
 	if err != nil || c <= 0 || r <= 1 {
 		return 0, 0
 	}
