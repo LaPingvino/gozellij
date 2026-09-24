@@ -579,6 +579,55 @@ fi
 rm -f "$def"
 "$gz" rm editable >/dev/null 2>&1
 
+# ------------------------------------------------ when there is no daemon at all
+#
+# Every other check here runs with a daemon up, because the suite starts one. The state nobody
+# covered is the one somebody meets first: a reboot with linger off, a unit that is not enabled,
+# a machine where nothing has started yet. Typing `gozellij` then has to say what is wrong and how
+# to fix it, and `doctor` has to keep working - being unable to reach the daemon is precisely when
+# a person runs doctor, so a doctor that needs one would be useless exactly when it is wanted.
+#
+# Its own empty runtime directory, so there is genuinely nothing to talk to.
+only
+emptyrun=$(mktemp -d "$work/nodaemon.XXXXXX")
+nod() { GOZELLIJ_RUNTIME_DIR="$emptyrun" GOZELLIJ_STATE_DIR="$state" "$gz" "$@"; }
+
+nodout=$(nod ls 2>&1)
+nodrc=$?
+if [ "$nodrc" != "0" ]; then
+    ok "a command that needs the daemon fails rather than printing nothing"
+else
+    bad "ls with no daemon exited 0 saying: $(printf '%s' "$nodout" | head -2 | tr '\n' '|')"
+fi
+
+# Which socket it looked for, because somebody running two of these - a test one and a real one -
+# needs to know which is missing, and because the path is the thing they can check.
+if printf '%s' "$nodout" | grep -q "$emptyrun"; then
+    ok "and it names the socket it looked for"
+else
+    bad "it did not say where it looked: $(printf '%s' "$nodout" | head -2 | tr '\n' '|')"
+fi
+
+if printf '%s' "$nodout" | grep -q 'gozellijd'; then
+    ok "and how to start one"
+else
+    bad "it did not say how to start a daemon: $(printf '%s' "$nodout" | head -2 | tr '\n' '|')"
+fi
+
+# doctor is the one that must survive it. A FAIL line about the daemon, and the rest of its checks
+# still run - that is the difference between a diagnostic and another thing that is broken.
+docout=$(nod doctor 2>&1)
+if printf '%s' "$docout" | grep -qE '^FAIL +daemon'; then
+    ok "and doctor reports the missing daemon as a failure"
+else
+    bad "doctor says: $(printf '%s' "$docout" | grep -iE 'daemon' | head -2 | tr '\n' '|')"
+fi
+if [ "$(printf '%s' "$docout" | grep -cE '^(ok|warn|note|FAIL)')" -ge 4 ]; then
+    ok "and keeps running its other checks without one"
+else
+    bad "doctor printed only $(printf '%s' "$docout" | grep -cE '^(ok|warn|note|FAIL)') lines without a daemon"
+fi
+
 # ----------------------------------------- gozellijd -logs off keeps output off the disk
 #
 # A privacy promise with nothing checking it. A shell you live in has everything you typed and
