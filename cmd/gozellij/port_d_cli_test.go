@@ -70,12 +70,18 @@ func TestPortDShellLandsWhereYouWere(t *testing.T) {
 	}
 
 	// But a shell that is gone is not made again while something else runs: the login lands
-	// where you last were instead.
+	// where you last were instead. Last at other, which is not first by name, so landing there
+	// is the last-shown rule and not the alphabetical fallback.
+	o := dRunInTerminal(t, 100, 8, func() error { return run([]string{"attach", "-socket", sock, "other"}) })
+	o.bottomShows("[other]")
+	if err := o.detach(); err != nil {
+		t.Fatalf("attach other: %v", err)
+	}
 	if _, err := dDial(t, sock).Remove("shell", false); err != nil {
 		t.Fatal(err)
 	}
 	g := dRunInTerminal(t, 100, 8, func() error { return run([]string{"shell", "-socket", sock}) })
-	g.bottomShows("[lastone]")
+	g.bottomShows("[other]")
 	if err := g.detach(); err != nil {
 		t.Fatalf("shell with shell gone: %v", err)
 	}
