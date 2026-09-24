@@ -715,6 +715,9 @@ func (t *Term) Dir() string { return t.dir }
 func (t *Term) Title() string { return t.title }
 
 // Modes returns the terminal-level modes currently asked for, so a renderer can match them.
+// ScrollRegion is the scrolling region, as zero-based top and bottom rows (DECSTBM).
+func (t *Term) ScrollRegion() (top, bottom int) { return t.top, t.bottom }
+
 // AltScreen is whether the alternate screen is showing (modes 47, 1047, 1049), which Modes does
 // not report because it is kept as the swapped-out main screen rather than as a flag.
 func (t *Term) AltScreen() bool { return t.alt != nil }

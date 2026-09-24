@@ -179,9 +179,8 @@ the live screen.
 It is not the default, and the reason is worth knowing: a byte pipe cannot corrupt a screen it
 never interprets, while this interprets every escape sequence a service emits. One it gets wrong is
 a screen `Ctrl-L` will not fix. What it understands is pinned by a corpus of screens recorded from
-a real terminal (`make conform`), and `make acceptance` checks that a real `vim` drawing wide
-characters looks identical through gozellij and through tmux. `-no-render` gets you the byte pipe
-back for one command if a screen ever looks wrong.
+a real terminal (`make conform`), which `make fuzz` extends with streams nobody wrote.
+`-no-render` gets you the byte pipe back for one command if a screen ever looks wrong.
 
 ### A status line
 
@@ -209,67 +208,31 @@ where nothing can draw over it; `where=off` draws nothing.
 ## Does it still do what it says?
 
 ```sh
-./scripts/acceptance.sh
+make check
 ```
 
-Twenty-one checks, on a real pty, against a throwaway daemon: an interactive shell, the environment
-it gets, detaching without stopping, switching services, an upgrade that keeps every pid *with a
-client attached across it*, logs outliving the daemon, enabled services returning, and a stop that
-takes a service's children with it. Exits non-zero if any promise has stopped holding.
-
-## Why start again, in Go
-
-`gozellij` follows [gezellij](https://github.com/LaPingvino/gezellij), a Zellij fork that is in
-daily use. The reason to start over is what we measured in that fork:
-
-- **332,962** lines of Rust, of which **~4,100 (1.2%)** were this project's actual idea
-- **~42 minutes** for a full rebuild; **30s–2m39s** to see a one-line change
-- a **227 MiB** debug binary
-
-We were maintaining a terminal emulator, a layout engine, a WASM plugin host and a renderer in
-order to ship 1.2%. And the iteration tax lands hardest on the one genuinely hard part of this
-project — terminal emulation — where correctness comes from thousands of fast cycles against an
-oracle, not from careful reading.
-
-No claim that Rust was the problem. Every bug fixed on the fork's last day was a design bug —
-one-second timeouts, a 100 ms budget that blanked a column silently, a function returning success
-for a message it had thrown away. The type system encodes none of that.
-
-## Plan
-
-1. **The fabric, and single-pane attach — no terminal emulator.** Proxy the child's PTY bytes
-   straight through; your terminal is the emulator. Supervision, restart policy with backoff,
-   cgroup freeze/thaw, per-service addresses, in-place upgrade. Useful on its own.
-2. **The oracle.** A `vt.Terminal` interface, a differential harness that diffs two
-   implementations cell by cell, and a conformance corpus replayed from real programs. Built
-   *before* the emulator, so emulator work is machine-checked from its first line.
-3. **Multiplexing.** Panes, layouts, UI.
-4. **Plugins, if wanted.** Cheaper than it looks: Zellij's whole plugin ABI is one wasm host
-   function plus protobuf, and its default plugins are prebuilt `wasm32-wasip1` artifacts that
-   `wazero` can host with no cgo.
-
-See [DESIGN.md](DESIGN.md) for the reasoning, the Go terminal-emulator survey behind step 2, and
-the design rules.
-
-## Build and test
+Every promise in [docs/REPLACING_GEZELLIJ.md](docs/REPLACING_GEZELLIJ.md) is a Go test. The ones
+about the screen run the real attach client on a real pty inside the test and read what it draws
+with gozellij's own terminal emulator, which is conformance-tested against tmux
+(`internal/daemon/screen_test.go` and the `port_*_test.go` files beside it). No test waits a
+guessed number of seconds: each waits for what it expects to see, so the whole suite takes about a
+minute and does not fail because the machine is busy. They replaced a tmux-driven script that took
+forty minutes and found three races and two keystroke bugs on the way out.
 
 ```sh
-make build        # bin/gozellij and bin/gozellijd, version stamped from git
-make test         # go test ./...
-make race         # go test -race ./...
-make acceptance   # scripts/acceptance.sh: every promise, on this machine, now
-make fuzz         # generate terminal streams nobody wrote and diff them against tmux
-make check        # fmt, vet, test, race, acceptance - what to run before pushing
+make build         # bin/gozellij and bin/gozellijd, version stamped from git
+make test          # go test ./... - every promise, screens included
+make race          # go test -race ./...
+make conform       # the emulator against screens recorded from tmux
+make fuzz          # generate terminal streams nobody wrote and diff them against tmux
+make package       # scripts/package.sh: the PKGBUILD still replaces gezellij, offline
+make fdstore       # scripts/fdstore.sh: what survives a daemon crash, under real systemd
+make upgrade-from FROM=<rev>   # the upgrade from what you have installed to this build
+make check         # fmt, vet, test, race, conform, package, fdstore - before pushing
 ```
 
-All of them are expected to pass. `make acceptance` is the slow one and the one that matters
-most: it drives real ptys, a real daemon under `env -i` and a real tmux screen, and it re-checks
-each promise in [docs/REPLACING_GEZELLIJ.md](docs/REPLACING_GEZELLIJ.md) rather than taking the
-document's word for it. Several of the last bugs found were invisible to the unit tests, because
-they were about what the terminal ends up showing.
-
-See [packaging/](packaging/) for the systemd user unit, and `packaging/arch/PKGBUILD` on Arch -
-that one installs the unit too, and `replaces` gezellij, so installing it *is* the migration.
+What still needs a script is what cannot happen inside a test process: systemd's file-descriptor
+store, exec'ing a different build of the daemon, and makepkg.
 
 ## Name
 

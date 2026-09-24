@@ -104,7 +104,7 @@ Shippable, useful, and it carries no VTE risk.
 
 *Phase 1 is now built, and it found its own edge.* The byte pipe holds for everything that is
 about processes — logs, tree-kill, restart, upgrade, attach, tabs — and 28 promises in
-`scripts/acceptance.sh` re-check that on demand. It stops being enough the moment something wants
+`scripts/acceptance.sh` (since ported to Go tests) re-check that on demand. It stops being enough the moment something wants
 to draw on the terminal *alongside* the service. The byobu-style status line is that something,
 and it took eight adversarial passes finding eight bugs, four of them in the drawing itself. Two
 of its defects are not bugs and cannot be fixed from where it sits:

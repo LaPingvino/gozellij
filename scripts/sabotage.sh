@@ -29,7 +29,7 @@ usage: $0 <file> <old-text> <new-text> [suite]
   file       path within the repository, as committed at HEAD
   old-text   exact text to replace (must appear exactly once)
   new-text   what to put there
-  suite      acceptance (default) or fdstore
+  suite      go (default: go test ./...), or a script in scripts/: fdstore, package
 
 Example:
   $0 internal/daemon/renderclient.go 's.cols, s.rows, s.reserved = cols, rows, reserved' '_ = reserved'
@@ -37,7 +37,7 @@ USAGE
     exit 2
 fi
 
-file="$1"; old="$2"; new="$3"; suite="${4:-acceptance}"
+file="$1"; old="$2"; new="$3"; suite="${4:-go}"
 repo=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 tree="$work/tree"
@@ -68,19 +68,25 @@ PY
 
 ( cd "$tree" && go build ./... ) || { echo "the sabotaged tree does not build - fix the replacement" >&2; exit 1; }
 
-echo "running $suite against it; this takes a few minutes"
-( cd "$tree" && "./scripts/$suite.sh" > "$work/out.log" 2>&1 )
+echo "running $suite against it"
+if [ "$suite" = go ]; then
+    ( cd "$tree" && go test -count=1 ./... > "$work/out.log" 2>&1 )
+else
+    ( cd "$tree" && "./scripts/$suite.sh" > "$work/out.log" 2>&1 )
+fi
 status=$?
 
 echo
-if grep -qE "^  FAIL" "$work/out.log"; then
+if grep -qE "^  FAIL|^--- FAIL" "$work/out.log"; then
     echo "these promises noticed:"
     # The FAIL line *and* whatever it wrote under it. A check that prints evidence on more than
     # one line - a cursor position, a screen dump, the two halves of a comparison - had all of it
     # thrown away here, because this printed only the first line and then the worktree went. That
     # cost the one measurement a bug hunt had been waiting on, in a run that reproduced it.
-    awk '/^  FAIL/ { show = 1; print; next }
-         show && /^        / { print; next }
+    # Both shapes: a script's "  FAIL" with its evidence indented under it, and go test's
+    # "--- FAIL: TestName" with the test's output indented under that.
+    awk '/^  FAIL|^--- FAIL/ { show = 1; print; next }
+         show && /^    / { print; next }
          { show = 0 }' "$work/out.log"
 else
     echo "NOTHING FAILED. Either the sabotage did not reach anything, or the behaviour it broke"

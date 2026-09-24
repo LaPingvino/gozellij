@@ -2,9 +2,8 @@
 #
 # Does the daemon keep its listening socket across a restart?
 #
-# Not part of scripts/acceptance.sh, and it cannot be: that script starts the daemon itself under
-# `env -i`, with no service manager anywhere, which is deliberate - it is how TERM=dumb was found.
-# This one needs the opposite, a real systemd user manager, so it is its own script.
+# A script and not a Go test because it needs a real systemd user manager: the daemon runs as a
+# transient unit, crashes for real, and is started again by systemd with what it stored.
 #
 #   ./scripts/fdstore.sh
 #

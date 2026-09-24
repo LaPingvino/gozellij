@@ -67,6 +67,14 @@ func screenEnv(t *testing.T) string {
 // attachScreen starts `gozellij attach service` in a cols x rows terminal.
 func attachScreen(t *testing.T, sock, service string, cols, rows int, opts AttachOptions) *testScreen {
 	t.Helper()
+	return attachScreenOver(t, sock, service, cols, rows, opts, nil)
+}
+
+// attachScreenOver is attachScreen into a terminal that already shows what before draws - a screen
+// somebody has been using, with the cursor at the bottom, which is where the bugs are that a
+// blank screen hides.
+func attachScreenOver(t *testing.T, sock, service string, cols, rows int, opts AttachOptions, before []byte) *testScreen {
+	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("pty: %v", err)
@@ -75,6 +83,9 @@ func attachScreen(t *testing.T, sock, service string, cols, rows int, opts Attac
 		t.Fatalf("pty size: %v", err)
 	}
 	s := &testScreen{t: t, sock: sock, master: master, slave: slave, term: grid.New(cols, rows), done: make(chan error, 1)}
+	if len(before) > 0 {
+		_, _ = s.term.Write(before)
+	}
 
 	// Process-wide client state starts clean for each screen.
 	showing = showingName{}
@@ -224,6 +235,21 @@ func (s *testScreen) StillAttached() bool {
 	default:
 		return true
 	}
+}
+
+// Cursor is where the terminal's cursor is, zero-based.
+func (s *testScreen) Cursor() (row, col int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.term.Cursor()
+	return c.Row, c.Col
+}
+
+// ScrollRegion is the terminal's scrolling region, zero-based rows.
+func (s *testScreen) ScrollRegion() (top, bottom int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.term.ScrollRegion()
 }
 
 // Resize changes the terminal's size, the way a window being dragged does.
