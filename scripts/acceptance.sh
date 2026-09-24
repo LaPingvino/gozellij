@@ -2851,6 +2851,92 @@ PROFILE
     "$gz" stop pane1 pane2 >/dev/null 2>&1
     "$gz" rm pane1 pane2 >/dev/null 2>&1
 
+    # ------------------------------------------- a shell tab you exit closes, and keeps its log
+    #
+    # Checks for 4a056ed, the other session's work, here because this file is mine. What decides
+    # closing is a per-service flag rather than the name - set by `gozellij shell`, Ctrl-] c and
+    # `add -close-on-exit` - with a name fallback for services made before the flag existed, and
+    # only when the process exited by itself.
+    #
+    # So the four cases below are not four ways of saying the same thing. Two of them say what
+    # does *not* close, and those are the ones that would go wrong quietly: a tab that vanished
+    # because its shell was killed would take the evidence with it.
+    only
+    "$gz" add anchorsvc -start -restart no -- sh -c 'printf "ANCHOR-UP\r\n"; sleep 300' >/dev/null 2>&1
+    sleep 1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 10 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color -e SHELL=/bin/sh \
+        "sh -c 'stty -echo; $gz attach anchorsvc; printf \"OUT-OF-IT\\n\"; sleep 60'"
+    sleep 3
+
+    tmux -L "$tmuxSock" send-keys C-] 'c'
+    sleep 3
+    made=$("$gz" ls 2>/dev/null | awk 'NR>1 && $1 ~ /^shell/ {print $1}' | head -1)
+    if [ -n "$made" ]; then
+        tmux -L "$tmuxSock" send-keys C-d
+        sleep 4
+        if ! "$gz" status "$made" >/dev/null 2>&1; then
+            ok "a shell tab made with Ctrl-] c is gone from ls once you exit it"
+        else
+            bad "$made is still there: $("$gz" status "$made" 2>/dev/null | grep '^state:' | tr -d '\n')"
+        fi
+        if pane | grep -q 'anchorsvc' && ! pane | grep -q 'OUT-OF-IT'; then
+            ok "and you are back on the service you pressed c in"
+        else
+            bad "after closing the tab the screen says: $(pane | grep -v '^$' | tail -2 | tr '\n' '|')"
+        fi
+
+        # The log outlives the entry. Closing a tab must not throw away what it said - that is
+        # where the reason usually is - so the name leaves `ls` and the transcript does not.
+        kept=$("$gz" logs "$made" 2>&1)
+        if printf '%s' "$kept" | grep -q 'no service is called'; then
+            ok "and its log is still readable afterwards, with a word about the name being gone"
+        else
+            bad "logs for the closed tab said: $(printf '%s' "$kept" | head -2 | tr '\n' '|')"
+        fi
+    else
+        bad "Ctrl-] c made no shell: $("$gz" ls 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')"
+    fi
+
+    # Renamed first: it still closes, which is what says the flag travels with the service rather
+    # than the checking being done on the name.
+    tmux -L "$tmuxSock" send-keys C-] 'c'
+    sleep 3
+    tmux -L "$tmuxSock" send-keys C-] ','
+    sleep 1
+    tmux -L "$tmuxSock" send-keys C-u
+    sleep 1
+    tmux -L "$tmuxSock" send-keys 'not-called-shell' Enter
+    sleep 3
+    if "$gz" status not-called-shell >/dev/null 2>&1; then
+        tmux -L "$tmuxSock" send-keys C-d
+        sleep 4
+        if ! "$gz" status not-called-shell >/dev/null 2>&1; then
+            ok "and a tab renamed away from shell still closes, so it is the flag and not the name"
+        else
+            bad "the renamed tab stayed: $("$gz" status not-called-shell 2>/dev/null | grep '^state:' | tr -d '\n')"
+        fi
+    else
+        bad "the rename did not take: $("$gz" ls 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+
+    # And the two that must NOT close. A service without the flag is somebody's long-running thing
+    # that happens to be a shell, and one that was killed did not exit - the tab staying is how you
+    # find out what happened to it.
+    "$gz" add plainshell -start -restart no -- sh -c 'printf "PLAIN-UP\r\n"; exec sleep 300' >/dev/null 2>&1
+    sleep 2
+    "$gz" stop plainshell >/dev/null 2>&1
+    sleep 2
+    if "$gz" status plainshell >/dev/null 2>&1; then
+        ok "a service added without the flag stays defined after it ends"
+    else
+        bad "a plain service disappeared when it ended"
+    fi
+    "$gz" rm plainshell anchorsvc >/dev/null 2>&1
+
     # --------------------------------------- exiting one shell of several moves you on, not out
     #
     # Joop's report, fixed by the other session working this tree (4cc0cf0, recorded in 6f06851),
