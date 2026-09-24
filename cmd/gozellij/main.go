@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -281,6 +282,44 @@ func looksLikeAServiceName(s string) bool {
 // that is not running has nothing worth keeping, and inheriting a TERM from three logins ago is how
 // you end up with a vim that draws garbage. Keep a shell you have customised under another name and
 // attach to it by name.
+// landInsteadOfRecreating is the running service to land in when the shell asked for no longer
+// exists, or "" to go ahead as asked. See cmdShell.
+func landInsteadOfRecreating(sock, name string) string {
+	path := sock
+	if path == "" {
+		path = daemon.SocketPath()
+	}
+	c, err := daemon.Dial(path)
+	if err != nil {
+		return ""
+	}
+	defer c.Close()
+	list, err := c.List()
+	if err != nil {
+		return ""
+	}
+	var running []string
+	for _, s := range list.Services {
+		if s.Service == name {
+			return "" // it exists, running or not: as asked
+		}
+		if s.Pid != 0 {
+			running = append(running, s.Service)
+		}
+	}
+	if len(running) == 0 {
+		return ""
+	}
+	last := daemon.LastShown()
+	for _, n := range running {
+		if n == last {
+			return n
+		}
+	}
+	sort.Strings(running)
+	return running[0]
+}
+
 func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sock := socketFlag(fs)
@@ -301,6 +340,15 @@ func cmdShell(args []string) error {
 				*name = n
 			}
 		}
+	}
+	// A shell you closed by exiting it stays closed. Tabs close when you exit them now, so
+	// "land in shell, and make it if it is gone" brought back the tab you had just Ctrl-D'd the
+	// moment you reattached, while the ones you left running waited behind it. When the shell
+	// named is gone and something else is running, land there instead - where you last were, if
+	// that is still running - the way tmux attaches to the session you have rather than making
+	// a new one. Only with nothing running is a new shell the answer.
+	if n := landInsteadOfRecreating(*sock, *name); n != "" {
+		*name = n
 	}
 	// Bare `gozellij`, typed inside a gozellij shell, is the same nesting as `attach` - and the
 	// same feedback loop when the shell it would land in is this one.
