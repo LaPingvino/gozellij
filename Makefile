@@ -64,6 +64,19 @@ quick:
 fdstore:
 	bash scripts/fdstore.sh
 
+# upgrade-from is the upgrade somebody actually does: from the build they have installed to the
+# one just built, which can span weeks of changes to the handover. Every other suite upgrades a
+# binary to *itself*, so nothing else here tests two different builds talking to each other.
+#
+#   make upgrade-from FROM=14ae127
+#
+# Not in `check`: it needs a revision to come from, and which one is a fact about somebody's
+# machine rather than about this tree. Run it before telling anybody an upgrade is safe.
+FROM ?=
+upgrade-from:
+	@test -n "$(FROM)" || { echo "give a revision: make upgrade-from FROM=<rev>"; exit 2; }
+	bash scripts/upgrade-from.sh $(FROM)
+
 # conform runs the corpus against tmux: every case is driven through a real terminal emulator and
 # compared with the recording checked in beside it. It is separate from `test` because it needs
 # tmux, and it is in `check` because a corpus that is not run is a corpus that is not true.
