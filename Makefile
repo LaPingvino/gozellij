@@ -36,9 +36,14 @@ fmt:
 acceptance:
 	bash scripts/acceptance.sh
 
-# quick runs the promises that do not need a terminal: twenty-two of them, in about forty seconds,
-# against a hundred and thirteen in six minutes. For the loop you are in while changing the daemon
-# or the fabric, where waiting six minutes to learn you mistyped something is its own kind of bug.
+# quick runs the promises that do not need a terminal: sixty-two of them in under a minute,
+# against a hundred and ninety-two in about fourteen. For the loop you are in while changing the
+# daemon or the fabric, where waiting fourteen minutes to learn you mistyped something is its own
+# kind of bug.
+#
+# Put a new check here unless it needs a terminal. Appending to the end of acceptance.sh lands it
+# inside the block -noscreen skips, which is where several checks that needed no terminal sat
+# unrun until somebody noticed.
 #
 # Not part of `check`, and it says on the way out that it skipped the rest. A fast mode that
 # reports the same line as the real one is how a suite starts lying: somebody says "all green"
@@ -83,7 +88,11 @@ fuzz:
 	go test ./internal/vt/grid/ -count=1 -run TestAgainstTmux -fuzz 200 -fuzzseed $$RANDOM -timeout 60m
 
 # check is what to run before pushing.
-check: fmt vet test race conform acceptance
+# check runs everything that can run here. fdstore is in it because leaving it out is how it went
+# ninety-odd commits without being run at all: it is the only thing covering what survives a daemon
+# restart, and nothing else fails when that breaks. It costs nothing on a machine without a systemd
+# user manager - it says so and exits 0.
+check: fmt vet test race conform acceptance fdstore
 
 install: build
 	install -Dm755 bin/gozellijd $(BIN)/gozellijd

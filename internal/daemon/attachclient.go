@@ -281,7 +281,16 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	}
 
 	first := true
+	// shown is the service on screen and cameFrom the one before it, which is where an exit
+	// goes back to: Ctrl-] c and then exit should put you where you pressed c.
+	var shown, cameFrom string
 	for {
+		if service != shown {
+			if shown != "" {
+				cameFrom = shown
+			}
+			shown = service
+		}
 		// Where this terminal is now, for `gozellij shell -last`. A watcher is not somewhere
 		// anybody was working.
 		if !opts.ReadOnly {
@@ -328,7 +337,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		// Renamed while attached, so everything from here on - the detach message, k, u, the
 		// reconnect after an upgrade - has to use the name it has now.
 		if renamed := c.RenamedTo(); renamed != "" {
-			service = renamed
+			service, shown = renamed, renamed
 		}
 		if err != nil {
 			return err
@@ -348,9 +357,25 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 
 			case outcomeFinished:
 				if wasRunningOnArrival {
-					// It ended under you: `exit` in the shell you were working in. Give the
-					// terminal back, which is the whole of what somebody typing exit is asking
-					// for.
+					// It ended under you: `exit` in the shell you were working in. If another
+					// service is running, go there, the way closing a tab in tmux lands you on the
+					// next one - leaving gozellij because one of several shells exited threw away
+					// the others' screen for a keystroke that meant "done with this one". Only when
+					// nothing else is running is the terminal handed back, which is what exit in
+					// your last shell is asking for.
+					next := cameFrom
+					if next == service || !serviceIsRunningStrict(socket, next) {
+						next = runningNeighbour(socket, service)
+					}
+					ended := service + " exited"
+					if next != "" {
+						say(ended + " - now on " + next)
+						service = next
+						showService(out, service)
+						painter.Repaint()
+						first, replay = true, true
+						break dispatch
+					}
 					restore()
 					return nil
 				}
@@ -384,7 +409,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 					outcome = *instead
 					continue dispatch
 				}
-				service = name
+				service, shown = name, name
 				say(msg)
 				first, replay = true, true
 				break dispatch
@@ -778,6 +803,48 @@ func neighbourService(socket, current string, forward bool) (string, error) {
 		step = -1
 	}
 	return names[(at+step+len(names))%len(names)], nil
+}
+
+// serviceIsRunningStrict is serviceIsRunning without the benefit of the doubt: false when it cannot
+// tell, because this chooses where to go and a guess could land on a service that is not there.
+func serviceIsRunningStrict(socket, name string) bool {
+	if name == "" {
+		return false
+	}
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return false
+	}
+	for _, s := range list {
+		if s.Service == name {
+			return s.Pid != 0
+		}
+	}
+	return false
+}
+
+// runningNeighbour is the next running service after current, in the order n goes, or "" when no
+// other service is running. Stopped ones are passed over: landing on one after an exit would be
+// a second dead end straight after the first.
+func runningNeighbour(socket, current string) string {
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return ""
+	}
+	at := -1
+	for i, s := range list {
+		if s.Service == current {
+			at = i
+			break
+		}
+	}
+	for step := 1; step <= len(list); step++ {
+		s := list[(at+step+len(list))%len(list)]
+		if s.Service != current && s.Pid != 0 {
+			return s.Service
+		}
+	}
+	return ""
 }
 
 // waitForDaemonClient polls until the daemon both accepts and answers.
