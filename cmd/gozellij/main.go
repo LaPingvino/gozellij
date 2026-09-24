@@ -401,6 +401,8 @@ func cmdShell(args []string) error {
 		Restart: "no",
 		// A shell you live in closes when you exit it, as long as there is somewhere else to be.
 		CloseOnExit: true,
+		// And is named after what you run in it, once you do.
+		AutoName: true,
 	})
 	c.Close()
 	if err != nil {

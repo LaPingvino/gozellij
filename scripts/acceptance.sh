@@ -2008,7 +2008,7 @@ PROFILE
     sleep 1
     tmux -L "$tmuxSock" send-keys C-] 'c'
     sleep 3
-    if "$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'shell-2'; then
+    if "$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'new-1'; then
         ok "Ctrl-] c starts a new shell from inside an attach"
     else
         bad "no new shell appeared: $("$gz" ls 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')"
@@ -2016,13 +2016,13 @@ PROFILE
     tmux -L "$tmuxSock" send-keys 'echo "IN=[$GOZELLIJ] AT=[$(pwd)]"' Enter
     sleep 2
     seen=$(pane | grep -o 'IN=\[[^]]*\] AT=\[[^]]*\]' | tail -1)
-    if [ "$seen" = "IN=[shell-2] AT=[$home/deep/er]" ]; then
+    if [ "$seen" = "IN=[new-1] AT=[$home/deep/er]" ]; then
         ok "and it opens where you were, knowing its own name"
     else
         bad "the new shell says $seen"
     fi
     tmux -L "$tmuxSock" kill-server 2>/dev/null
-    "$gz" rm shell shell-2 >/dev/null 2>&1
+    "$gz" rm shell new-1 >/dev/null 2>&1
 
     # ----------------------------------------- watching without being able to touch
     #
@@ -2873,7 +2873,7 @@ PROFILE
 
     tmux -L "$tmuxSock" send-keys C-] 'c'
     sleep 3
-    made=$("$gz" ls 2>/dev/null | awk 'NR>1 && $1 ~ /^shell/ {print $1}' | head -1)
+    made=$("$gz" ls 2>/dev/null | awk 'NR>1 && $1 ~ /^new-/ {print $1}' | head -1)
     if [ -n "$made" ]; then
         tmux -L "$tmuxSock" send-keys C-d
         sleep 4
@@ -3176,8 +3176,9 @@ PROFILE
     fi
     tmux -L "$tmuxSock" kill-server 2>/dev/null
 
-    # And without the flag nothing changed, which is the half that makes it safe to have: a login
-    # still lands in the service called shell, whatever anybody was last looking at.
+    # And without the flag, a login lands in the service called shell when there is one, whatever
+    # anybody was last looking at - the half that makes -last safe to have.
+    "$gz" add shell -start -- sleep 120 >/dev/null 2>&1
     newscreen
     tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
         -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
@@ -3185,9 +3186,26 @@ PROFILE
         "sh -c 'stty -echo; exec $gz shell'"
     sleep 4
     if pane | grep -q '\[shell\]'; then
-        ok "and a plain gozellij shell still lands in shell, as it always did"
+        ok "and a plain gozellij shell still lands in shell when there is one"
     else
         bad "a plain shell landed elsewhere: $(pane | tail -2 | tr '\n' '|')"
+    fi
+    tmux -L "$tmuxSock" kill-server 2>/dev/null
+
+    # But a shell that is gone - closed by exiting it, since tabs close - is not made again while
+    # something else runs: the login lands there instead (5c2946f). Making it again was how a tab
+    # Joop had just Ctrl-D'd came back on the next attach.
+    "$gz" rm shell >/dev/null 2>&1
+    newscreen
+    tmux -L "$tmuxSock" new-session -d -x 60 -y 8 \
+        -e GOZELLIJ_RUNTIME_DIR="$run" -e GOZELLIJ_STATE_DIR="$state" -e HOME="$home" \
+        -e TERM=xterm-256color \
+        "sh -c 'stty -echo; exec $gz shell'"
+    sleep 4
+    if pane | grep -q '\[lastone\]' && ! "$gz" ls 2>/dev/null | awk 'NR>1{print $1}' | grep -qx shell; then
+        ok "and when shell is gone and something else runs, it lands there rather than making shell again"
+    else
+        bad "with shell gone: $(pane | tail -1) / services: $("$gz" ls 2>/dev/null | awk 'NR>1{printf "%s ", $1}')"
     fi
     tmux -L "$tmuxSock" kill-server 2>/dev/null
     "$gz" stop lastone shell >/dev/null 2>&1

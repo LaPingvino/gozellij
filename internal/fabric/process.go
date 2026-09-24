@@ -3,6 +3,7 @@ package fabric
 import (
 	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"io"
 	"os"
 	"os/exec"
@@ -468,6 +469,22 @@ func (p *Process) Resize(cols, rows int) error {
 	}
 	p.Output.SetSize(cols, rows)
 	return nil
+}
+
+// Foreground is the process group in the foreground of this process's terminal: the process's own
+// when its shell is waiting at a prompt, a job's while it runs one. ok is false when the terminal
+// is gone or cannot say.
+func (p *Process) Foreground() (pgid int, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.pty == nil {
+		return 0, false
+	}
+	pg, err := unix.IoctlGetInt(int(p.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pg <= 0 {
+		return 0, false
+	}
+	return pg, true
 }
 
 // Signal sends a signal to the child.

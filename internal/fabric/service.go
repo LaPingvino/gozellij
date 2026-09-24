@@ -49,6 +49,10 @@ type Service struct {
 	// window closes. Its log is kept. Set by `gozellij shell` and Ctrl-] c, and by add
 	// -close-on-exit; carried through a rename because it is part of the definition, not the name.
 	CloseOnExit bool `json:"close_on_exit,omitempty"`
+	// AutoName is a placeholder name, to be replaced by the first program that runs in the
+	// foreground for a while - new-2 becomes claude. Set on the tabs gozellij makes for you, and
+	// cleared by any rename, so a name somebody chose is never overwritten.
+	AutoName bool `json:"auto_name,omitempty"`
 	// CreatedAt is when the service was first defined.
 	CreatedAt time.Time `json:"created_at"`
 }

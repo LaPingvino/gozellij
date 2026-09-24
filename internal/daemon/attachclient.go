@@ -209,7 +209,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		}
 		if cols > 0 && rows > 0 {
 			rendered = newRenderedScreen(screen, cols, rows, reserved, statusLine(cfg, func() status.Context {
-				return StatusContext(socket, service)
+				return StatusContext(socket, showing.get(service))
 			}))
 			defer rendered.Close()
 			// Anything the keyboard reader has to say now goes on the status line, where a paint
@@ -224,7 +224,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	}
 	if rendered == nil {
 		painter = newStatusPainter(screen, in, cfg, func() status.Context {
-			return StatusContext(socket, service)
+			return StatusContext(socket, showing.get(service))
 		})
 		defer painter.Close()
 		out = screen
@@ -292,6 +292,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	// goes back to: Ctrl-] c and then exit should put you where you pressed c.
 	var shown, cameFrom string
 	for {
+		showing.set(service)
 		if service != shown {
 			if shown != "" {
 				cameFrom = shown
@@ -575,6 +576,24 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		first = false
 		replay = false
 	}
+}
+
+// showing is the name of the service this terminal is showing, for the status line - which runs on
+// its own and has to know about a rename the moment the stream reports one, not when the session
+// next ends. Renamed from under you is common now that tabs name themselves (autoname.go): the bar
+// lost the [brackets] on the current tab until the next switch.
+var showing showingName
+
+type showingName struct{ p atomic.Pointer[string] }
+
+func (s *showingName) set(name string) { s.p.Store(&name) }
+
+// get is the name shown, or fallback before anything has been.
+func (s *showingName) get(fallback string) string {
+	if n := s.p.Load(); n != nil {
+		return *n
+	}
+	return fallback
 }
 
 // terminalModes is what the services shown in this terminal have switched it into, so that leaving
@@ -1062,15 +1081,17 @@ func newShell(socket, from string) (string, error) {
 	for _, s := range list.Services {
 		taken[s.Service] = true
 	}
+	// new-N, a name that looks like the placeholder it is: the first program run in the tab
+	// replaces it (AutoName, see autoname.go).
 	name := ""
-	for i := 2; i < 1000; i++ {
-		if n := fmt.Sprintf("shell-%d", i); !taken[n] {
+	for i := 1; i < 1000; i++ {
+		if n := fmt.Sprintf("new-%d", i); !taken[n] {
 			name = n
 			break
 		}
 	}
 	if name == "" {
-		return "", errors.New("no free shell-N name below shell-1000")
+		return "", errors.New("no free new-N name below new-1000")
 	}
 
 	dir, _ := os.UserHomeDir()
@@ -1091,6 +1112,8 @@ func newShell(socket, from string) (string, error) {
 	}
 	if _, err := c.Add(name, ipc.AddRequest{
 		Command: shell, Args: []string{"-l"}, Dir: dir, Env: env, Start: true, CloseOnExit: true,
+		// A placeholder until the first program run in it names it.
+		AutoName: true,
 	}); err != nil {
 		return "", fmt.Errorf("could not start a new shell: %w", err)
 	}
@@ -1571,6 +1594,7 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 						followRename(c.attachedAs, name)
 					}
 					c.renamedTo.Store(&name)
+					showing.set(name)
 					continue
 				}
 				if ev.Message != "" {

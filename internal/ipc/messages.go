@@ -143,6 +143,8 @@ type AddRequest struct {
 	NoLog bool `json:"no_log,omitempty"`
 	// CloseOnExit: see fabric.Service.
 	CloseOnExit bool `json:"close_on_exit,omitempty"`
+	// AutoName: see fabric.Service.
+	AutoName bool `json:"auto_name,omitempty"`
 }
 
 // AttachRequest is the payload of OpAttach.

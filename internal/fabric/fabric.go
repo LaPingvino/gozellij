@@ -617,6 +617,8 @@ func (f *Fabric) Rename(oldName, newName string) error {
 		return err
 	}
 	def.Name = newName
+	// Named now, by a person or by the first program run in it: see Service.AutoName.
+	def.AutoName = false
 	if err := f.reg.Add(def); err != nil {
 		return err
 	}

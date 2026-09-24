@@ -160,6 +160,8 @@ func (s *Server) Addr() string { return s.path }
 
 // Serve accepts connections until the server is closed. It returns nil on a clean shutdown.
 func (s *Server) Serve() error {
+	// Tabs waiting to be named after the first program run in them. See autoname.go.
+	go s.autoNamer()
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
@@ -404,6 +406,7 @@ func (s *Server) add(req ipc.Request) ipc.Response {
 		NoLog:   add.NoLog,
 
 		CloseOnExit: add.CloseOnExit,
+		AutoName:    add.AutoName,
 	}
 	if err := s.fab.Add(svc, add.Start); err != nil {
 		return ipc.Err(req.ID, err)
@@ -461,6 +464,7 @@ func (s *Server) ensure(req ipc.Request) ipc.Response {
 		NoLog:   add.NoLog,
 
 		CloseOnExit: add.CloseOnExit,
+		AutoName:    add.AutoName,
 	}
 	if err := s.fab.Ensure(svc); err != nil {
 		return ipc.Err(req.ID, err)
