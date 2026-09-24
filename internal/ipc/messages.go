@@ -20,7 +20,9 @@ const (
 	OpServiceRestrt Op = "service.restart"
 	OpServiceRemove Op = "service.remove"
 	OpServiceRename Op = "service.rename"
-	OpServiceSet    Op = "service.set"
+	// OpServiceMove puts a service's tab at a position among the others (MoveRequest).
+	OpServiceMove Op = "service.move"
+	OpServiceSet  Op = "service.set"
 	// OpAttach turns the connection into a stream: the daemon sends the service's output as
 	// data frames and reads the client's keystrokes as data frames, until the client hangs up.
 	OpAttach Op = "attach"
@@ -194,6 +196,8 @@ type StatusReply struct {
 	// Created is when the service was first defined, which is the order tabs are numbered in.
 	// Zero from a daemon too old to send it; tabs are then in name order.
 	Created time.Time `json:"created,omitempty"`
+	// Order is where the tab was put by hand, zero if it never was. See fabric.Service.Order.
+	Order int64 `json:"order,omitempty"`
 	// LogError is why this service's output is not reaching disk, empty when it is.
 	LogError string `json:"log_error,omitempty"`
 	// Viewers is how many clients are attached right now. Only the daemon can know this, and it
@@ -238,6 +242,11 @@ type SetReply struct {
 // RenameRequest is the payload of OpServiceRename; the request's Service is the current name.
 type RenameRequest struct {
 	To string `json:"to"`
+}
+
+// MoveRequest is the payload of OpServiceMove: the position, counting from 1, the tab should have.
+type MoveRequest struct {
+	To int `json:"to"`
 }
 
 // RemoveRequest is the payload of OpServiceRemove.

@@ -105,3 +105,32 @@ func TestScreenNumberedTabsFollowCreationNotNames(t *testing.T) {
 		t.Fatal("asking for a tab that does not exist ended the attach")
 	}
 }
+
+// Ctrl-] { and } move the tab you are on; the order holds, and a tab made afterwards goes last.
+func TestScreenMovingATab(t *testing.T) {
+	screenEnv(t)
+	_, _, sock := newTestDaemon(t)
+	addRunning(t, sock, "one", "sh", "-c", `exec cat`)
+	addRunning(t, sock, "two", "sh", "-c", `exec cat`)
+	addRunning(t, sock, "three", "sh", "-c", `exec cat`)
+
+	s := attachScreen(t, sock, "three", 100, 12, AttachOptions{Replay: true, Mode: RenderOff})
+	s.BottomShows("1:one 2:two 3:[three]")
+
+	s.Prefix('{')
+	s.BottomShows("1:one 2:[three] 3:two")
+	s.Prefix('{')
+	s.BottomShows("1:[three] 2:one 3:two")
+	s.Prefix('{')
+	s.BottomShows("already at the end")
+
+	s.Prefix('}')
+	s.BottomShows("1:one 2:[three] 3:two")
+
+	addRunning(t, sock, "four", "sh", "-c", `exec cat`)
+	s.BottomShows("1:one 2:[three] 3:two 4:four")
+
+	// The numbers are what Ctrl-] N goes by.
+	s.Prefix('3')
+	s.BottomShows("3:[two]")
+}

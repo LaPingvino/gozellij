@@ -362,6 +362,8 @@ func (s *Server) dispatch(req ipc.Request) ipc.Response {
 		}
 		return s.statusAfter(req)
 
+	case ipc.OpServiceMove:
+		return s.move(req)
 	case ipc.OpServiceRename:
 		return s.rename(req)
 	case ipc.OpServiceSet:
@@ -611,6 +613,40 @@ func definitionSignature(d *fabric.Service) string {
 }
 
 // rename gives a service a new name.
+// move puts a tab at a position, numbering every tab from then on: the ones never moved keep
+// their places around it, in the order they had.
+func (s *Server) move(req ipc.Request) ipc.Response {
+	var mr ipc.MoveRequest
+	if err := json.Unmarshal(req.Payload, &mr); err != nil {
+		return ipc.Err(req.ID, fmt.Errorf("malformed %s payload: %w", req.Op, err))
+	}
+	list := s.listReplies()
+	TabOrder(list)
+	at := -1
+	for i, st := range list {
+		if st.Service == req.Service {
+			at = i
+		}
+	}
+	if at < 0 {
+		return ipc.Err(req.ID, fmt.Errorf("%w: %s", fabric.ErrNoSuchService, req.Service))
+	}
+	to := min(max(mr.To, 1), len(list)) - 1
+	moved := list[at]
+	list = append(list[:at], list[at+1:]...)
+	list = append(list[:to], append([]ipc.StatusReply{moved}, list[to:]...)...)
+	for i, st := range list {
+		pos := int64(i + 1)
+		if st.Order == pos {
+			continue
+		}
+		if _, err := s.fab.Update(st.Service, func(d *fabric.Service) { d.Order = pos }); err != nil {
+			return ipc.Err(req.ID, fmt.Errorf("moving %s: %w", req.Service, err))
+		}
+	}
+	return ipc.OKResponse(req.ID, nil)
+}
+
 func (s *Server) rename(req ipc.Request) ipc.Response {
 	var rr ipc.RenameRequest
 	if err := json.Unmarshal(req.Payload, &rr); err != nil {
@@ -784,12 +820,17 @@ func (s *Server) requestUpgrade(req ipc.Request) ipc.Response {
 }
 
 func (s *Server) list(req ipc.Request) ipc.Response {
+	return ipc.OKResponse(req.ID, ipc.ListReply{Services: s.listReplies()})
+}
+
+// listReplies is every service's status, in the wire form.
+func (s *Server) listReplies() []ipc.StatusReply {
 	statuses := s.fab.List()
-	reply := ipc.ListReply{Services: make([]ipc.StatusReply, 0, len(statuses))}
+	out := make([]ipc.StatusReply, 0, len(statuses))
 	for _, st := range statuses {
-		reply.Services = append(reply.Services, s.statusReply(st))
+		out = append(out, s.statusReply(st))
 	}
-	return ipc.OKResponse(req.ID, reply)
+	return out
 }
 
 // SettleWait is how long an operation that starts something waits for the supervisor to get
@@ -859,6 +900,7 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		out.Command = def.Command
 		out.CloseOnExit = def.CloseOnExit
 		out.Created = def.CreatedAt
+		out.Order = def.Order
 	}
 	if files := s.fab.LogFiles(st.Service); len(files) > 0 {
 		out.LogPath = files[0]

@@ -98,6 +98,9 @@ const (
 	outcomeTab7
 	outcomeTab8
 	outcomeTab9
+	// outcomeMoveLeft and outcomeMoveRight move the tab you are on one place along: Ctrl-] { and }.
+	outcomeMoveLeft
+	outcomeMoveRight
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
@@ -106,7 +109,7 @@ const (
 // service was showing. Built from the configured key rather than spelling Ctrl-] out, because a
 // help text that names a key the user has changed is worse than none.
 func prefixHelp(label string) string {
-	return label + " d detach · c new shell · n/p next/previous · 1-9 go to tab · l list and pick · , rename · k remove · u revive · " +
+	return label + " d detach · c new shell · n/p next/previous · 1-9 go to tab · { } move tab · l list and pick · , rename · k remove · u revive · " +
 		"| split beside · - split below · < > resize · o switch pane · x close pane · " +
 		"b/f scroll back/forward · g live · r redraw · ? this · " + label + " sends a literal " + label
 }
@@ -433,6 +436,13 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				}
 				outcome = next
 				continue dispatch
+
+			case outcomeMoveLeft, outcomeMoveRight:
+				say(moveTab(socket, service, outcome == outcomeMoveRight))
+				painter.Repaint()
+				// Still here: back to the same service, without replaying what is on screen.
+				first, replay = false, false
+				break dispatch
 
 			case outcomeRename:
 				// The session's connection is closed while the name is typed, like the list, so
@@ -766,11 +776,19 @@ func serviceStatuses(socket string) ([]ipc.StatusReply, error) {
 // ties, and are the whole order for a daemon too old to say when services were made.
 func TabOrder(list []ipc.StatusReply) {
 	sort.SliceStable(list, func(i, j int) bool {
-		a, b := list[i].Created, list[j].Created
-		if !a.Equal(b) {
-			return a.Before(b)
+		a, b := list[i], list[j]
+		// Tabs put somewhere by hand stand where they were put, ahead of any made since; those
+		// follow in the order they were made.
+		if (a.Order > 0) != (b.Order > 0) {
+			return a.Order > 0
 		}
-		return list[i].Service < list[j].Service
+		if a.Order != b.Order {
+			return a.Order < b.Order
+		}
+		if !a.Created.Equal(b.Created) {
+			return a.Created.Before(b.Created)
+		}
+		return a.Service < b.Service
 	})
 }
 
@@ -968,6 +986,36 @@ func closesOnExit(socket, name string) bool {
 }
 
 var shellTabName = regexp.MustCompile(`^shell-[0-9]+$`)
+
+// moveTab moves the tab for service one place left or right, and says where it now is.
+func moveTab(socket, service string, right bool) string {
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return err.Error()
+	}
+	at := -1
+	for i, s := range list {
+		if s.Service == service {
+			at = i
+		}
+	}
+	to := at // positions count from 1, so at is one place left of where it is
+	if right {
+		to = at + 2
+	}
+	if at < 0 || to < 1 || to > len(list) {
+		return fmt.Sprintf("%s is already at the end", service)
+	}
+	c, err := Dial(socket)
+	if err != nil {
+		return err.Error()
+	}
+	defer c.Close()
+	if err := c.Move(service, to); err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s is tab %d now", service, to)
+}
 
 // nthTab is the service numbered n+1 on the status line: Ctrl-] 1 is the first tab.
 func nthTab(socket string, n int) (string, error) {
@@ -1457,6 +1505,15 @@ func (t *terminalInput) run(in *os.File) {
 				case ',':
 					// Rename: tmux's key for renaming a window. Both modes, like k.
 					if !command(outcomeRename) {
+						return
+					}
+				case '{', '}':
+					// Move the tab along, tmux's keys for swapping. Both modes.
+					o := outcomeMoveLeft
+					if b == '}' {
+						o = outcomeMoveRight
+					}
+					if !command(o) {
 						return
 					}
 				case 'u', 'U':

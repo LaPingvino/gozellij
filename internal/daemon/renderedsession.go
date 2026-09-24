@@ -375,6 +375,10 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeMoveLeft, outcomeMoveRight:
+				note(moveTab(socket, panes[focus].service, want == outcomeMoveRight))
+				paint()
+
 			case outcomeRename:
 				// Inline, whatever the number of panes: this loop is the only reader of the
 				// keyboard while it runs, so the prompt can take the keystrokes itself. Panes do

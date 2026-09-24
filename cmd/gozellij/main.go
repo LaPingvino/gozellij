@@ -51,6 +51,7 @@ Usage:
   gozellij upgrade                     replace the daemon binary, keeping every process
   gozellij rm <name>... [-keep-logs]   stop them, forget them, delete their logs
   gozellij rename <old> <new>          give a service a new name, running or not; its log goes with it
+  gozellij move <name> <position>      put a service's tab at a position (1 is first); Ctrl-] { } from inside
   gozellij set <name> [flags] [-- cmd] change its command, -restart, -dir or -env in place
   gozellij ping                        check the daemon is alive
   gozellij doctor                      check the promises that depend on the host
@@ -138,6 +139,8 @@ func run(args []string) error {
 		return cmdLifecycle(cmd, rest)
 	case "rm", "remove":
 		return cmdRemove(rest)
+	case "move":
+		return cmdMove(rest)
 	case "rename", "mv":
 		return cmdRename(rest)
 	case "set", "edit":
@@ -1381,6 +1384,31 @@ func cmdSet(args []string) error {
 }
 
 // cmdRename gives a service a new name, running or not. See fabric.Rename for what follows it.
+func cmdMove(args []string) error {
+	fs := flag.NewFlagSet("move", flag.ContinueOnError)
+	sock := socketFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("move needs a service and a position: gozellij move <name> <position>")
+	}
+	to, err := strconv.Atoi(fs.Arg(1))
+	if err != nil || to < 1 {
+		return fmt.Errorf("the position is %q; it is a tab number, 1 or more", fs.Arg(1))
+	}
+	c, err := connect(*sock)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.Move(fs.Arg(0), to); err != nil {
+		return err
+	}
+	fmt.Printf("moved %s to tab %d\n", fs.Arg(0), to)
+	return nil
+}
+
 func cmdRename(args []string) error {
 	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
 	sock := socketFlag(fs)

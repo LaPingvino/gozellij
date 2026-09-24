@@ -53,6 +53,10 @@ type Service struct {
 	// foreground for a while - new-2 becomes claude. Set on the tabs gozellij makes for you, and
 	// cleared by any rename, so a name somebody chose is never overwritten.
 	AutoName bool `json:"auto_name,omitempty"`
+	// Order is where this tab stands among the others once somebody has moved one (Ctrl-] { and
+	// }, gozellij move). Zero until then, and tabs never moved stand in the order they were
+	// made, after the ones that were. See daemon.TabOrder.
+	Order int64 `json:"order,omitempty"`
 	// CreatedAt is when the service was first defined.
 	CreatedAt time.Time `json:"created_at"`
 }

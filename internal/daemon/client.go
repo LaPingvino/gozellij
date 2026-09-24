@@ -406,3 +406,9 @@ func (c *Client) callStatus(op ipc.Op, name string, payload any) (ipc.StatusRepl
 	}
 	return out, nil
 }
+
+// Move puts a service's tab at position to, counting from 1.
+func (c *Client) Move(name string, to int) error {
+	_, err := c.Call(ipc.OpServiceMove, name, ipc.MoveRequest{To: to})
+	return err
+}
