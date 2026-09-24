@@ -135,18 +135,19 @@ func TestSwitchingWalksTheServicesInOrderAndWraps(t *testing.T) {
 		}
 	}
 
-	// Sorted by name, which is arbitrary but stable - a switcher whose order changed between
+	// In the order they were made - beta, alpha, gamma - like numbered tabs, and not by name,
+	// which changes now that tabs name themselves. A switcher whose order changed between
 	// presses would be useless.
 	steps := []struct {
 		from    string
 		forward bool
 		want    string
 	}{
-		{"alpha", true, "beta"},
-		{"beta", true, "gamma"},
-		{"gamma", true, "alpha"}, // wraps
-		{"alpha", false, "gamma"},
-		{"beta", false, "alpha"},
+		{"beta", true, "alpha"},
+		{"alpha", true, "gamma"},
+		{"gamma", true, "beta"}, // wraps
+		{"alpha", false, "beta"},
+		{"beta", false, "gamma"}, // wraps
 	}
 	for _, s := range steps {
 		got, err := neighbourService(sock, s.from, s.forward)
@@ -195,7 +196,7 @@ func TestSwitchingFromAServiceThatHasGoneLandsSomewhere(t *testing.T) {
 	}
 }
 
-// pickerDaemon starts a daemon with three services, named so that sorted order is known.
+// pickerDaemon starts a daemon with three services, made in an order that is not their names'.
 func pickerDaemon(t *testing.T) string {
 	t.Helper()
 	_, _, sock := newTestDaemon(t)
@@ -210,16 +211,16 @@ func pickerDaemon(t *testing.T) string {
 
 func TestPickingAServiceByNumber(t *testing.T) {
 	sock := pickerDaemon(t)
-	// Sorted: 1 alpha, 2 beta, 3 gamma. One-based, because nobody counts tabs from zero.
-	input, done := feedTerminal(t, "2")
+	// In the order made: 1 gamma, 2 alpha, 3 beta. One-based, because nobody counts tabs from zero.
+	input, done := feedTerminal(t, "1")
 	defer done()
 
 	got, _, err := pickService(sock, "alpha", input, io.Discard)
 	if err != nil {
 		t.Fatalf("pickService: %v", err)
 	}
-	if got != "beta" {
-		t.Errorf("picked %q, want beta", got)
+	if got != "gamma" {
+		t.Errorf("picked %q, want gamma", got)
 	}
 }
 
@@ -233,8 +234,8 @@ func TestPickingTheLastServiceWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pickService: %v", err)
 	}
-	if got != "gamma" {
-		t.Errorf("picked %q, want gamma", got)
+	if got != "beta" {
+		t.Errorf("picked %q, want beta (made last)", got)
 	}
 }
 

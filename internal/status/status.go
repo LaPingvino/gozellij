@@ -38,6 +38,9 @@ import (
 // The host facts they read for themselves; the gozellij facts have to be handed to them, because
 // only the daemon knows them and a status line is drawn by a client.
 type Context struct {
+	// Width is how many columns the whole line has, set by Render, for a widget that has to
+	// decide how much of itself to show. Zero when unknown.
+	Width int
 	// Service is the service being displayed, and Position/Of place it among the others -
 	// "2/5", the thing a tab bar would show.
 	Service  string
@@ -114,6 +117,7 @@ func Known(name string) bool {
 // three numbers - so trimming by word left "0.31 0.28" on the line, which does not look like a
 // truncated load average. It looks like a load average.
 func Render(ctx Context, left, right []string, width int) string {
+	ctx.Width = width
 	l := join(ctx, left)
 	rendered := renderEach(ctx, right)
 	r := strings.Join(rendered, " ")
@@ -247,6 +251,7 @@ func tabs(c Context) string {
 		return session(c)
 	}
 	if len(c.Names) == 1 {
+		// Nothing to jump between, so no number.
 		return "[" + c.Names[0] + "]"
 	}
 	// A window around the one you are in, not the whole list.
@@ -259,7 +264,20 @@ func tabs(c Context) string {
 	// Capped by count rather than by width because a widget is not told how much room it has. Two
 	// on each side is enough to see where n and p would take you, which is what the neighbours are
 	// for.
-	const around = 2
+	// Numbered (Ctrl-] 1 to 9), which makes every tab two columns wider - enough, at thirty
+	// columns, to push the current one off the end again. So the window shrinks to fit the room
+	// the line has: two neighbours a side, then one, then only where you are.
+	room := c.Width - 12 // the keys hint and a little breathing room
+	for around := 2; ; around-- {
+		line := tabWindow(c, around)
+		if c.Width <= 0 || around == 0 || vt.StringWidth(line) <= room {
+			return line
+		}
+	}
+}
+
+// tabWindow is the tabs within around of the current one, numbered, with ellipses for the rest.
+func tabWindow(c Context, around int) string {
 	first, last := 0, len(c.Names)-1
 	if at := indexOf(c.Names, c.Service); at >= 0 && len(c.Names) > 2*around+1 {
 		first = max(at-around, 0)
@@ -273,6 +291,9 @@ func tabs(c Context) string {
 		if i > first {
 			b.WriteString(" ")
 		}
+		// The number Ctrl-] and it goes to, outside the brackets so that [name] is still what
+		// marks where you are.
+		b.WriteString(strconv.Itoa(i+1) + ":")
 		if c.Names[i] == c.Service {
 			b.WriteString("[" + c.Names[i] + "]")
 			continue

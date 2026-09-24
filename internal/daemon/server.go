@@ -858,6 +858,7 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 		out.Enabled = def.Enabled
 		out.Command = def.Command
 		out.CloseOnExit = def.CloseOnExit
+		out.Created = def.CreatedAt
 	}
 	if files := s.fab.LogFiles(st.Service); len(files) > 0 {
 		out.LogPath = files[0]

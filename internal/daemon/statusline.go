@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"fmt"
+	"github.com/LaPingvino/gozellij/internal/ipc"
 	"io"
 	"os"
 	"os/signal"
-	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -367,7 +367,9 @@ func StatusContext(socket, service string) status.Context {
 	}
 
 	names := make([]string, 0, len(list.Services))
-	for _, svc := range list.Services {
+	ordered := append([]ipc.StatusReply(nil), list.Services...)
+	TabOrder(ordered)
+	for _, svc := range ordered {
 		names = append(names, svc.Service)
 		ctx.LogBytes += svc.LogBytes
 		if svc.State == "running" {
@@ -379,7 +381,6 @@ func StatusContext(socket, service string) status.Context {
 	}
 	ctx.Services = len(names)
 
-	sort.Strings(names)
 	for i, n := range names {
 		if n == service {
 			ctx.Position = i + 1

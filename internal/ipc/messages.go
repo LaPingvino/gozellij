@@ -191,6 +191,9 @@ type StatusReply struct {
 	Command     string    `json:"command,omitempty"`
 	// CloseOnExit says this service is a shell tab that closes when you exit it.
 	CloseOnExit bool `json:"close_on_exit,omitempty"`
+	// Created is when the service was first defined, which is the order tabs are numbered in.
+	// Zero from a daemon too old to send it; tabs are then in name order.
+	Created time.Time `json:"created,omitempty"`
 	// LogError is why this service's output is not reaching disk, empty when it is.
 	LogError string `json:"log_error,omitempty"`
 	// Viewers is how many clients are attached right now. Only the daemon can know this, and it

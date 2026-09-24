@@ -87,6 +87,17 @@ const (
 	outcomeRedraw
 	// outcomeRename asks for a new name for the service you are looking at and gives it that.
 	outcomeRename
+	// outcomeTab1 to outcomeTab9 go straight to that tab, numbered as the status line numbers
+	// them: Ctrl-] 1 to 9.
+	outcomeTab1
+	outcomeTab2
+	outcomeTab3
+	outcomeTab4
+	outcomeTab5
+	outcomeTab6
+	outcomeTab7
+	outcomeTab8
+	outcomeTab9
 )
 
 // prefixHelp is what Ctrl-] ? prints. Short on purpose: it is displayed over whatever the service
@@ -95,7 +106,7 @@ const (
 // service was showing. Built from the configured key rather than spelling Ctrl-] out, because a
 // help text that names a key the user has changed is worse than none.
 func prefixHelp(label string) string {
-	return label + " d detach · c new shell · n/p next/previous · l list and pick · , rename · k remove · u revive · " +
+	return label + " d detach · c new shell · n/p next/previous · 1-9 go to tab · l list and pick · , rename · k remove · u revive · " +
 		"| split beside · - split below · < > resize · o switch pane · x close pane · " +
 		"b/f scroll back/forward · g live · r redraw · ? this · " + label + " sends a literal " + label
 }
@@ -495,6 +506,22 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				first, replay = true, true
 				break dispatch
 
+			case outcomeTab1, outcomeTab2, outcomeTab3, outcomeTab4, outcomeTab5,
+				outcomeTab6, outcomeTab7, outcomeTab8, outcomeTab9:
+				to, err := nthTab(socket, int(outcome-outcomeTab1))
+				if err != nil {
+					say(err.Error())
+					first, replay = false, false
+					break dispatch
+				}
+				if to != service {
+					service = to
+					showService(out, service)
+					painter.Repaint()
+				}
+				first, replay = true, true
+				break dispatch
+
 			case outcomeRedraw:
 				// Ctrl-] r in the byte pipe: nothing here to repaint from, so start over - clear,
 				// replay, and the resize nudge after it that makes a full-screen program draw
@@ -614,7 +641,10 @@ func showService(out io.Writer, service string) {
 	// only at the top of the loop, the bar showed the tab you had just left for up to a tick.
 	showing.set(service)
 	fmt.Fprint(out, "\x1b[H\x1b[2J")
-	fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
+	// No "[gozellij: name]" line any more. It dated from before the status line, which now names
+	// the tab the moment you arrive; and it took the first row, so the replay after it landed a
+	// row low, and the cursor moves in it drew over it - the remembered screen looked wrong
+	// (Joop).
 }
 
 // pickService shows the services and returns the one chosen, or the current one if the user
@@ -722,8 +752,22 @@ func serviceStatuses(socket string) ([]ipc.StatusReply, error) {
 		return nil, fmt.Errorf("cannot list services: %w", err)
 	}
 	out := append([]ipc.StatusReply(nil), list.Services...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	TabOrder(out)
 	return out, nil
+}
+
+// TabOrder sorts services the way tabs are numbered: in the order they were made, like tmux's
+// windows. Not by name - since tabs name themselves (autoname.go) a name can change under you,
+// and a tab that moved from 2 to 4 because it was renamed would make Ctrl-] 2 a guess. Names break
+// ties, and are the whole order for a daemon too old to say when services were made.
+func TabOrder(list []ipc.StatusReply) {
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i].Created, list[j].Created
+		if !a.Equal(b) {
+			return a.Before(b)
+		}
+		return list[i].Service < list[j].Service
+	})
 }
 
 // settledStatuses is serviceStatuses once this terminal's own session has stopped being counted.
@@ -920,6 +964,18 @@ func closesOnExit(socket, name string) bool {
 }
 
 var shellTabName = regexp.MustCompile(`^shell-[0-9]+$`)
+
+// nthTab is the service numbered n+1 on the status line: Ctrl-] 1 is the first tab.
+func nthTab(socket string, n int) (string, error) {
+	list, err := serviceStatuses(socket)
+	if err != nil {
+		return "", err
+	}
+	if n < 0 || n >= len(list) {
+		return "", fmt.Errorf("there is no tab %d; there are %d", n+1, len(list))
+	}
+	return list[n].Service, nil
+}
 
 // runningNeighbour is the next running service after current, in the order n goes, or "" when no
 // other service is running. Stopped ones are passed over: landing on one after an exit would be
@@ -1271,6 +1327,10 @@ func (t *terminalInput) run(in *os.File) {
 					}
 				case 'l', 'L', 'w', 'W':
 					if !command(outcomeList) {
+						return
+					}
+				case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+					if !command(outcomeTab1 + attachOutcome(b-'1')) {
 						return
 					}
 				case '|', 's', 'S':

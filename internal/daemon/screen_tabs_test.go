@@ -71,3 +71,37 @@ func TestScreenExitingTheLastServiceGivesTheTerminalBack(t *testing.T) {
 		t.Fatalf("the attach ended with %v", err)
 	}
 }
+
+// Tabs are numbered in the order they were made, not by name, and Ctrl-] N goes to tab N. The
+// numbers have to survive a rename: tabs name themselves now, and a number that moved when a name
+// changed would make Ctrl-] 2 a guess.
+func TestScreenNumberedTabsFollowCreationNotNames(t *testing.T) {
+	screenEnv(t)
+	_, _, sock := newTestDaemon(t)
+	addRunning(t, sock, "zeta", "sh", "-c", `printf 'IN-ZETA\r\n'; exec cat`)
+	addRunning(t, sock, "alpha", "sh", "-c", `printf 'IN-ALPHA\r\n'; exec cat`)
+
+	s := attachScreen(t, sock, "alpha", 80, 12, AttachOptions{Replay: true, Mode: RenderOff})
+	s.BottomShows("1:zeta 2:[alpha]")
+
+	s.Prefix('1')
+	s.Shows("IN-ZETA")
+	s.BottomShows("1:[zeta] 2:alpha")
+
+	// A rename to something that sorts last keeps its number.
+	if _, err := dial(t, sock).Rename("zeta", "zzz-renamed"); err != nil {
+		t.Fatal(err)
+	}
+	s.BottomShows("1:[zzz-renamed] 2:alpha")
+
+	s.Prefix('2')
+	s.Shows("IN-ALPHA")
+	s.BottomShows("2:[alpha]")
+
+	// A tab that is not there says so rather than doing nothing.
+	s.Prefix('7')
+	s.BottomShows("there is no tab 7")
+	if !s.StillAttached() {
+		t.Fatal("asking for a tab that does not exist ended the attach")
+	}
+}

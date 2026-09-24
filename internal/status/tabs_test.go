@@ -52,8 +52,8 @@ func TestTheNeighboursAreShownSoNAndPMeanSomething(t *testing.T) {
 func TestAShortListIsShownWhole(t *testing.T) {
 	// Nothing is elided when everything fits: the ellipsis is a cost, not decoration.
 	c := Context{Service: "b", Names: []string{"a", "b", "c"}, Services: 3, Running: 3}
-	if got := tabs(c); got != "a [b] c" {
-		t.Errorf("tabs = %q, want %q", got, "a [b] c")
+	if got := tabs(c); got != "1:a 2:[b] 3:c" {
+		t.Errorf("tabs = %q, want %q", got, "1:a 2:[b] 3:c")
 	}
 }
 

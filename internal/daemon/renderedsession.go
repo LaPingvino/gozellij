@@ -357,6 +357,24 @@ func renderedSession(socket string, first *Client, service string, input *termin
 				}
 				paint()
 
+			case outcomeTab1, outcomeTab2, outcomeTab3, outcomeTab4, outcomeTab5,
+				outcomeTab6, outcomeTab7, outcomeTab8, outcomeTab9:
+				// As n does: with one pane the loop outside switches; in a split, the focused pane
+				// shows that tab instead.
+				if len(panes) == 1 {
+					return want, nil
+				}
+				to, err := nthTab(socket, int(want-outcomeTab1))
+				if err == nil && to != panes[focus].service {
+					if err = swapPane(socket, panes[focus], to); err == nil {
+						go readFrames(panes[focus], panes[focus].client, events)
+					}
+				}
+				if err != nil {
+					note(err.Error())
+				}
+				paint()
+
 			case outcomeRename:
 				// Inline, whatever the number of panes: this loop is the only reader of the
 				// keyboard while it runs, so the prompt can take the keystrokes itself. Panes do
