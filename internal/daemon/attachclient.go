@@ -488,6 +488,16 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				first, replay = true, true
 				break dispatch
 
+			case outcomeRedraw:
+				// Ctrl-] r in the byte pipe: nothing here to repaint from, so start over - clear,
+				// replay, and the resize nudge after it that makes a full-screen program draw
+				// itself again. This used to fall through to a plain reconnect without a replay,
+				// which changed nothing on screen: a key the help offered that did nothing.
+				fmt.Fprint(out, "\x1b[H\x1b[2J")
+				painter.Repaint()
+				first, replay = true, true
+				break dispatch
+
 			case outcomeList:
 				// Cycling with n/p is fine for two services and tedious for six. The list is
 				// printed over whatever was on screen and the next keystroke chooses; the
@@ -1423,6 +1433,21 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 		f, e := c.pumpOutput(out)
 		output <- outputResult{f, e}
 	}()
+
+	// Arriving somewhere, ask what is running there to draw itself again.
+	//
+	// The replay is the service's recent output, which is the right screen for a shell and the
+	// wrong one for a full-screen program: Claude Code, vim or htop drew their screen long ago and
+	// since then only changed parts of it, so the replay ends with half a screen of edits over a
+	// cleared terminal. Such programs repaint completely when their window changes size, and the
+	// only way to tell them from here is to change it - one row smaller and straight back, which
+	// is two SIGWINCHs and a full repaint at the right size. Sent after the attach, so the daemon
+	// writes the replay first and the repaint lands on top of it. Not for a watcher, which does
+	// not get to resize what somebody else is using.
+	if replay && !c.readOnly && cols > 0 && rows > 1 {
+		_ = c.sendResize(cols, rows-1)
+		_ = c.sendResize(cols, rows)
+	}
 
 	// Local copies, so that a terminal which reaches EOF can be dropped out of the select
 	// without ending the session. Redirected input runs out; the service's output still

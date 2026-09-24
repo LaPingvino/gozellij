@@ -304,11 +304,10 @@ func (p *statusPainter) paint() {
 		if cols == 0 || rows < 2 {
 			return
 		}
-		line := status.Render(ctx, p.cfg.Left, p.cfg.Right, cols)
+		bar := func(width int) string { return status.Render(ctx, p.cfg.Left, p.cfg.Right, width) }
+		line := bar(cols)
 		if msg != "" && time.Since(said) < messageLinger {
-			// The whole row, because a message truncated to fit around a load average is a
-			// message nobody can act on. The line comes back in a few seconds.
-			line = trimToWidth("gozellij: "+msg, cols)
+			line = withMessage(bar, msg, cols)
 		}
 		// Save the cursor, re-assert the region (a full-screen program that has exited will have
 		// reset it), go to the last row, draw, and put the cursor back. The service never sees

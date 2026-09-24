@@ -239,6 +239,26 @@ func statusLine(cfg status.Config, ctx func() status.Context) func(int) string {
 	}
 }
 
+// withMessage is the status line while gozellij is saying something: the bar, squeezed into
+// whatever room the message leaves, and then the message.
+//
+// The message used to take the whole row for its six seconds, and those were exactly the seconds
+// after a switch - "shell-2 exited and was closed - now on shell" - when the tabs that say where
+// you now are were the thing to look at, and they were gone. The bar gives way from the right
+// (clock, load), which is what status.Render drops first when it is short of room; the tabs on the
+// left stay where they were, so the eye does not have to find them again. Only on a terminal too
+// narrow for both does the message take the row, because a message cut short cannot be acted on.
+func withMessage(bar func(width int) string, msg string, cols int) string {
+	const sep = " · "
+	room := cols - vt.StringWidth(msg) - vt.StringWidth(sep)
+	if room < 12 {
+		return trimToWidth("gozellij: "+msg, cols)
+	}
+	// Clamped to room as well: the bar is laid out for that width but can come back a column or
+	// two over it, and then it was the end of the message - "now on shell" - that got cut.
+	return trimToWidth(strings.TrimRight(trimToWidth(bar(room), room), " ")+sep+msg, cols)
+}
+
 // messageLinger is how long something gozellij says stays on the status line.
 const messageLinger = 6 * time.Second
 
@@ -316,19 +336,19 @@ func (s *renderedScreen) PaintPanes(panes []layoutPane, focus int) error {
 	}
 	frame := layout.Compose(s.cols, s.rows, ps)
 	if s.reserved > 0 && s.line != nil {
-		text := s.line(s.cols)
-		if len(panes) > 1 {
-			// Which pane has the keyboard, since with two shells on screen there is no other way
-			// to tell. In front of the rest of the line: it is the thing that changes what your
-			// next keystroke does.
-			text = trimToWidth(paneMarker(panes, focus)+" "+text, s.cols)
+		bar := func(width int) string {
+			text := s.line(width)
+			if len(panes) > 1 {
+				// Which pane has the keyboard, since with two shells on screen there is no other
+				// way to tell. In front of the rest of the line: it is the thing that changes what
+				// your next keystroke does.
+				text = trimToWidth(paneMarker(panes, focus)+" "+text, width)
+			}
+			return text
 		}
+		text := bar(s.cols)
 		if s.message != "" && time.Since(s.said) < messageLinger {
-			// A message takes the whole line, marker included. It is transient and it is the
-			// thing to read right now - "your service exited with code 3" truncated to "exited
-			// with code" because a pane marker had the first fifteen columns is not worth having.
-			// The marker is back in a few seconds.
-			text = trimToWidth("gozellij: "+s.message, s.cols)
+			text = withMessage(bar, s.message, s.cols)
 		}
 		writeStatus(frame, s.rows-1, text)
 	}
