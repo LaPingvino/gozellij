@@ -2,6 +2,7 @@ package fabric
 
 import (
 	"fmt"
+	"github.com/creack/pty"
 	"os"
 	"syscall"
 	"time"
@@ -65,6 +66,11 @@ func Adopt(s Service, pid int, ptyFD int, started time.Time, opts StartOptions) 
 		} else {
 			group = g
 		}
+	}
+
+	// The size it already has: the pty kept it across the exec.
+	if ws, werr := pty.GetsizeFull(f); werr == nil {
+		out.SetSize(int(ws.Cols), int(ws.Rows))
 	}
 
 	p := &Process{

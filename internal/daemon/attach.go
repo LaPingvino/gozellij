@@ -103,6 +103,11 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	if sub.From() > int64(len(snapshot)) {
 		snapshot = fabric.ReplayStart(snapshot)
 	}
+	if ar.Replay && sub.Screen != nil {
+		// A full-screen program: its screen as it is now, not its recent output, which is a heap
+		// of edits to a screen the replay does not contain. See OutputBuffer.drawLocked.
+		snapshot = sub.Screen
+	}
 	if ar.Replay && len(sub.Preamble) > 0 {
 		// The modes first, so the replay is drawn into the terminal state it was written for.
 		snapshot = append(append([]byte(nil), sub.Preamble...), snapshot...)

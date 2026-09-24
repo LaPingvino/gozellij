@@ -135,6 +135,13 @@ func (t *TermModes) escape(p []byte) (int, bool) {
 	return k + 1, true
 }
 
+// AltScreen is whether the stream has the terminal on the alternate screen: a full-screen program.
+func (t *TermModes) AltScreen() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.on[1049] || t.on[1047] || t.on[47]
+}
+
 // Preamble is what puts a terminal in the state the stream has left it in, assuming it starts from
 // the defaults. Empty when nothing differs.
 func (t *TermModes) Preamble() []byte {

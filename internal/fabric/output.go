@@ -3,6 +3,8 @@ package fabric
 import (
 	"bytes"
 	"errors"
+	"github.com/LaPingvino/gozellij/internal/vt/grid"
+	"github.com/LaPingvino/gozellij/internal/vt/render"
 	"sync"
 )
 
@@ -53,6 +55,12 @@ type OutputBuffer struct {
 	// modes is what the output has switched the terminal into, for the start of a replay.
 	// See TermModes.
 	modes TermModes
+
+	// screen is the picture a full-screen program has drawn, kept while it is on the alternate
+	// screen, and cols and rows the size of the terminal it is drawing for. A replay of such a
+	// program is this picture, not its recent output - see Attach.
+	screen     *grid.Term
+	cols, rows int
 }
 
 // NewOutputBuffer makes a buffer holding at most capacity bytes.
@@ -89,12 +97,56 @@ func (o *OutputBuffer) Write(p []byte) (int, error) {
 	o.append(p)
 	o.written += int64(len(p))
 	o.modes.Feed(p)
+	o.drawLocked(p)
 
 	for _, s := range o.subs {
 		s.offer(p, o.written)
 	}
 	o.pruneLaggedLocked()
 	return len(p), nil
+}
+
+// drawLocked keeps the picture of a full-screen program up to date.
+//
+// Replaying a full-screen program's recent output does not reproduce its screen. Claude Code
+// switched to the alternate screen once, at startup, and since then has only changed parts of what
+// it drew; the last 256 KiB of that is a heap of edits to a screen the replay never contained. What
+// a terminal arriving needs is what tmux sends: the screen as it is now. So while the output has
+// the terminal on the alternate screen it is also fed through the emulator, and Attach hands over
+// a drawing of its screen.
+//
+// Only then: a shell's replay is its scrollback, which is worth more than a picture of one screen,
+// and following every shell through an emulator would cost for nothing. When the program leaves
+// the alternate screen the picture is dropped.
+func (o *OutputBuffer) drawLocked(p []byte) {
+	if !o.modes.AltScreen() {
+		o.screen = nil
+		return
+	}
+	if o.screen == nil {
+		cols, rows := o.cols, o.rows
+		if cols <= 0 || rows <= 0 {
+			cols, rows = 80, 24
+		}
+		o.screen = grid.New(cols, rows)
+		o.screen.SetScrollback(0)
+	}
+	_, _ = o.screen.Write(p)
+	// Nothing reads what the emulator would answer - the program's own terminal does that - so
+	// do not let it pile up.
+	_ = o.screen.TakeReplies()
+	_ = o.screen.TakeColourAsks()
+}
+
+// SetSize tells the buffer the size of the terminal the process is drawing for, so the picture it
+// keeps of a full-screen program is laid out the way the program laid it out.
+func (o *OutputBuffer) SetSize(cols, rows int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cols, o.rows = cols, rows
+	if o.screen != nil && cols > 0 && rows > 0 {
+		_ = o.screen.Resize(cols, rows)
+	}
 }
 
 // pruneLaggedLocked drops subscribers that have fallen too far behind.
@@ -208,6 +260,9 @@ func (o *OutputBuffer) Attach(queueBytes int) ([]byte, *Subscriber, error) {
 		from:     at,
 		// Taken with the snapshot, under the same lock, so the two describe the same moment.
 		Preamble: o.modes.Preamble(),
+	}
+	if o.screen != nil {
+		s.Screen = render.Screen(o.screen)
 	}
 	o.subs[s.id] = s
 	o.nextID++
@@ -332,6 +387,10 @@ type Subscriber struct {
 	// Preamble puts a terminal into the modes the service's output had switched on when this
 	// subscription began - see TermModes. A replay starts with it.
 	Preamble []byte
+	// Screen is the picture a full-screen program had on screen when this subscription began,
+	// drawn from scratch, or nil when the service is not one. For such a program it is the right
+	// replay and its recent output is the wrong one - see OutputBuffer.drawLocked.
+	Screen []byte
 
 	ch       chan []byte
 	maxBytes int

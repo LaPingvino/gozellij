@@ -233,6 +233,10 @@ func Start(s Service, opts StartOptions) (*Process, error) {
 		ownsOutput = true
 	}
 
+	// Before the reader starts, so a program that goes full-screen in its first write is drawn at
+	// the size it was started at.
+	out.SetSize(cols, rows)
+
 	p := &Process{
 		Service:    s,
 		Output:     out,
@@ -462,6 +466,7 @@ func (p *Process) Resize(cols, rows int) error {
 		}
 		return fmt.Errorf("resizing %s to %dx%d: %w", p.Service.Name, cols, rows, err)
 	}
+	p.Output.SetSize(cols, rows)
 	return nil
 }
 
