@@ -715,6 +715,10 @@ func (t *Term) Dir() string { return t.dir }
 func (t *Term) Title() string { return t.title }
 
 // Modes returns the terminal-level modes currently asked for, so a renderer can match them.
+// AltScreen is whether the alternate screen is showing (modes 47, 1047, 1049), which Modes does
+// not report because it is kept as the swapped-out main screen rather than as a flag.
+func (t *Term) AltScreen() bool { return t.alt != nil }
+
 func (t *Term) Modes() map[int]bool {
 	out := make(map[int]bool, len(t.modes))
 	for m, on := range t.modes {

@@ -610,6 +610,9 @@ func showService(out io.Writer, service string) {
 	// alternate screen - before anything of the next one is shown. The next one's replay starts
 	// by putting back its own.
 	_, _ = out.Write(terminalModes.Reset())
+	// The status line is repainted straight after this, and has to name where you now are: set
+	// only at the top of the loop, the bar showed the tab you had just left for up to a tick.
+	showing.set(service)
 	fmt.Fprint(out, "\x1b[H\x1b[2J")
 	fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
 }
