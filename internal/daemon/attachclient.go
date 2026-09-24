@@ -633,6 +633,32 @@ func (s *showingName) get(fallback string) string {
 	return fallback
 }
 
+// fenceWait bounds how long a session waits for the fence after a command; the reader sends it
+// straight after the command, so this is only ever reached if the reader has stopped.
+const fenceWait = 200 * time.Millisecond
+
+// drainToFence sends on whatever was typed before a command, up to the fence the reader puts
+// after it (a nil chunk), and not a byte further.
+//
+// Draining until the channel was empty took the keystrokes typed *after* the command as well, if
+// the reader had already queued them: text typed straight after Ctrl-] o went to the pane you had
+// just left, 19 times in 20 when the key and the text arrived in one read - which is how fast
+// typing over ssh arrives. Found by the Go port of acceptance.sh.
+func drainToFence(data <-chan []byte, send func([]byte)) {
+	timeout := time.After(fenceWait)
+	for {
+		select {
+		case chunk := <-data:
+			if chunk == nil {
+				return
+			}
+			send(chunk)
+		case <-timeout:
+			return
+		}
+	}
+}
+
 // nudgePause is how long the redraw nudge holds the smaller size - long enough that a program
 // sees it as a separate resize, short enough not to be noticed. See runSession.
 const nudgePause = 150 * time.Millisecond
@@ -1347,6 +1373,13 @@ func (t *terminalInput) run(in *os.File) {
 		}
 		select {
 		case t.cmds <- o:
+		case <-t.done:
+			return false
+		}
+		// The fence: everything sent on data before it was typed before the command, everything
+		// after it belongs to wherever the command takes you. See drainToFence.
+		select {
+		case t.data <- nil:
 			return true
 		case <-t.done:
 			return false
@@ -1631,9 +1664,21 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 	data, cmds, ended := input.data, input.cmds, input.ended
 
 	said := false
+	// fenced is set when the fence came before its command: data is switched off until the
+	// command has been taken, so nothing typed after it can be sent here first.
+	fenced := false
 	for {
 		select {
 		case chunk := <-data:
+			if chunk == nil {
+				// Only if its command is still waiting: one taken by the picker or the rename
+				// prompt leaves its fence behind, and switching the keyboard off to wait for a
+				// command that is not coming would leave it off.
+				if len(cmds) > 0 {
+					fenced, data = true, nil
+				}
+				continue
+			}
 			if c.readOnly {
 				// Not sent, and said once. A keystroke that quietly goes nowhere is rule 1's
 				// silent success; saying it on every key would mean a paste filling the line.
@@ -1655,13 +1700,14 @@ func (c *Client) runSession(service string, input *terminalInput, in *os.File, o
 			// and then sends the command, on two channels - and a select over two ready
 			// channels picks at random, so without this the last thing typed at one service
 			// could arrive at the next one instead.
-			for draining := true; draining; {
-				select {
-				case chunk := <-data:
-					_ = c.Writer().WriteFrame(ipc.KindData, chunk)
-				default:
-					draining = false
-				}
+			if fenced {
+				fenced, data = false, input.data
+			} else if data != nil {
+				drainToFence(data, func(chunk []byte) {
+					if !c.readOnly {
+						_ = c.Writer().WriteFrame(ipc.KindData, chunk)
+					}
+				})
 			}
 			// Closing is what ends the output pump: it is blocked on a read from the daemon,
 			// which has no reason to say anything just because the user pressed a key.

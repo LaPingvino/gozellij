@@ -455,13 +455,18 @@ func (p *Process) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid size %dx%d: both must be positive", cols, rows)
 	}
+	// Under the lock for the ioctl itself, not only for the check. Checked and then released,
+	// closePTY could close the descriptor in between, and the resize went to whatever the number
+	// had become - another service's terminal. Found by porting acceptance.sh: -race reported
+	// File.Fd against File.Close when a pane's service exited during a resize.
 	p.mu.Lock()
-	closed := p.closed
-	p.mu.Unlock()
-	if closed {
+	if p.closed {
+		p.mu.Unlock()
 		return ErrProcessGone
 	}
-	if err := pty.Setsize(p.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+	err := pty.Setsize(p.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	p.mu.Unlock()
+	if err != nil {
 		if errors.Is(err, os.ErrClosed) {
 			return ErrProcessGone
 		}

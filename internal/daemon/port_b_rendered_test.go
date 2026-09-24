@@ -110,7 +110,10 @@ func TestPortBPickerIsVisibleAndStaysUp(t *testing.T) {
 
 	// Ctrl-] l shows its menu in a rendered attach, and it stays up
 	s.Prefix('l')
-	menu := func() bool { t := s.Text(); return strings.Contains(t, "pick a service") && strings.Contains(t, "3 pikc") }
+	menu := func() bool {
+		t := s.Text()
+		return strings.Contains(t, "pick a service") && strings.Contains(t, "3 pikc")
+	}
 	s.Until("the picker's menu", menu)
 	// Longer than several status ticks: the thing being tested is that time passing does not erase it.
 	time.Sleep(800 * time.Millisecond)

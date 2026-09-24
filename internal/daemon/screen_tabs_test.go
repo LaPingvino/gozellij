@@ -3,6 +3,7 @@ package daemon
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaPingvino/gozellij/internal/ipc"
 )
@@ -133,4 +134,27 @@ func TestScreenMovingATab(t *testing.T) {
 	// The numbers are what Ctrl-] N goes by.
 	s.Prefix('3')
 	s.BottomShows("3:[two]")
+}
+
+// Typed in the same burst as the switch, the text belongs to where the switch takes you. The
+// session used to drain everything queued after a command to the service being left.
+func TestScreenTextTypedWithTheSwitchGoesToTheNewTab(t *testing.T) {
+	screenEnv(t)
+	_, _, sock := newTestDaemon(t)
+	addRunning(t, sock, "left", "sh", "-c", `printf 'IN-LEFT\r\n'; exec cat`)
+	addRunning(t, sock, "right", "sh", "-c", `printf 'IN-RIGHT\r\n'; exec cat`)
+
+	s := attachScreen(t, sock, "left", 80, 12, AttachOptions{Replay: true, Mode: RenderOff})
+	s.Shows("IN-LEFT")
+	s.Type("\x1d")
+	time.Sleep(20 * time.Millisecond)
+	s.Type("nFOR-RIGHT\r") // the key and the text in one read, as fast typing over ssh arrives
+	s.BottomShows("[right]")
+	eventually(t, "the text in right's output", func() bool {
+		out, err := dial(t, sock).Logs("right", 0)
+		return err == nil && strings.Contains(string(out.Data), "FOR-RIGHT")
+	})
+	if out, err := dial(t, sock).Logs("left", 0); err == nil && strings.Contains(string(out.Data), "FOR-RIGHT") {
+		t.Errorf("text typed with the switch went to the tab being left")
+	}
 }

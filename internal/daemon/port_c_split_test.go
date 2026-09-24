@@ -122,7 +122,6 @@ func TestPortCKeystrokesGoToTheFocusedPane(t *testing.T) {
 // apart (and a select with both channels ready may take the data first anyway). Measured: 19 of 20
 // with the key and the text in one write; 5 of 10 with them as two writes back to back.
 func TestPortCKeystrokesInTheSameBurstAsTheFocusKeyGoToTheNewPane(t *testing.T) {
-	t.Skip("BUG: text arriving in the same read as Ctrl-] o is drained to the previously focused pane (renderedsession.go, case want := <-cmds)")
 	screenEnv(t)
 	_, _, sock := newTestDaemon(t)
 	addRunning(t, sock, "sh1", "sh", "-c", `PS1="one$ "; export PS1; exec /bin/sh -i`)
@@ -149,9 +148,6 @@ func TestPortCAServicesExitIsSaidOnTheStatusLine(t *testing.T) {
 	// checks p.closed under p.mu and then calls pty.Setsize(p.pty) *outside* it, while reap's
 	// closePTY closes p.pty under the lock - os.File.Fd racing os.File.Close. Beyond the report,
 	// the ioctl can land on a reused descriptor number: another terminal resized.
-	if cRace {
-		t.Skip("BUG: fabric.Process.Resize calls pty.Setsize outside p.mu while closePTY closes the pty (race detector: File.Fd vs File.Close)")
-	}
 	screenEnv(t)
 	_, _, sock := newTestDaemon(t)
 	// Two services, because with one the attach ends the moment it exits and there is no screen

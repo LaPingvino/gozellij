@@ -243,9 +243,18 @@ func renderedSession(socket string, first *Client, service string, input *termin
 	remember()
 
 	data, cmds, ended := input.data, input.cmds, input.ended
+	fenced := false
 	for {
 		select {
 		case chunk := <-data:
+			if chunk == nil {
+				// The fence came before its command: take the command next. See drainToFence.
+				// Only if that command is still waiting - see runSession.
+				if len(cmds) > 0 {
+					fenced, data = true, nil
+				}
+				continue
+			}
 			// The terminal's answer to the colour question comes back this way, because to a
 			// terminal an answer and a keystroke are the same thing. Taken out before anything
 			// else looks at it; everything that is not an answer carries on as typing.
@@ -282,17 +291,16 @@ func renderedSession(socket string, first *Client, service string, input *termin
 			}
 
 		case want := <-cmds:
-			// Everything typed before the command goes first, for the same reason runSession
-			// drains here: two ready channels are chosen between at random.
-			for draining := true; draining; {
-				select {
-				case chunk := <-data:
+			// Everything typed before the command goes first - and nothing typed after it, which
+			// belongs to wherever the command takes you. See drainToFence.
+			if fenced {
+				fenced, data = false, input.data
+			} else if data != nil {
+				drainToFence(data, func(chunk []byte) {
 					if chunk = screen.TakeColourReplies(chunk); len(chunk) > 0 {
 						_ = panes[focus].client.Writer().WriteFrame(ipc.KindData, chunk)
 					}
-				default:
-					draining = false
-				}
+				})
 			}
 			switch want {
 			case outcomeSplit, outcomeSplitRows:
