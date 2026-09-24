@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LaPingvino/gozellij/internal/fabric"
 	"github.com/LaPingvino/gozellij/internal/ipc"
 	"github.com/LaPingvino/gozellij/internal/status"
 	"golang.org/x/term"
@@ -156,7 +157,12 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 		if err != nil {
 			return fmt.Errorf("putting the terminal in raw mode: %w", err)
 		}
-		restore = func() { _ = term.Restore(int(in.Fd()), state) }
+		restore = func() {
+			// The modes the last service left on go with it: the prompt this terminal returns
+			// to should not be sent mouse reports, or be left on the alternate screen.
+			_, _ = out.Write(terminalModes.Reset())
+			_ = term.Restore(int(in.Fd()), state)
+		}
 	}
 	defer restore()
 
@@ -493,6 +499,7 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 				// replay, and the resize nudge after it that makes a full-screen program draw
 				// itself again. This used to fall through to a plain reconnect without a replay,
 				// which changed nothing on screen: a key the help offered that did nothing.
+				_, _ = out.Write(terminalModes.Reset())
 				fmt.Fprint(out, "\x1b[H\x1b[2J")
 				painter.Repaint()
 				first, replay = true, true
@@ -570,11 +577,20 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 	}
 }
 
+// terminalModes is what the services shown in this terminal have switched it into, so that leaving
+// one can switch it back. One per process, because a process has one terminal. See
+// fabric.TermModes.
+var terminalModes fabric.TermModes
+
 // showService clears the terminal and says where you now are.
 //
 // The clear matters: what is on screen belongs to the service you just left, and replaying the new
 // one on top of it would interleave two screens into something that looks like corruption.
 func showService(out io.Writer, service string) {
+	// Take off whatever modes the service being left switched on - mouse reporting, the
+	// alternate screen - before anything of the next one is shown. The next one's replay starts
+	// by putting back its own.
+	_, _ = out.Write(terminalModes.Reset())
 	fmt.Fprint(out, "\x1b[H\x1b[2J")
 	fmt.Fprintf(os.Stderr, "[gozellij: %s]\r\n", service)
 }
@@ -1536,6 +1552,7 @@ func (c *Client) pumpOutput(out io.Writer) (bool, error) {
 			if _, werr := out.Write(payload); werr != nil {
 				return finished, werr
 			}
+			terminalModes.Feed(payload)
 		case ipc.KindEvent:
 			// Events are shown, not swallowed. "lagged" in particular means the screen is
 			// now wrong, and the user needs to know that rather than wonder later.

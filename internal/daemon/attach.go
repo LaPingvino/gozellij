@@ -103,6 +103,10 @@ func (s *Server) attach(conn net.Conn, r *ipc.Reader, w *ipc.Writer, req ipc.Req
 	if sub.From() > int64(len(snapshot)) {
 		snapshot = fabric.ReplayStart(snapshot)
 	}
+	if ar.Replay && len(sub.Preamble) > 0 {
+		// The modes first, so the replay is drawn into the terminal state it was written for.
+		snapshot = append(append([]byte(nil), sub.Preamble...), snapshot...)
+	}
 	if ar.Replay && len(snapshot) > 0 {
 		if err := sess.writeData(snapshot); err != nil {
 			return err

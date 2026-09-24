@@ -49,6 +49,10 @@ type OutputBuffer struct {
 	// byte twice.
 	sink    *LogSink
 	sinkErr string
+
+	// modes is what the output has switched the terminal into, for the start of a replay.
+	// See TermModes.
+	modes TermModes
 }
 
 // NewOutputBuffer makes a buffer holding at most capacity bytes.
@@ -84,6 +88,7 @@ func (o *OutputBuffer) Write(p []byte) (int, error) {
 
 	o.append(p)
 	o.written += int64(len(p))
+	o.modes.Feed(p)
 
 	for _, s := range o.subs {
 		s.offer(p, o.written)
@@ -201,6 +206,8 @@ func (o *OutputBuffer) Attach(queueBytes int) ([]byte, *Subscriber, error) {
 		owner:    o,
 		id:       o.nextID,
 		from:     at,
+		// Taken with the snapshot, under the same lock, so the two describe the same moment.
+		Preamble: o.modes.Preamble(),
 	}
 	o.subs[s.id] = s
 	o.nextID++
@@ -322,6 +329,10 @@ func (o *OutputBuffer) LogPath() string {
 
 // Subscriber delivers live output to one attached reader.
 type Subscriber struct {
+	// Preamble puts a terminal into the modes the service's output had switched on when this
+	// subscription began - see TermModes. A replay starts with it.
+	Preamble []byte
+
 	ch       chan []byte
 	maxBytes int
 	owner    *OutputBuffer
