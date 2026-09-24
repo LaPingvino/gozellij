@@ -44,6 +44,11 @@ type Service struct {
 	// login shell prints whatever you `cat`, so the choice has to be available per service, and
 	// it has to be visible in the file an operator reads at 3am.
 	NoLog bool `json:"no_log,omitempty"`
+	// CloseOnExit is a tab you opened to type in: when it exits by itself while you are looking
+	// at it, the attach removes it from the list rather than leaving a dead entry, the way a tmux
+	// window closes. Its log is kept. Set by `gozellij shell` and Ctrl-] c, and by add
+	// -close-on-exit; carried through a rename because it is part of the definition, not the name.
+	CloseOnExit bool `json:"close_on_exit,omitempty"`
 	// CreatedAt is when the service was first defined.
 	CreatedAt time.Time `json:"created_at"`
 }

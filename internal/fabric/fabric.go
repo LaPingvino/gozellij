@@ -803,7 +803,10 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 	// a missing file.
 	sup, err := f.supervisor(name)
 	if err != nil {
-		return LogTail{}, err
+		return f.leftBehind(name, err, func() (LogTail, error) {
+			data, truncated, rerr := ReadLogTail(f.opts.LogDir, name, maxBytes)
+			return LogTail{Data: data, Truncated: truncated}, rerr
+		})
 	}
 
 	// A service with logging off must never be answered from a file, even when one exists.
@@ -852,6 +855,28 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 	return LogTail{Data: data, Truncated: truncated, Err: logErr}, nil
 }
 
+// leftBehind answers logs for a name no service has any more, from the file it left on disk.
+//
+// A shell tab closed by exiting it keeps its log (see CloseOnExit), and so does rm -keep-logs;
+// "no such service" for a file that is right there would make keeping it pointless. Only when no
+// service has the name - a defined one is always answered as itself, which matters when it has
+// logging off - and said, so the output is not mistaken for a live service's.
+func (f *Fabric) leftBehind(name string, lookupErr error, read func() (LogTail, error)) (LogTail, error) {
+	if !errors.Is(lookupErr, ErrNoSuchService) || f.opts.LogDir == "" {
+		return LogTail{}, lookupErr
+	}
+	tail, err := read()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return LogTail{}, lookupErr
+		}
+		return LogTail{}, err
+	}
+	tail.Path = LogPath(f.opts.LogDir, name)
+	tail.Note = fmt.Sprintf("no service is called %s now; this is the log one of that name left behind", name)
+	return tail, nil
+}
+
 // LogsSince is what a service wrote from since onwards, from its log file and time index.
 //
 // Refused rather than approximated whenever the file cannot answer: logging off, a broken writer
@@ -860,7 +885,10 @@ func (f *Fabric) Logs(name string, maxBytes int) (LogTail, error) {
 func (f *Fabric) LogsSince(name string, since time.Time, maxBytes int) (LogTail, error) {
 	sup, err := f.supervisor(name)
 	if err != nil {
-		return LogTail{}, err
+		return f.leftBehind(name, err, func() (LogTail, error) {
+			got, rerr := ReadLogSince(f.opts.LogDir, name, since, maxBytes)
+			return LogTail{Data: got.Data, Truncated: got.Truncated}, rerr
+		})
 	}
 	if f.opts.LogDir == "" {
 		return LogTail{}, fmt.Errorf("%s: -since needs a log on disk, and this daemon keeps none", name)

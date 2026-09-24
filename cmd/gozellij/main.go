@@ -351,6 +351,8 @@ func cmdShell(args []string) error {
 		Dir:     home,
 		Env:     env,
 		Restart: "no",
+		// A shell you live in closes when you exit it, as long as there is somewhere else to be.
+		CloseOnExit: true,
 	})
 	c.Close()
 	if err != nil {
@@ -588,6 +590,7 @@ func cmdAdd(args []string) error {
 	dir := fs.String("dir", "", "working directory")
 	start := fs.Bool("start", false, "start it immediately")
 	logMode := fs.String("log", "on", "on|off: write this service's output to disk")
+	closeOnExit := fs.Bool("close-on-exit", false, "a shell tab: exiting it while attached removes it from the list (its log is kept)")
 	var env stringList
 	fs.Var(&env, "env", "KEY=VALUE (repeatable)")
 	// People type the service name first - `gozellij add web -restart always -- caddy run` - but
@@ -647,6 +650,8 @@ func cmdAdd(args []string) error {
 		Restart: *restart,
 		Start:   *start,
 		NoLog:   noLog,
+
+		CloseOnExit: *closeOnExit,
 	})
 	if err != nil {
 		return err

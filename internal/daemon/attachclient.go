@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -367,7 +368,21 @@ func AttachLoopWith(socket, service string, in *os.File, out io.Writer, opts Att
 					if next == service || !serviceIsRunningStrict(socket, next) {
 						next = runningNeighbour(socket, service)
 					}
+					// A shell you opened for yourself closes when you exit it, the way a tmux
+					// window does - otherwise every Ctrl-] c leaves a dead shell-N in the list.
+					// Only a clean exit of a login shell: a crash keeps its tab, with the reason
+					// on screen and u to start it again, and a service you defined yourself is
+					// never removed because it ended.
 					ended := service + " exited"
+					if closesOnExit(socket, service) {
+						if rc, err := Dial(socket); err == nil {
+							// Keep the log: closing the tab is not forgetting what it printed.
+							if _, err := rc.Remove(service, true); err == nil {
+								ended = service + " exited and was closed"
+							}
+							rc.Close()
+						}
+					}
 					if next != "" {
 						say(ended + " - now on " + next)
 						service = next
@@ -823,6 +838,41 @@ func serviceIsRunningStrict(socket, name string) bool {
 	return false
 }
 
+// closesOnExit is whether a service that just ended under you is a tab you opened to type in,
+// whose entry should close now that you are done with it.
+//
+// Marked when it was made (CloseOnExit: `gozellij shell`, Ctrl-] c, add -close-on-exit), so a
+// rename does not change the answer. Shells made before the mark existed are recognised the old
+// way: a name of shell or shell-N running your login shell.
+//
+// Only when it exited by itself: one killed by a signal - a crash, or `gozellij stop` - keeps its
+// tab, with the reason on screen and u to start it again. Not the exit code: a shell's is its last
+// command's, so Ctrl-D after a failed grep would keep the tab for no reason anybody could see.
+func closesOnExit(socket, name string) bool {
+	c, err := Dial(socket)
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	st, err := c.Status(name)
+	if err != nil || st.Pid != 0 || !st.HasExited || st.ExitUnknown || st.ExitSignal != "" {
+		return false
+	}
+	if st.CloseOnExit {
+		return true
+	}
+	if name != "shell" && !shellTabName.MatchString(name) {
+		return false
+	}
+	login := os.Getenv("SHELL")
+	if login == "" {
+		login = "/bin/sh"
+	}
+	return st.Command == login
+}
+
+var shellTabName = regexp.MustCompile(`^shell-[0-9]+$`)
+
 // runningNeighbour is the next running service after current, in the order n goes, or "" when no
 // other service is running. Stopped ones are passed over: landing on one after an exit would be
 // a second dead end straight after the first.
@@ -1014,7 +1064,7 @@ func newShell(socket, from string) (string, error) {
 		}
 	}
 	if _, err := c.Add(name, ipc.AddRequest{
-		Command: shell, Args: []string{"-l"}, Dir: dir, Env: env, Start: true,
+		Command: shell, Args: []string{"-l"}, Dir: dir, Env: env, Start: true, CloseOnExit: true,
 	}); err != nil {
 		return "", fmt.Errorf("could not start a new shell: %w", err)
 	}

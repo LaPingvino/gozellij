@@ -141,6 +141,8 @@ type AddRequest struct {
 	Start   bool     `json:"start,omitempty"`
 	// NoLog asks for this service's output NOT to be written to disk.
 	NoLog bool `json:"no_log,omitempty"`
+	// CloseOnExit: see fabric.Service.
+	CloseOnExit bool `json:"close_on_exit,omitempty"`
 }
 
 // AttachRequest is the payload of OpAttach.
@@ -185,6 +187,8 @@ type StatusReply struct {
 	LastError   string    `json:"last_error,omitempty"`
 	Enabled     bool      `json:"enabled"`
 	Command     string    `json:"command,omitempty"`
+	// CloseOnExit says this service is a shell tab that closes when you exit it.
+	CloseOnExit bool `json:"close_on_exit,omitempty"`
 	// LogError is why this service's output is not reaching disk, empty when it is.
 	LogError string `json:"log_error,omitempty"`
 	// Viewers is how many clients are attached right now. Only the daemon can know this, and it

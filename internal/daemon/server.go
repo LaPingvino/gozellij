@@ -402,6 +402,8 @@ func (s *Server) add(req ipc.Request) ipc.Response {
 		Env:     add.Env,
 		Restart: policy,
 		NoLog:   add.NoLog,
+
+		CloseOnExit: add.CloseOnExit,
 	}
 	if err := s.fab.Add(svc, add.Start); err != nil {
 		return ipc.Err(req.ID, err)
@@ -457,6 +459,8 @@ func (s *Server) ensure(req ipc.Request) ipc.Response {
 		Env:     add.Env,
 		Restart: policy,
 		NoLog:   add.NoLog,
+
+		CloseOnExit: add.CloseOnExit,
 	}
 	if err := s.fab.Ensure(svc); err != nil {
 		return ipc.Err(req.ID, err)
@@ -849,6 +853,7 @@ func (s *Server) statusReply(st fabric.Status) ipc.StatusReply {
 	if def, err := s.fab.Definition(st.Service); err == nil {
 		out.Enabled = def.Enabled
 		out.Command = def.Command
+		out.CloseOnExit = def.CloseOnExit
 	}
 	if files := s.fab.LogFiles(st.Service); len(files) > 0 {
 		out.LogPath = files[0]
